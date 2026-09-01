@@ -1,0 +1,65 @@
+# lan-ssh
+
+macOS LAN SSH launcher: discover machines on the local network, remember them with key-based login, then pick a tmux session from a terminal UI.
+
+Double-click a Desktop shortcut. First run scans the LAN (Bonjour `_ssh._tcp` plus TCP/22). After you choose a host and install a dedicated key once, later launches open the saved list and connect without a password. From the tmux picker, `h` returns to the host list; `q` quits.
+
+## Features
+
+- LAN discovery (mDNS SSH services + port 22)
+- Merges dual-NIC hosts that share an SSH host key
+- One LAN SSH key (`~/.ssh/id_ed25519_lan`); login password is never stored
+- Saved hosts with last-used first
+- Interactive tmux session list, preview, create/delete, attach
+- `h` disconnects SSH and returns to the host picker (remote sessions stay running)
+
+## Install (macOS)
+
+From this repo:
+
+```zsh
+zsh install.zsh
+```
+
+That copies:
+
+- `lib/lan-ssh.zsh` and `lib/tmux-pick.zsh` → `~/Library/Application Support/lan-ssh/`
+- `bin/lan-ssh.command` → `~/Desktop/SSH 局域网.command`
+
+Double-click **SSH 局域网.command** on the Desktop.
+
+## Usage
+
+| Host list | Action |
+|---|---|
+| `↑` `↓` / `j` `k` | Move |
+| `Enter` | Connect |
+| `r` | Rescan LAN |
+| `d` | Forget a saved host (local record only) |
+| `q` | Quit |
+
+| tmux list | Action |
+|---|---|
+| `Enter` | Attach session |
+| `n` | New session |
+| `d` | Kill session (confirms) |
+| `h` | Back to host list |
+| `q` | Quit |
+
+On first connect to a new host, type the SSH username (nothing is prefilled). If no existing key works, you will be asked for the login password once to install the LAN public key.
+
+## Layout
+
+```
+lib/lan-ssh.zsh      Host picker, scan, key setup
+lib/tmux-pick.zsh    Remote tmux session UI
+bin/lan-ssh.command  Desktop double-click launcher
+install.zsh          Install to Application Support + Desktop
+```
+
+Saved host metadata lives in `~/Library/Application Support/lan-ssh/hosts` (not committed). SSH config blocks are tagged `# BEGIN LAN-SSH …` in `~/.ssh/config`.
+
+## Requirements
+
+- macOS (uses `dns-sd`, `nc`, Keychain `ssh-add --apple-use-keychain`)
+- Remote: SSH (Remote Login) enabled; tmux optional (falls back to a plain shell)
