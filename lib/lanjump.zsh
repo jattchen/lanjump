@@ -3,12 +3,14 @@ emulate -L zsh
 setopt no_unset extendedglob typesetsilent
 zmodload zsh/datetime
 
-APP="$HOME/Library/Application Support/lan-ssh"
+APP="$HOME/Library/Application Support/lanjump"
 HOSTS_FILE="$APP/hosts"
 LAST_FILE="$APP/last_target"
-KEY="$HOME/.ssh/id_ed25519_lan"
-PICKER="$APP/tmux-pick.zsh"
+KEY="$HOME/.ssh/id_ed25519_lanjump"
+PICKER="$APP/lanjump-pick.zsh"
 SSH_CONFIG="$HOME/.ssh/config"
+OLD_APP="$HOME/Library/Application Support/lan-ssh"
+OLD_KEY="$HOME/.ssh/id_ed25519_lan"
 
 typeset -a h_alias h_user h_hostname h_ip h_mac h_last
 typeset -a items_kind items_alias items_user items_hostname items_ip items_mac items_status items_saved
@@ -155,18 +157,61 @@ picker_path() {
     print -r -- "$PICKER"
     return
   fi
-  local sibling="${0:A:h}/tmux-pick.zsh"
+  local sibling="${0:A:h}/lanjump-pick.zsh"
   if [[ -f $sibling ]]; then
     print -r -- "$sibling"
   fi
 }
 
+migrate_legacy() {
+  mkdir -p "$APP"
+  if [[ -d $OLD_APP ]]; then
+    if [[ ! -s $HOSTS_FILE && -f $OLD_APP/hosts ]]; then
+      cp -p "$OLD_APP/hosts" "$HOSTS_FILE"
+    fi
+    if [[ ! -f $LAST_FILE && -f $OLD_APP/last_target ]]; then
+      cp -p "$OLD_APP/last_target" "$LAST_FILE"
+    fi
+  fi
+  if [[ ! -f $KEY && -f $OLD_KEY ]]; then
+    mv "$OLD_KEY" "$KEY"
+    [[ -f $OLD_KEY.pub ]] && mv "$OLD_KEY.pub" "$KEY.pub"
+    chmod 600 "$KEY"
+    [[ -f $KEY.pub ]] && chmod 644 "$KEY.pub"
+    ssh-keygen -c -C "lanjump@$(hostname -s)" -f "$KEY" >/dev/null 2>&1 || true
+  fi
+  [[ -f $SSH_CONFIG ]] || return
+  grep -qE '# BEGIN LAN-SSH |# END LAN-SSH |id_ed25519_lan$' "$SSH_CONFIG" 2>/dev/null || return
+  local tmp
+  tmp=$(mktemp)
+  awk '
+    {
+      gsub(/# BEGIN LAN-SSH /, "# BEGIN LANJUMP ")
+      gsub(/# END LAN-SSH /, "# END LANJUMP ")
+    }
+    /^# BEGIN LANJUMP / {
+      sub(/ LANJUMP lan-/, " LANJUMP lanjump-")
+      inblock=1
+    }
+    /^# END LANJUMP / {
+      sub(/ LANJUMP lan-/, " LANJUMP lanjump-")
+      inblock=0
+    }
+    inblock && /^Host lan-/ { sub(/^Host lan-/, "Host lanjump-") }
+    /IdentityFile / && /id_ed25519_lan$/ { sub(/id_ed25519_lan$/, "id_ed25519_lanjump") }
+    { print }
+  ' "$SSH_CONFIG" >"$tmp"
+  mv "$tmp" "$SSH_CONFIG"
+  chmod 600 "$SSH_CONFIG"
+}
+
 ensure_setup() {
   mkdir -p "$APP" "$HOME/.ssh"
   chmod 700 "$HOME/.ssh"
+  migrate_legacy
   [[ -f $HOSTS_FILE ]] || : >"$HOSTS_FILE"
   if [[ ! -f $KEY ]]; then
-    ssh-keygen -t ed25519 -f "$KEY" -N "" -C "lan-ssh@$(hostname -s)"
+    ssh-keygen -t ed25519 -f "$KEY" -N "" -C "lanjump@$(hostname -s)"
     chmod 600 "$KEY"
     chmod 644 "$KEY.pub"
   fi
@@ -271,7 +316,7 @@ ssh_id_from_alias() {
   s=${s##-}
   s=${s%%-}
   [[ -n $s ]] || s="host"
-  print -r -- "lan-${s}"
+  print -r -- "lanjump-${s}"
 }
 
 load_hosts() {
@@ -382,10 +427,8 @@ forget_saved() {
   save_hosts
 }
 
-remove_ssh_config() {
-  local id=$1
-  local begin="# BEGIN LAN-SSH ${id}"
-  local end="# END LAN-SSH ${id}"
+strip_ssh_block() {
+  local begin=$1 end=$2
   [[ -f $SSH_CONFIG ]] || return
   grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null || return
   local tmp
@@ -399,6 +442,17 @@ remove_ssh_config() {
   chmod 600 "$SSH_CONFIG"
 }
 
+remove_ssh_config() {
+  local id=$1
+  local old_id=${id/#lanjump-/lan-}
+  strip_ssh_block "# BEGIN LANJUMP ${id}" "# END LANJUMP ${id}"
+  strip_ssh_block "# BEGIN LAN-SSH ${id}" "# END LAN-SSH ${id}"
+  if [[ $old_id != "$id" ]]; then
+    strip_ssh_block "# BEGIN LAN-SSH ${old_id}" "# END LAN-SSH ${old_id}"
+    strip_ssh_block "# BEGIN LANJUMP ${old_id}" "# END LANJUMP ${old_id}"
+  fi
+}
+
 upsert_ssh_config() {
   local id=$1 user=$2 hostname=$3
   mkdir -p "$HOME/.ssh"
@@ -407,7 +461,7 @@ upsert_ssh_config() {
   remove_ssh_config "$id"
   {
     print
-    print "# BEGIN LAN-SSH ${id}"
+    print "# BEGIN LANJUMP ${id}"
     print "Host ${id}"
     print "  HostName ${hostname}"
     print "  User ${user}"
@@ -418,7 +472,7 @@ upsert_ssh_config() {
     print "  AddressFamily inet"
     print "  StrictHostKeyChecking accept-new"
     print "  ConnectTimeout 8"
-    print "# END LAN-SSH ${id}"
+    print "# END LANJUMP ${id}"
   } >>"$SSH_CONFIG"
 }
 
@@ -928,7 +982,7 @@ setup_access() {
 sync_picker() {
   local target=$1 user=$2
   ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
-    'mkdir -p "$HOME/.local/bin" && cat > "$HOME/.local/bin/lan-tmux-pick" && chmod 755 "$HOME/.local/bin/lan-tmux-pick"' \
+    'mkdir -p "$HOME/.local/bin" && cat > "$HOME/.local/bin/lanjump-pick" && chmod 755 "$HOME/.local/bin/lanjump-pick"' \
     <"$PICKER"
 }
 
@@ -980,7 +1034,7 @@ connect_item() {
     return
   fi
   ssh -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
-    'export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"; exec /bin/zsh "$HOME/.local/bin/lan-tmux-pick"'
+    'export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"; exec /bin/zsh "$HOME/.local/bin/lanjump-pick"'
   local st=$?
   if [[ $st -eq 0 ]]; then
     restore_tty
@@ -1010,7 +1064,7 @@ connect_local() {
   restore_tty
   picker=$(picker_path)
   if [[ -z $picker ]]; then
-    notice="本机 tmux 选择界面不存在。请重新安装：zsh install.zsh"
+    notice="本机 tmux 选择界面不存在。请重新安装：zsh install.zsh，或运行 lanjump"
     setup_tty
     return
   fi
@@ -1096,7 +1150,7 @@ build_items
 apply_last_cursor
 
 if [[ ! -t 0 || ! -t 1 ]]; then
-  print "需要交互式终端。请双击桌面上的脚本。"
+  print "需要交互式终端。请运行 lanjump，或双击桌面上的 Lanjump.command。"
   exit 1
 fi
 
