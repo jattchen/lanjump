@@ -1101,7 +1101,8 @@ if [[ ! -t 0 || ! -t 1 ]]; then
 fi
 
 setup_tty
-if (( ${#h_alias} == 0 )); then
+# No saved remotes: auto-scan unless last used this Mac.
+if (( ${#h_alias} == 0 )) && [[ $(read_last) != local ]]; then
   do_scan
   apply_last_cursor
 fi

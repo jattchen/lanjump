@@ -366,7 +366,7 @@ load_items() {
 
   items_kind+=("shell")
   items_id+=("shell")
-  items_name+=("普通 shell（不进 tmux）")
+  items_name+=("普通 shell（不进 tmux，exit 返回）")
   items_att+=("")
   items_time+=("")
   items_path+=("")
@@ -457,7 +457,7 @@ draw() {
   print
 
   if [[ $HAS_TMUX -ne 1 ]]; then
-    print "  ${c_dim}（这台机器上没有 tmux，可以直接进普通 shell）${c_reset}"
+    print "  ${c_dim}（这台机器上没有 tmux，可以直接进普通 shell；exit 或 Ctrl+D 返回）${c_reset}"
     print
   elif (( session_end == 0 )); then
     print "  ${c_dim}（当前没有 session）${c_reset}"
@@ -560,6 +560,9 @@ activate() {
       ;;
     shell)
       restore_tty
+      print
+      print "${c_bold}普通 shell（不进 tmux）${c_reset}"
+      print "${c_dim}输入 exit 或按 Ctrl+D 回到选择界面。${c_reset}"
       print
       /bin/zsh -l
       setup_tty
