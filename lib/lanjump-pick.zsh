@@ -178,7 +178,7 @@ short_path() {
 
 useful_summary() {
   local title=$1 cmd=$2 wname=$3
-  if [[ -n $title && $title != *.local && $title != MMN.local && $title != zsh && $title != grok && $title != bash ]]; then
+  if [[ -n $title && $title != *.local && $title != zsh && $title != grok && $title != bash ]]; then
     print -r -- "$title"
   elif [[ -n $cmd && $cmd != zsh && $cmd != bash && $cmd != sh ]]; then
     print -r -- "$cmd"
