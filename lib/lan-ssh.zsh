@@ -5,6 +5,7 @@ zmodload zsh/datetime
 
 APP="$HOME/Library/Application Support/lan-ssh"
 HOSTS_FILE="$APP/hosts"
+LAST_FILE="$APP/last_target"
 KEY="$HOME/.ssh/id_ed25519_lan"
 PICKER="$APP/tmux-pick.zsh"
 SSH_CONFIG="$HOME/.ssh/config"
@@ -12,6 +13,7 @@ SSH_CONFIG="$HOME/.ssh/config"
 typeset -a h_alias h_user h_hostname h_ip h_mac h_last
 typeset -a items_kind items_alias items_user items_hostname items_ip items_mac items_status items_saved
 typeset -a s_alias s_host s_ip s_mac
+typeset -a MYIPS
 cursor=1
 loading=0
 stty_orig=
@@ -121,6 +123,44 @@ trim() {
   print -r -- "$s"
 }
 
+mark_last() {
+  print -r -- "$1" >"$LAST_FILE"
+}
+
+read_last() {
+  local last=""
+  [[ -f $LAST_FILE ]] || return
+  last=$(<"$LAST_FILE")
+  last=${last%%$'\n'*}
+  last=$(trim "$last")
+  [[ -n $last ]] && print -r -- "$last"
+}
+
+apply_last_cursor() {
+  local last j n=${#items_kind}
+  last=$(read_last)
+  if [[ $last == local ]]; then
+    for (( j = 1; j <= n; j++ )); do
+      if [[ ${items_kind[$j]} == local ]]; then
+        cursor=$j
+        return
+      fi
+    done
+  fi
+  cursor=1
+}
+
+picker_path() {
+  if [[ -f $PICKER ]]; then
+    print -r -- "$PICKER"
+    return
+  fi
+  local sibling="${0:A:h}/tmux-pick.zsh"
+  if [[ -f $sibling ]]; then
+    print -r -- "$sibling"
+  fi
+}
+
 ensure_setup() {
   mkdir -p "$APP" "$HOME/.ssh"
   chmod 700 "$HOME/.ssh"
@@ -133,19 +173,79 @@ ensure_setup() {
   ssh-add --apple-use-keychain "$KEY" >/dev/null 2>&1 || true
 }
 
+iface_ipv4() {
+  local iface=$1 ip
+  ip=$(ipconfig getifaddr "$iface" 2>/dev/null) || true
+  if [[ -z $ip ]]; then
+    ip=$(ifconfig "$iface" 2>/dev/null | awk '/inet / { print $2; exit }') || true
+  fi
+  print -r -- "$ip"
+}
+
+is_rfc1918() {
+  local ip=$1 a b
+  [[ $ip == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]] || return 1
+  a=${ip%%.*}
+  b=${ip#*.}
+  b=${b%%.*}
+  [[ $a == 10 ]] && return 0
+  [[ $a == 192 && $b == 168 ]] && return 0
+  [[ $a == 172 && $b -ge 16 && $b -le 31 ]] && return 0
+  return 1
+}
+
+is_ignored_iface() {
+  local i=$1
+  [[ $i == utun* || $i == lo* || $i == awdl* || $i == llw* || $i == bridge* || $i == ap* || $i == gif* || $i == stf* || $i == anpi* || $i == vmnet* || $i == vmenet* ]]
+}
+
+collect_self_ips() {
+  MYIPS=(127.0.0.1)
+  local i ip
+  for i in $(ifconfig -l); do
+    ip=$(iface_ipv4 "$i")
+    [[ -n $ip ]] && MYIPS+=("$ip")
+  done
+}
+
 detect_lan() {
-  IFACE=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
+  IFACE=""
   MYIP=""
   PREFIX=""
-  [[ -n $IFACE ]] && MYIP=$(ipconfig getifaddr "$IFACE" 2>/dev/null) || true
-  if [[ -n $MYIP ]]; then
-    PREFIX=${MYIP%.*}
-  fi
+  collect_self_ips
+  local def cand ip already s
+  local -a cands seen
+  cands=()
+  seen=()
+  def=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
+  [[ -n $def ]] && cands+=("$def")
+  for cand in $(ifconfig -l); do
+    [[ $cand == en[0-9]## ]] && cands+=("$cand")
+  done
+  for cand in "${cands[@]}"; do
+    [[ -n $cand ]] || continue
+    already=0
+    for s in "${seen[@]}"; do
+      [[ $s == "$cand" ]] && already=1 && break
+    done
+    (( already )) && continue
+    seen+=("$cand")
+    is_ignored_iface "$cand" && continue
+    ip=$(iface_ipv4 "$cand")
+    is_rfc1918 "$ip" || continue
+    IFACE=$cand
+    MYIP=$ip
+    PREFIX=${ip%.*}
+    return
+  done
 }
 
 is_self_ip() {
-  local ip=$1
+  local ip=$1 x
   [[ -z $ip ]] && return 1
+  for x in "${MYIPS[@]}"; do
+    [[ $ip == "$x" ]] && return 0
+  done
   [[ $ip == 127.0.0.1 ]] && return 0
   [[ -n $MYIP && $ip == "$MYIP" ]] && return 0
   return 1
@@ -403,7 +503,8 @@ scan_port22() {
 
 build_items() {
   items_kind=() items_alias=() items_user=() items_hostname=() items_ip=() items_mac=() items_status=() items_saved=()
-  local i n=${#h_alias} idx
+  local i n=${#h_alias} idx last
+  last=$(read_last)
   if (( n )); then
     local -a idx_order
     idx_order=()
@@ -420,7 +521,7 @@ build_items() {
       items_hostname+=("${h_hostname[$idx]}")
       items_ip+=("${h_ip[$idx]}")
       items_mac+=("${h_mac[$idx]}")
-      if [[ $idx == "$first" ]]; then
+      if [[ $idx == "$first" && $last != local ]]; then
         items_status+=("已保存 · 上次")
       else
         items_status+=("已保存")
@@ -428,6 +529,15 @@ build_items() {
       items_saved+=("$idx")
     done
   fi
+  items_kind+=("local")
+  items_alias+=("进入本机")
+  items_user+=("")
+  items_hostname+=("")
+  items_ip+=("")
+  items_mac+=("")
+  items_status+=("")
+  items_saved+=("")
+
   items_kind+=("scan")
   items_alias+=("扫描局域网…")
   items_user+=("")
@@ -476,23 +586,23 @@ add_discovered() {
       fi
     fi
   done
-  # insert before scan/quit: rebuild by inserting at position of first scan
-  local scan_at=0
+  # insert before the first action row (本机 / 扫描 / 退出)
+  local insert_at=0
   for (( i = 1; i <= n; i++ )); do
-    if [[ ${items_kind[$i]} == scan ]]; then
-      scan_at=$i
+    if [[ ${items_kind[$i]} != host ]]; then
+      insert_at=$i
       break
     fi
   done
-  (( scan_at > 0 )) || return
-  items_kind=("${(@)items_kind[1,scan_at-1]}" host "${(@)items_kind[scan_at,-1]}")
-  items_alias=("${(@)items_alias[1,scan_at-1]}" "$alias" "${(@)items_alias[scan_at,-1]}")
-  items_user=("${(@)items_user[1,scan_at-1]}" "" "${(@)items_user[scan_at,-1]}")
-  items_hostname=("${(@)items_hostname[1,scan_at-1]}" "$hostname" "${(@)items_hostname[scan_at,-1]}")
-  items_ip=("${(@)items_ip[1,scan_at-1]}" "$ip" "${(@)items_ip[scan_at,-1]}")
-  items_mac=("${(@)items_mac[1,scan_at-1]}" "$mac" "${(@)items_mac[scan_at,-1]}")
-  items_status=("${(@)items_status[1,scan_at-1]}" "新发现" "${(@)items_status[scan_at,-1]}")
-  items_saved=("${(@)items_saved[1,scan_at-1]}" "" "${(@)items_saved[scan_at,-1]}")
+  (( insert_at > 0 )) || return
+  items_kind=("${(@)items_kind[1,insert_at-1]}" host "${(@)items_kind[insert_at,-1]}")
+  items_alias=("${(@)items_alias[1,insert_at-1]}" "$alias" "${(@)items_alias[insert_at,-1]}")
+  items_user=("${(@)items_user[1,insert_at-1]}" "" "${(@)items_user[insert_at,-1]}")
+  items_hostname=("${(@)items_hostname[1,insert_at-1]}" "$hostname" "${(@)items_hostname[insert_at,-1]}")
+  items_ip=("${(@)items_ip[1,insert_at-1]}" "$ip" "${(@)items_ip[insert_at,-1]}")
+  items_mac=("${(@)items_mac[1,insert_at-1]}" "$mac" "${(@)items_mac[insert_at,-1]}")
+  items_status=("${(@)items_status[1,insert_at-1]}" "新发现" "${(@)items_status[insert_at,-1]}")
+  items_saved=("${(@)items_saved[1,insert_at-1]}" "" "${(@)items_saved[insert_at,-1]}")
 }
 
 mark_online() {
@@ -602,7 +712,7 @@ do_scan() {
   print
   detect_lan
   if [[ -z $PREFIX ]]; then
-    notice="没有局域网 IP，请确认连的是家里的网。"
+    notice="没找到家里的网（默认路由可能是 VPN）。仍可进入本机。"
     loading=0
     setup_tty
     return
@@ -671,7 +781,7 @@ draw() {
 
   print -n $'\e[H\e[J'
   print "${c_bold}  局域网 SSH${c_reset}"
-  print "${c_dim}  ↑↓/jk 选择   Enter 连接   r 扫描   d 忘掉   q 退出${c_reset}"
+  print "${c_dim}  ↑↓/jk 选择   Enter 进入   r 扫描   d 忘掉   q 退出${c_reset}"
   if [[ -n $notice ]]; then
     print "  ${c_cyan}${notice}${c_reset}"
   else
@@ -861,6 +971,7 @@ connect_item() {
   fi
   [[ -z $mac ]] && mac=$(get_mac "$ip")
   upsert_host "$alias" "$user" "$hostname" "$ip" "$mac"
+  mark_last host
   if ! sync_picker "$target" "$user"; then
     print "无法把 tmux 选择界面同步到对方。"
     print -n "按回车回到列表…"
@@ -894,8 +1005,47 @@ connect_item() {
   setup_tty
 }
 
+connect_local() {
+  local picker st j n
+  restore_tty
+  picker=$(picker_path)
+  if [[ -z $picker ]]; then
+    notice="本机 tmux 选择界面不存在。请重新安装：zsh install.zsh"
+    setup_tty
+    return
+  fi
+  mark_last local
+  print
+  /bin/zsh "$picker"
+  st=$?
+  if [[ $st -eq 0 ]]; then
+    restore_tty
+    trap - EXIT
+    exit 0
+  fi
+  load_hosts
+  build_items
+  if [[ $st -eq 10 ]]; then
+    notice="已回到机器列表。"
+  else
+    notice="已离开本机界面（退出码 ${st}）。"
+  fi
+  n=${#items_kind}
+  for (( j = 1; j <= n; j++ )); do
+    if [[ ${items_kind[$j]} == local ]]; then
+      cursor=$j
+      break
+    fi
+  done
+  setup_tty
+}
+
 forget_item() {
   local i=$1
+  if [[ ${items_kind[$i]} == local ]]; then
+    notice="本机不用忘掉。"
+    return
+  fi
   [[ ${items_kind[$i]} == host ]] || return
   [[ -n ${items_saved[$i]} ]] || {
     notice="这台还没保存，不用忘掉。"
@@ -921,6 +1071,7 @@ activate() {
   local i=$1
   case ${items_kind[$i]} in
     host) connect_item $i ;;
+    local) connect_local ;;
     scan)
       do_scan
       ;;
@@ -932,10 +1083,17 @@ activate() {
   esac
 }
 
+if [[ ${1:-} == --print-lan ]]; then
+  detect_lan
+  print -r -- "${IFACE:-}|${MYIP:-}|${PREFIX:-}"
+  exit 0
+fi
+
 ensure_setup
 detect_lan
 load_hosts
 build_items
+apply_last_cursor
 
 if [[ ! -t 0 || ! -t 1 ]]; then
   print "需要交互式终端。请双击桌面上的脚本。"
@@ -945,6 +1103,7 @@ fi
 setup_tty
 if (( ${#h_alias} == 0 )); then
   do_scan
+  apply_last_cursor
 fi
 draw
 
