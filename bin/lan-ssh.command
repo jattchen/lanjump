@@ -19,4 +19,9 @@ if [[ ! -f $MAIN ]]; then
 fi
 
 chmod 755 "$MAIN" "$APP/tmux-pick.zsh" 2>/dev/null || true
-exec /bin/zsh "$MAIN"
+/bin/zsh "$MAIN"
+code=$?
+if (( code != 0 )); then
+  pause "已退出（代码 ${code}）。"
+fi
+exit $code

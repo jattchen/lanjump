@@ -11,7 +11,8 @@ Double-click a Desktop shortcut. First run scans the LAN (Bonjour `_ssh._tcp` pl
 - One LAN SSH key (`~/.ssh/id_ed25519_lan`); login password is never stored
 - Saved hosts with last-used first
 - Interactive tmux session list, preview, create/delete, attach
-- `h` disconnects SSH and returns to the host picker (remote sessions stay running)
+- Local entry from the host list: skip SSH and open this Mac's tmux picker
+- `h` returns to the host picker (remote SSH disconnects; remote sessions stay running)
 
 ## Install (macOS)
 
@@ -24,19 +25,21 @@ zsh install.zsh
 That copies:
 
 - `lib/lan-ssh.zsh` and `lib/tmux-pick.zsh` → `~/Library/Application Support/lan-ssh/`
-- `bin/lan-ssh.command` → `~/Desktop/SSH 局域网.command`
+- `bin/lan-ssh.command` → `~/Desktop/LAN-SSH.command`
 
-Double-click **SSH 局域网.command** on the Desktop.
+Double-click **LAN-SSH.command** on the Desktop. The filename is ASCII-only so Ghostty can open it (Ghostty 1.3.1 corrupts Chinese `.command` names and exits immediately).
 
 ## Usage
 
 | Host list | Action |
 |---|---|
 | `↑` `↓` / `j` `k` | Move |
-| `Enter` | Connect |
+| `Enter` | Connect to a host, or open this Mac |
 | `r` | Rescan LAN |
 | `d` | Forget a saved host (local record only) |
 | `q` | Quit |
+
+Choose **进入本机** to skip SSH and open the same tmux picker on this Mac. The next launch remembers whether you last used this Mac or a remote host.
 
 | tmux list | Action |
 |---|---|
@@ -57,7 +60,7 @@ bin/lan-ssh.command  Desktop double-click launcher
 install.zsh          Install to Application Support + Desktop
 ```
 
-Saved host metadata lives in `~/Library/Application Support/lan-ssh/hosts` (not committed). SSH config blocks are tagged `# BEGIN LAN-SSH …` in `~/.ssh/config`.
+Saved host metadata lives in `~/Library/Application Support/lan-ssh/hosts` (not committed). Last-used target (this Mac vs a remote host) is `last_target` in the same folder. SSH config blocks are tagged `# BEGIN LAN-SSH …` in `~/.ssh/config`.
 
 ## Requirements
 
