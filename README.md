@@ -14,6 +14,8 @@ zsh install.zsh
 
 本机装了 Grok 时，连远程会走 `grok wrap`，方便把对面 Grok 的选中复制写进这台电脑的剪贴板（自带「终端」需要这一层）。不是两台电脑剪贴板互相同步。不想用时：`LANJUMP_NO_GROK_WRAP=1 lanjump`。
 
+在你敲键盘的那台 Mac 上安装后，Shift+Enter 会换成 Grok 能认的换行（系统「终端」本身分不出 Shift+Enter）。不记录按键，只看回车时 Shift 有没有按住。
+
 ## 快捷键
 
 主机列表：`↑` `↓` / `j` `k` 选择，`Enter` 连接（或进入本机），`r` 扫描，`d` 忘掉，`q` 退出。
@@ -24,4 +26,4 @@ tmux 列表：`Enter` 进入，`n` 新建，`d` 删除，`h` 换机器，`s` 普
 
 ## 要求
 
-macOS；对方打开远程登录。tmux 可选。连远程且要把 Grok 选中复制写到本机时，这台电脑需要有 `grok`。
+macOS；对方打开远程登录。tmux 可选。连远程且要把 Grok 选中复制写到本机时，这台电脑需要有 `grok`。Shift+Enter 换行要装在敲键盘的那台 Mac 上。

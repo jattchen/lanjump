@@ -23,6 +23,7 @@ notice=""
 MYIP=""
 PREFIX=""
 IFACE=""
+LANJUMP_KEYS=""
 
 if [[ -z ${NO_COLOR:-} ]]; then
   c_reset=$'\e[0m'
@@ -35,6 +36,18 @@ if [[ -z ${NO_COLOR:-} ]]; then
 else
   c_reset= c_bold= c_dim= c_green= c_cyan= c_red= c_rev=
 fi
+
+find_lanjump_keys() {
+  local c
+  LANJUMP_KEYS=""
+  for c in "$HOME/.local/bin/lanjump-keys" "$APP/lanjump-keys"; do
+    if [[ -x $c ]]; then
+      LANJUMP_KEYS=$c
+      return 0
+    fi
+  done
+  return 1
+}
 
 restore_tty() {
   print -n -u2 $'\e[?25h'
@@ -216,6 +229,7 @@ ensure_setup() {
     chmod 644 "$KEY.pub"
   fi
   ssh-add --apple-use-keychain "$KEY" >/dev/null 2>&1 || true
+  find_lanjump_keys || true
 }
 
 iface_ipv4() {
@@ -968,9 +982,17 @@ ssh_tty() {
   if [[ ${TERM_PROGRAM:-} == Apple_Terminal ]]; then
     unset COLORTERM
   fi
+  # grok wrap must own the real tty. Put lanjump-keys *inside* wrap so
+  # Shift+Enter rewrite does not steal /dev/tty (that nesting hung).
   if [[ -n $grok ]]; then
     print -u2 "剪贴板转发已开（grok wrap）。"
-    "$grok" wrap ssh "$@"
+    if [[ -n ${LANJUMP_KEYS:-} ]]; then
+      "$grok" wrap "$LANJUMP_KEYS" ssh "$@"
+    else
+      "$grok" wrap ssh "$@"
+    fi
+  elif [[ -n ${LANJUMP_KEYS:-} ]]; then
+    "$LANJUMP_KEYS" ssh "$@"
   else
     command ssh "$@"
   fi
