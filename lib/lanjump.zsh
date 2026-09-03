@@ -960,6 +960,14 @@ grok_wrap_bin() {
 ssh_tty() {
   local grok=""
   grok=$(grok_wrap_bin) || grok=""
+  # Apple Terminal is 256-color. A non-256 TERM through wrap/ssh/tmux makes
+  # Grok skip its background, so the TUI sits on a white terminal.
+  if [[ ${TERM:-} != *256color* && ${TERM:-} != *direct* && ${TERM:-} != *-kitty ]]; then
+    export TERM=xterm-256color
+  fi
+  if [[ ${TERM_PROGRAM:-} == Apple_Terminal ]]; then
+    unset COLORTERM
+  fi
   if [[ -n $grok ]]; then
     print -u2 "剪贴板转发已开（grok wrap）。"
     "$grok" wrap ssh "$@"
@@ -1066,8 +1074,13 @@ connect_item() {
     setup_tty
     return
   fi
+  local remote_cmd
+  remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
+  remote_cmd+="; unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM"
+  remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
+  remote_cmd+="; exec /bin/zsh \"\$HOME/.local/bin/lanjump-pick\""
   ssh_tty -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
-    'export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"; exec /bin/zsh "$HOME/.local/bin/lanjump-pick"'
+    "$remote_cmd"
   local st=$?
   if [[ $st -eq 0 ]]; then
     restore_tty

@@ -47,6 +47,54 @@ tmux_tty() {
   command "$TMUX_BIN" "$@"
 }
 
+# Apple Terminal (macOS 12) is 256-color. Advertising RGB makes Grok emit
+# 24-bit backgrounds that Terminal.app ignores, so the TUI sits on white.
+tmux_prepare_color() {
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  local dt apple=0
+  [[ ${TERM_PROGRAM:-} == Apple_Terminal ]] && apple=1
+
+  if [[ -n ${TERM_PROGRAM:-} ]]; then
+    tmuxx set-environment -g TERM_PROGRAM "$TERM_PROGRAM" 2>/dev/null || true
+  fi
+  if [[ -n ${TERM_PROGRAM_VERSION:-} ]]; then
+    tmuxx set-environment -g TERM_PROGRAM_VERSION "$TERM_PROGRAM_VERSION" 2>/dev/null || true
+  fi
+
+  dt=$(tmuxx show-options -gv default-terminal 2>/dev/null || true)
+  if (( apple )); then
+    unset COLORTERM
+    tmuxx set-environment -gu COLORTERM 2>/dev/null || true
+    if [[ $dt != screen-256color && $dt != xterm-256color ]]; then
+      if infocmp screen-256color >/dev/null 2>&1; then
+        tmuxx set-option -g default-terminal screen-256color 2>/dev/null || true
+      else
+        tmuxx set-option -g default-terminal xterm-256color 2>/dev/null || true
+      fi
+    fi
+    tmuxx set-option -gu terminal-features 2>/dev/null || true
+    tmuxx set-option -g terminal-overrides ',*:RGB@,*:Tc@' 2>/dev/null || true
+  else
+    if [[ -z $dt || $dt == screen || $dt == xterm || $dt == dumb ]]; then
+      if infocmp tmux-256color >/dev/null 2>&1; then
+        dt=tmux-256color
+      elif infocmp screen-256color >/dev/null 2>&1; then
+        dt=screen-256color
+      else
+        dt=xterm-256color
+      fi
+      tmuxx set-option -g default-terminal "$dt" 2>/dev/null || true
+    fi
+    tmuxx set-option -as terminal-features ',*:RGB' 2>/dev/null || true
+    tmuxx set-option -ag terminal-overrides ',*:Tc' 2>/dev/null || true
+  fi
+
+  # wrap stamps LC_GROK_APPEARANCE from the local OS. That is for theme=auto
+  # over SSH; it must not override a configured/default GrokNight session.
+  tmuxx set-environment -gu LC_GROK_APPEARANCE 2>/dev/null || true
+  tmuxx set-environment -gu GROK_APPEARANCE 2>/dev/null || true
+}
+
 restore_tty() {
   print -n '\e[?25h'
   [[ -n ${stty_orig:-} ]] && stty "$stty_orig" 2>/dev/null || stty sane 2>/dev/null
@@ -631,6 +679,7 @@ prompt_delete() {
   draw
 }
 
+tmux_prepare_color
 load_items
 setup_tty
 draw
