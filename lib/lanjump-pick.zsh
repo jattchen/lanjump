@@ -43,8 +43,63 @@ tmuxx() {
   command "$TMUX_BIN" "$@" </dev/null
 }
 
+keys_bin() {
+  local c
+  for c in "$HOME/.local/bin/lanjump-keys" \
+           "$HOME/Library/Application Support/lanjump/lanjump-keys"; do
+    if [[ -x $c ]]; then
+      print -r -- $c
+      return 0
+    fi
+  done
+  return 1
+}
+
+local_keyboard() {
+  [[ -z ${SSH_CONNECTION:-} && -z ${SSH_CLIENT:-} && -z ${SSH_TTY:-} ]]
+}
+
+run_interactive() {
+  local keys
+  if local_keyboard && keys=$(keys_bin); then
+    "$keys" "$@"
+  else
+    "$@"
+  fi
+}
+
+tmux_has_feature() {
+  local all
+  all=$(tmuxx show-options -g terminal-features 2>/dev/null || true)
+  [[ $all == *$1* ]]
+}
+
+tmux_prepare_keys() {
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  tmuxx set-option -g extended-keys always 2>/dev/null || \
+    tmuxx set-option -g extended-keys on 2>/dev/null || true
+  tmuxx set-option -s extended-keys-format csi-u 2>/dev/null || true
+  tmuxx set-option -gw allow-passthrough on 2>/dev/null || true
+  tmuxx set-option -g set-clipboard on 2>/dev/null || true
+  tmux_has_feature extkeys || tmuxx set-option -as terminal-features ',xterm*:extkeys' 2>/dev/null || true
+  if [[ ${TERM_PROGRAM:-} != Apple_Terminal ]]; then
+    tmux_has_feature RGB || tmuxx set-option -as terminal-features ',*:RGB' 2>/dev/null || true
+  fi
+  local s w
+  for s in "${(@f)$(tmuxx list-sessions -F '#{session_name}' 2>/dev/null)}"; do
+    [[ -n $s ]] || continue
+    tmuxx set-option -t "$s" extended-keys always 2>/dev/null || true
+  done
+  for w in "${(@f)$(tmuxx list-windows -a -F '#{session_name}:#{window_index}' 2>/dev/null)}"; do
+    [[ -n $w ]] || continue
+    tmuxx set-option -w -t "$w" allow-passthrough on 2>/dev/null || true
+  done
+}
+
 tmux_tty() {
-  command "$TMUX_BIN" "$@"
+  tmux_prepare_color
+  tmux_prepare_keys
+  run_interactive "$TMUX_BIN" "$@"
 }
 
 # Apple Terminal (macOS 12) is 256-color. Advertising RGB makes Grok emit
@@ -612,7 +667,7 @@ activate() {
       print "${c_bold}普通 shell（不进 tmux）${c_reset}"
       print "${c_dim}输入 exit 或按 Ctrl+D 回到选择界面。${c_reset}"
       print
-      /bin/zsh -l
+      run_interactive /bin/zsh -l
       setup_tty
       load_items
       draw
@@ -680,6 +735,7 @@ prompt_delete() {
 }
 
 tmux_prepare_color
+tmux_prepare_keys
 load_items
 setup_tty
 draw

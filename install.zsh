@@ -2,6 +2,12 @@
 set -euo pipefail
 
 ROOT=${0:A:h}
+
+if [[ ${1:-} == --tar ]]; then
+  tar -C "$ROOT" -czf - install.zsh bin lib src
+  exit 0
+fi
+
 APP="$HOME/Library/Application Support/lanjump"
 OLD_APP="$HOME/Library/Application Support/lan-ssh"
 DESKTOP="$HOME/Desktop/Lanjump.command"
@@ -33,6 +39,23 @@ cp -f "$ROOT/lib/lanjump.zsh" "$APP/lanjump.zsh"
 cp -f "$ROOT/lib/lanjump-pick.zsh" "$APP/lanjump-pick.zsh"
 chmod 755 "$APP/lanjump.zsh" "$APP/lanjump-pick.zsh"
 
+cp -f "$ROOT/lib/lanjump-keys.py" "$APP/lanjump-keys.py"
+chmod 755 "$APP/lanjump-keys.py"
+
+keys_err=$(mktemp)
+if cc -O2 -framework CoreGraphics -o "$APP/lanjump-keys" "$ROOT/src/lanjump-keys.c" 2>"$keys_err"; then
+  cp -f "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
+  chmod 755 "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
+  xattr -d com.apple.quarantine "$BIN_DIR/lanjump-keys" 2>/dev/null || true
+  keys_kind=c
+else
+  cp -f "$APP/lanjump-keys.py" "$APP/lanjump-keys"
+  cp -f "$APP/lanjump-keys.py" "$BIN_DIR/lanjump-keys"
+  chmod 755 "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
+  keys_kind=py
+fi
+rm -f "$keys_err"
+
 cp -f "$ROOT/bin/lanjump.command" "$DESKTOP"
 chmod 755 "$DESKTOP"
 xattr -d com.apple.quarantine "$DESKTOP" 2>/dev/null || true
@@ -58,9 +81,15 @@ print "  $APP/lanjump.zsh"
 print "  $APP/lanjump-pick.zsh"
 print "  $DESKTOP"
 print "  $BIN_DIR/lanjump"
+if [[ $keys_kind == c ]]; then
+  print "  $BIN_DIR/lanjump-keys  (Shift+Enter 换行)"
+else
+  print "  $BIN_DIR/lanjump-keys  (Python 备用，Shift+Enter 换行)"
+fi
 print
 print "In a terminal, run:  lanjump"
 print "Or double-click Lanjump.command on the Desktop."
+print "Shift+Enter 换行要装在你敲键盘的那台 Mac 上。"
 if [[ :$PATH: != *:$BIN_DIR:* ]]; then
   print
   print "Note: $BIN_DIR is not on PATH. Add this to ~/.zshrc:"
