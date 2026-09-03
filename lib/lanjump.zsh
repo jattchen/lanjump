@@ -935,6 +935,39 @@ target_for() {
 typeset -a SSH_OPTS
 SSH_OPTS=(-o AddressFamily=inet -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8)
 
+# Interactive SSH only. Batch/key-install calls stay plain ssh.
+# grok wrap intercepts OSC 52 on this Mac (needed by Apple Terminal) and
+# writes them to pbcopy. Ghostty/iTerm2 already handle OSC 52; wrap is a no-op there.
+# Set LANJUMP_NO_GROK_WRAP=1 to force plain ssh.
+grok_wrap_bin() {
+  [[ -n ${LANJUMP_NO_GROK_WRAP:-} ]] && return 1
+  local -a cands=()
+  local c seen=""
+  (( $+commands[grok] )) && cands+=("${commands[grok]}")
+  cands+=("$HOME/.grok/bin/grok" "$HOME/.local/bin/grok" /opt/homebrew/bin/grok /usr/local/bin/grok)
+  for c in $cands; do
+    [[ -n $c && -x $c ]] || continue
+    [[ $seen == *"|$c|"* ]] && continue
+    seen+="|$c|"
+    if "$c" wrap --help >/dev/null 2>&1; then
+      print -r -- "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ssh_tty() {
+  local grok=""
+  grok=$(grok_wrap_bin) || grok=""
+  if [[ -n $grok ]]; then
+    print -u2 "剪贴板转发已开（grok wrap）。"
+    "$grok" wrap ssh "$@"
+  else
+    command ssh "$@"
+  fi
+}
+
 lan_pub_install_cmd() {
   local pub
   pub=$(cat "$KEY.pub")
@@ -1033,7 +1066,7 @@ connect_item() {
     setup_tty
     return
   fi
-  ssh -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
+  ssh_tty -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
     'export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"; exec /bin/zsh "$HOME/.local/bin/lanjump-pick"'
   local st=$?
   if [[ $st -eq 0 ]]; then
