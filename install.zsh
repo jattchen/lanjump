@@ -2,10 +2,31 @@
 set -euo pipefail
 
 ROOT=${0:A:h}
+ARCHIVE_URL='https://github.com/jattchen/lanjump/archive/refs/heads/main.tar.gz'
 
 if [[ ${1:-} == --tar ]]; then
   tar -C "$ROOT" -czf - install.zsh bin lib src
   exit 0
+fi
+
+print '正在安装 lanjump …'
+print
+
+fetched=
+cleanup() {
+  [[ -n $fetched ]] && rm -rf "$fetched"
+}
+trap cleanup EXIT
+trap 'print -u2 "安装失败。"' ERR
+
+if [[ ! -f $ROOT/lib/lanjump.zsh || ! -f $ROOT/bin/lanjump || ! -f $ROOT/src/lanjump-keys.c ]]; then
+  fetched=$(mktemp -d)
+  curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$fetched"
+  ROOT="$fetched/lanjump-main"
+  if [[ ! -f $ROOT/lib/lanjump.zsh ]]; then
+    extracted=($fetched/*(/))
+    ROOT=${extracted[1]:-}
+  fi
 fi
 
 APP="$HOME/Library/Application Support/lanjump"
@@ -14,6 +35,8 @@ DESKTOP="$HOME/Desktop/Lanjump.command"
 BIN_DIR="$HOME/.local/bin"
 KEY="$HOME/.ssh/id_ed25519_lanjump"
 OLD_KEY="$HOME/.ssh/id_ed25519_lan"
+ZSHRC="$HOME/.zshrc"
+PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
 mkdir -p "$APP" "$BIN_DIR" "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
@@ -47,12 +70,10 @@ if cc -O2 -framework CoreGraphics -o "$APP/lanjump-keys" "$ROOT/src/lanjump-keys
   cp -f "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
   chmod 755 "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
   xattr -d com.apple.quarantine "$BIN_DIR/lanjump-keys" 2>/dev/null || true
-  keys_kind=c
 else
   cp -f "$APP/lanjump-keys.py" "$APP/lanjump-keys"
   cp -f "$APP/lanjump-keys.py" "$BIN_DIR/lanjump-keys"
   chmod 755 "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
-  keys_kind=py
 fi
 rm -f "$keys_err"
 
@@ -76,22 +97,28 @@ if [[ -d $OLD_APP ]]; then
   rm -rf "$OLD_APP"
 fi
 
-print "Installed:"
-print "  $APP/lanjump.zsh"
-print "  $APP/lanjump-pick.zsh"
-print "  $DESKTOP"
-print "  $BIN_DIR/lanjump"
-if [[ $keys_kind == c ]]; then
-  print "  $BIN_DIR/lanjump-keys  (Shift+Enter 换行)"
-else
-  print "  $BIN_DIR/lanjump-keys  (Python 备用，Shift+Enter 换行)"
-fi
-print
-print "In a terminal, run:  lanjump"
-print "Or double-click Lanjump.command on the Desktop."
-print "Shift+Enter 换行要装在你敲键盘的那台 Mac 上。"
+path_note=0
 if [[ :$PATH: != *:$BIN_DIR:* ]]; then
+  if [[ ! -f $ZSHRC ]] || ! grep -qE '(^|[[:space:]])(export[[:space:]]+)?PATH=.*(\$HOME|~)/\.local/bin' "$ZSHRC" 2>/dev/null; then
+    if [[ ! -f $ZSHRC ]]; then
+      print '# lanjump' > "$ZSHRC"
+      print "$PATH_LINE" >> "$ZSHRC"
+    else
+      print >> "$ZSHRC"
+      print '# lanjump' >> "$ZSHRC"
+      print "$PATH_LINE" >> "$ZSHRC"
+    fi
+  fi
+  path_note=1
+fi
+
+print '安装完成。'
+print
+print '打开方式'
+print '  终端输入  lanjump'
+print '  或双击桌面  Lanjump.command'
+if (( path_note )); then
   print
-  print "Note: $BIN_DIR is not on PATH. Add this to ~/.zshrc:"
-  print '  export PATH="$HOME/.local/bin:$PATH"'
+  print '已把 lanjump 命令加入终端。请新开一个终端，或执行：'
+  print '  source ~/.zshrc'
 fi
