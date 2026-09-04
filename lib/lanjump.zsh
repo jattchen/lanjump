@@ -4,6 +4,15 @@ setopt no_unset extendedglob typesetsilent
 zmodload zsh/datetime
 
 APP="$HOME/Library/Application Support/lanjump"
+
+if [[ ${1:-} == upgrade || ${1:-} == 升级 ]]; then
+  if [[ ! -f $APP/install.zsh ]]; then
+    print -u2 '找不到安装脚本。请重新安装：zsh install.zsh'
+    exit 1
+  fi
+  exec /bin/zsh "$APP/install.zsh" --upgrade
+fi
+
 HOSTS_FILE="$APP/hosts"
 LAST_FILE="$APP/last_target"
 KEY="$HOME/.ssh/id_ed25519_lanjump"
@@ -1143,7 +1152,7 @@ connect_local() {
   restore_tty
   picker=$(picker_path)
   if [[ -z $picker ]]; then
-    notice="本机 tmux 选择界面不存在。请重新安装：zsh install.zsh，或运行 lanjump"
+    notice="本机 tmux 选择界面不存在。请重新安装：lanjump upgrade"
     setup_tty
     return
   fi
@@ -1235,7 +1244,7 @@ build_items
 apply_last_cursor
 
 if [[ ! -t 0 || ! -t 1 ]]; then
-  print "需要交互式终端。请运行 lanjump，或双击桌面上的 Lanjump.command。"
+  print "需要交互式终端。请运行 lanjump，或双击桌面上的 启动 lanjump。"
   exit 1
 fi
 

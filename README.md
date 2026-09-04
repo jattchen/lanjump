@@ -2,13 +2,21 @@
 
 macOS 局域网 SSH 启动器：扫描网上的机器、记住免密登录，再选 tmux session。
 
-首次安装和覆盖安装用同一条（任意 Mac）：
+首次安装（任意 Mac）：
 
 ```zsh
 curl -fsSL https://raw.githubusercontent.com/jattchen/lanjump/main/install.zsh | zsh
 ```
 
-装完重新开一次 `lanjump`，或双击桌面上的 **Lanjump.command**。
+已经装过的，终端输入：
+
+```zsh
+lanjump upgrade
+```
+
+没有新版本会直接告诉你。有的话会显示从哪个版本升到哪个。
+
+装完重新开一次 `lanjump`，或双击桌面上的 **启动 lanjump**。
 
 第一次连接某台机器时输入 SSH 用户名。若需要密码，只用来安装公钥，不会保存。
 
