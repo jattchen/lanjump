@@ -86,7 +86,16 @@ tmux_prepare_keys() {
   if [[ ${TERM_PROGRAM:-} != Apple_Terminal ]]; then
     tmux_has_feature RGB || tmuxx set-option -as terminal-features ',*:RGB' 2>/dev/null || true
   fi
-  local s w
+  local s w len keys
+  len=$(tmuxx show-options -gv status-left-length 2>/dev/null || true)
+  [[ $len == [0-9]## ]] || len=0
+  if (( len < 40 )); then
+    tmuxx set-option -g status-left-length 40 2>/dev/null || true
+  fi
+  keys=$(tmuxx list-keys -T root 2>/dev/null || true)
+  if [[ $keys != *S-Enter* ]]; then
+    tmuxx bind-key -n S-Enter send-keys Escape Enter 2>/dev/null || true
+  fi
   for s in "${(@f)$(tmuxx list-sessions -F '#{session_name}' 2>/dev/null)}"; do
     [[ -n $s ]] || continue
     tmuxx set-option -t "$s" extended-keys always 2>/dev/null || true
