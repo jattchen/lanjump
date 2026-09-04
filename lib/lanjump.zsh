@@ -9,8 +9,6 @@ LAST_FILE="$APP/last_target"
 KEY="$HOME/.ssh/id_ed25519_lanjump"
 PICKER="$APP/lanjump-pick.zsh"
 SSH_CONFIG="$HOME/.ssh/config"
-OLD_APP="$HOME/Library/Application Support/lan-ssh"
-OLD_KEY="$HOME/.ssh/id_ed25519_lan"
 
 typeset -a h_alias h_user h_hostname h_ip h_mac h_last
 typeset -a items_kind items_alias items_user items_hostname items_ip items_mac items_status items_saved
@@ -178,52 +176,9 @@ picker_path() {
   fi
 }
 
-migrate_legacy() {
-  mkdir -p "$APP"
-  if [[ -d $OLD_APP ]]; then
-    if [[ ! -s $HOSTS_FILE && -f $OLD_APP/hosts ]]; then
-      cp -p "$OLD_APP/hosts" "$HOSTS_FILE"
-    fi
-    if [[ ! -f $LAST_FILE && -f $OLD_APP/last_target ]]; then
-      cp -p "$OLD_APP/last_target" "$LAST_FILE"
-    fi
-  fi
-  if [[ ! -f $KEY && -f $OLD_KEY ]]; then
-    mv "$OLD_KEY" "$KEY"
-    [[ -f $OLD_KEY.pub ]] && mv "$OLD_KEY.pub" "$KEY.pub"
-    chmod 600 "$KEY"
-    [[ -f $KEY.pub ]] && chmod 644 "$KEY.pub"
-    ssh-keygen -c -C "lanjump@$(hostname -s)" -f "$KEY" >/dev/null 2>&1 || true
-  fi
-  [[ -f $SSH_CONFIG ]] || return
-  grep -qE '# BEGIN LAN-SSH |# END LAN-SSH |id_ed25519_lan$' "$SSH_CONFIG" 2>/dev/null || return
-  local tmp
-  tmp=$(mktemp)
-  awk '
-    {
-      gsub(/# BEGIN LAN-SSH /, "# BEGIN LANJUMP ")
-      gsub(/# END LAN-SSH /, "# END LANJUMP ")
-    }
-    /^# BEGIN LANJUMP / {
-      sub(/ LANJUMP lan-/, " LANJUMP lanjump-")
-      inblock=1
-    }
-    /^# END LANJUMP / {
-      sub(/ LANJUMP lan-/, " LANJUMP lanjump-")
-      inblock=0
-    }
-    inblock && /^Host lan-/ { sub(/^Host lan-/, "Host lanjump-") }
-    /IdentityFile / && /id_ed25519_lan$/ { sub(/id_ed25519_lan$/, "id_ed25519_lanjump") }
-    { print }
-  ' "$SSH_CONFIG" >"$tmp"
-  mv "$tmp" "$SSH_CONFIG"
-  chmod 600 "$SSH_CONFIG"
-}
-
 ensure_setup() {
   mkdir -p "$APP" "$HOME/.ssh"
   chmod 700 "$HOME/.ssh"
-  migrate_legacy
   [[ -f $HOSTS_FILE ]] || : >"$HOSTS_FILE"
   if [[ ! -f $KEY ]]; then
     ssh-keygen -t ed25519 -f "$KEY" -N "" -C "lanjump@$(hostname -s)"
@@ -460,13 +415,7 @@ strip_ssh_block() {
 
 remove_ssh_config() {
   local id=$1
-  local old_id=${id/#lanjump-/lan-}
   strip_ssh_block "# BEGIN LANJUMP ${id}" "# END LANJUMP ${id}"
-  strip_ssh_block "# BEGIN LAN-SSH ${id}" "# END LAN-SSH ${id}"
-  if [[ $old_id != "$id" ]]; then
-    strip_ssh_block "# BEGIN LAN-SSH ${old_id}" "# END LAN-SSH ${old_id}"
-    strip_ssh_block "# BEGIN LANJUMP ${old_id}" "# END LANJUMP ${old_id}"
-  fi
 }
 
 upsert_ssh_config() {
