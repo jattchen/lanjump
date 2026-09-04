@@ -13,9 +13,11 @@ else
   TMUX_BIN=""
 fi
 
-if [[ ! -t 0 || ! -t 1 ]]; then
-  print "需要交互式终端。"
-  exit 1
+if [[ ${1:-} != --digit-selftest ]]; then
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    print "需要交互式终端。"
+    exit 1
+  fi
 fi
 
 if [[ -z ${NO_COLOR:-} ]]; then
@@ -34,6 +36,8 @@ typeset -a items_kind items_id items_name items_att items_time items_path items_
 cursor=1
 loading=0
 stty_orig=
+PENDING_KEY=""
+digit_wait=0.5
 w_name=4 w_status=6 w_time=11 w_summary=4 w_path=4
 show_summary=1
 show_path=1
@@ -649,9 +653,69 @@ draw() {
   fi
 }
 
+# True if another digit could still name a list index.
+index_prefix_ambiguous() {
+  local acc=$1
+  local -i max=$2 val
+  case $acc in
+    ''|0*|*[!0-9]*) return 1 ;;
+  esac
+  val=$((10#$acc))
+  (( val * 10 <= max ))
+}
+
+# Read one byte from stdin into REPLY. timeout is seconds.
+# Returns 1 on timeout or EOF. Tty uses read -k; pipes use zselect.
+read_byte_timeout() {
+  local timeout=$1
+  local buf=""
+  local -i hundredths
+  if [[ -t 0 ]]; then
+    IFS= read -rsk1 -t $timeout buf || return 1
+    REPLY=$buf
+    return 0
+  fi
+  zmodload zsh/system 2>/dev/null || return 1
+  zmodload zsh/zselect 2>/dev/null || return 1
+  hundredths=$(( timeout * 100 ))
+  (( hundredths < 1 )) && hundredths=1
+  if ! zselect -t $hundredths -r 0; then
+    return 1
+  fi
+  sysread -s 1 buf || return 1
+  REPLY=$buf
+  return 0
+}
+
+# Read extra digits while the value is still a prefix of a larger index.
+# Timeout / Enter keep the current value. Esc or any other key cancel
+# (other key is replayed via PENDING_KEY).
+collect_index_digits() {
+  local acc=$1
+  local -i max=$2
+  local k
+  PENDING_KEY=""
+  while index_prefix_ambiguous "$acc" $max; do
+    read_byte_timeout $digit_wait || break
+    k=$REPLY
+    case $k in
+      [0-9]) acc="${acc}${k}" ;;
+      $'\n'|$'\r'|' ') break ;;
+      $'\e') REPLY=""; return 0 ;;
+      *) PENDING_KEY=$k; REPLY=""; return 0 ;;
+    esac
+  done
+  REPLY=$acc
+}
+
 read_key() {
   local k k2 k3
-  IFS= read -rsk1 k || return 1
+  if [[ -n $PENDING_KEY ]]; then
+    k=$PENDING_KEY
+    PENDING_KEY=""
+  else
+    IFS= read -rsk1 k || return 1
+  fi
   if [[ $k == $'\e' ]]; then
     IFS= read -rsk1 -t 0.2 k2 || { REPLY=esc; return 0 }
     if [[ $k2 == '[' || $k2 == 'O' ]]; then
@@ -823,6 +887,12 @@ prompt_rename() {
   draw
 }
 
+if [[ ${1:-} == --digit-selftest ]]; then
+  . "${0:A:h}/lanjump-digit-selftest.zsh"
+  digit_selftest
+  exit $?
+fi
+
 tmux_prepare_color
 tmux_prepare_keys
 load_items
@@ -878,9 +948,10 @@ while true; do
       draw
       ;;
     num*)
-      n=${REPLY#num}
-      if (( n >= 1 && n <= ${#items_kind} )); then
-        cursor=$n
+      collect_index_digits "${REPLY#num}" ${#items_kind}
+      n=$REPLY
+      if [[ $n == [1-9]* && $n != *[!0-9]* ]] && (( 10#$n <= ${#items_kind} )); then
+        cursor=$((10#$n))
         activate $cursor
       fi
       ;;
