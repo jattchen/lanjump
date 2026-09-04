@@ -14,7 +14,7 @@ curl -fsSL https://raw.githubusercontent.com/jattchen/lanjump/main/install.zsh |
 
 本机装了 Grok 时，连远程会走 `grok wrap`，方便把对面 Grok 的选中复制写进这台电脑的剪贴板（自带「终端」需要这一层）。不是两台电脑剪贴板互相同步。不想用时：`LANJUMP_NO_GROK_WRAP=1 lanjump`。
 
-在你敲键盘的那台 Mac 上安装后，Shift+Enter 会换成 Grok 能认的换行（系统「终端」本身分不出 Shift+Enter）。不记录按键，只看回车时 Shift 有没有按住。
+在你敲键盘的那台 Mac 上安装后，Shift+Enter 会换成 Grok 能认的换行（系统「终端」本身分不出 Shift+Enter）。打开 tmux 列表时也会加上这条换行，并把底部 session 名字显示加长，不需要你自己改 Ghostty 或 tmux 配置。不记录按键，只看回车时 Shift 有没有按住。
 
 ## 快捷键
 
