@@ -67,9 +67,14 @@ chmod 755 "$APP/lanjump-keys.py"
 
 keys_err=$(mktemp)
 if cc -O2 -framework CoreGraphics -o "$APP/lanjump-keys" "$ROOT/src/lanjump-keys.c" 2>"$keys_err"; then
+  chmod 755 "$APP/lanjump-keys"
+  # macOS 26 can SIGKILL an adhoc helper copied onto this path (invalid signature).
+  rm -f "$BIN_DIR/lanjump-keys"
   cp -f "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
-  chmod 755 "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
+  chmod 755 "$BIN_DIR/lanjump-keys"
   xattr -d com.apple.quarantine "$BIN_DIR/lanjump-keys" 2>/dev/null || true
+  codesign --force --sign - "$APP/lanjump-keys" 2>/dev/null || true
+  codesign --force --sign - "$BIN_DIR/lanjump-keys" 2>/dev/null || true
 else
   cp -f "$APP/lanjump-keys.py" "$APP/lanjump-keys"
   cp -f "$APP/lanjump-keys.py" "$BIN_DIR/lanjump-keys"
