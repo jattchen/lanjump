@@ -2,6 +2,10 @@
 """Fallback Shift+Enter rewriter when the C helper is not compiled.
 
 Reads STDIN/STDOUT only (never /dev/tty) so it can run inside `grok wrap`.
+
+Apple Terminal: CR+Shift → CSI-u Shift+Enter.
+Ghostty: CSI-u Shift+Enter → Alt+Enter (ESC CR). Grok often prints
+"[13;2u" if that CSI-u sequence is passed through. ESC+CR is left as-is.
 """
 from __future__ import print_function
 
@@ -18,11 +22,15 @@ import termios
 import tty
 
 CSI_S_ENTER = b"\x1b[13;2u"
+ALT_ENTER = b"\x1b\r"
 VK_SHIFT = 56
 VK_RIGHT_SHIFT = 60
 COMBINED = 0
+ST_NORM, ST_ESC, ST_CSI = 0, 1, 2
 
 _cg = None
+_rw_st = ST_NORM
+_csi = bytearray()
 
 
 def _shift_down():
@@ -40,19 +48,72 @@ def _shift_down():
     )
 
 
+def _csi_shift_enter(buf):
+    if len(buf) < 6 or buf[0] != 0x5B or buf[-1] != 0x75:
+        return False
+    if not (buf[1] == 0x31 and buf[2] == 0x33 and buf[3] == 0x3B and buf[4] == 0x32):
+        return False
+    if len(buf) == 6:
+        return True
+    return len(buf) == 8 and buf[5] == 0x3B and buf[6] in (0x31, 0x32)
+
+
+def _csi_final(b):
+    return 0x40 <= b <= 0x7E
+
+
 def _rewrite(data):
+    global _rw_st, _csi
     if not data:
         return data
     out = bytearray()
     shift = None
-    for b in data:
-        if b in (10, 13):
-            if shift is None:
-                shift = _shift_down()
-            if shift:
-                out.extend(CSI_S_ENTER)
+    i = 0
+    while i < len(data):
+        b = data[i]
+        if _rw_st == ST_NORM:
+            if b == 0x1B:
+                _rw_st = ST_ESC
+                i += 1
                 continue
-        out.append(b)
+            if b in (10, 13):
+                if shift is None:
+                    shift = _shift_down()
+                if shift:
+                    out.extend(CSI_S_ENTER)
+                    i += 1
+                    continue
+            out.append(b)
+            i += 1
+            continue
+        if _rw_st == ST_ESC:
+            if b == 0x5B:
+                _rw_st = ST_CSI
+                _csi = bytearray(b"[")
+                i += 1
+                continue
+            out.append(0x1B)
+            _rw_st = ST_NORM
+            if b == 0x1B:
+                _rw_st = ST_ESC
+                i += 1
+                continue
+            if b in (10, 13):
+                out.append(b)
+                i += 1
+                continue
+            continue
+        if len(_csi) < 24:
+            _csi.append(b)
+        if len(_csi) == 24 or _csi_final(b):
+            if _csi_shift_enter(_csi):
+                out.extend(ALT_ENTER)
+            else:
+                out.append(0x1B)
+                out.extend(_csi)
+            _rw_st = ST_NORM
+            _csi = bytearray()
+        i += 1
     return bytes(out)
 
 
