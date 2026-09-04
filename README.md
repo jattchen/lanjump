@@ -5,7 +5,7 @@ macOS 局域网 SSH 启动器：扫描网上的机器、记住免密登录，再
 首次安装和覆盖安装用同一条（任意 Mac）：
 
 ```zsh
-rm -rf /tmp/lanjump && git clone --depth 1 https://github.com/jattchen/lanjump.git /tmp/lanjump && zsh /tmp/lanjump/install.zsh
+curl -fsSL https://raw.githubusercontent.com/jattchen/lanjump/main/install.zsh | zsh
 ```
 
 装完重新开一次 `lanjump`，或双击桌面上的 **Lanjump.command**。
