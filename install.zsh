@@ -30,33 +30,13 @@ if [[ ! -f $ROOT/lib/lanjump.zsh || ! -f $ROOT/bin/lanjump || ! -f $ROOT/src/lan
 fi
 
 APP="$HOME/Library/Application Support/lanjump"
-OLD_APP="$HOME/Library/Application Support/lan-ssh"
 DESKTOP="$HOME/Desktop/Lanjump.command"
 BIN_DIR="$HOME/.local/bin"
-KEY="$HOME/.ssh/id_ed25519_lanjump"
-OLD_KEY="$HOME/.ssh/id_ed25519_lan"
 ZSHRC="$HOME/.zshrc"
 PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
 mkdir -p "$APP" "$BIN_DIR" "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
-
-if [[ -d $OLD_APP ]]; then
-  if [[ ! -s $APP/hosts && -f $OLD_APP/hosts ]]; then
-    cp -p "$OLD_APP/hosts" "$APP/hosts"
-  fi
-  if [[ ! -f $APP/last_target && -f $OLD_APP/last_target ]]; then
-    cp -p "$OLD_APP/last_target" "$APP/last_target"
-  fi
-fi
-
-if [[ ! -f $KEY && -f $OLD_KEY ]]; then
-  mv "$OLD_KEY" "$KEY"
-  [[ -f $OLD_KEY.pub ]] && mv "$OLD_KEY.pub" "$KEY.pub"
-  chmod 600 "$KEY"
-  [[ -f $KEY.pub ]] && chmod 644 "$KEY.pub"
-  ssh-keygen -c -C "lanjump@$(hostname -s)" -f "$KEY" >/dev/null 2>&1 || true
-fi
 
 cp -f "$ROOT/lib/lanjump.zsh" "$APP/lanjump.zsh"
 cp -f "$ROOT/lib/lanjump-pick.zsh" "$APP/lanjump-pick.zsh"
@@ -89,18 +69,6 @@ xattr -d com.apple.quarantine "$DESKTOP" 2>/dev/null || true
 cp -f "$ROOT/bin/lanjump" "$BIN_DIR/lanjump"
 chmod 755 "$BIN_DIR/lanjump"
 xattr -d com.apple.quarantine "$BIN_DIR/lanjump" 2>/dev/null || true
-
-for old in \
-  "$HOME/Desktop/LAN-SSH.command" \
-  "$HOME/Desktop/SSH 局域网.command" \
-  "$BIN_DIR/lan-tmux-pick"
-do
-  [[ -e $old ]] && rm -f "$old"
-done
-
-if [[ -d $OLD_APP ]]; then
-  rm -rf "$OLD_APP"
-fi
 
 path_note=0
 if [[ :$PATH: != *:$BIN_DIR:* ]]; then
