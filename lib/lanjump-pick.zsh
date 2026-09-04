@@ -37,6 +37,7 @@ stty_orig=
 w_name=4 w_status=6 w_time=11 w_summary=4 w_path=4
 show_summary=1
 show_path=1
+draw_remain=0
 
 tmuxx() {
   [[ -n $TMUX_BIN ]] || return 1
@@ -415,9 +416,9 @@ fmt_header() {
 
 load_items() {
   loading=1
-  local keep="" line when title cmd wname
+  local keep="${1-}" line when title cmd wname
   local -a raw sorted f
-  if (( cursor >= 1 && cursor <= ${#items_id} )); then
+  if [[ -z $keep ]] && (( cursor >= 1 && cursor <= ${#items_id} )); then
     keep=${items_id[$cursor]}
   fi
 
@@ -542,6 +543,34 @@ session_preview_lines() {
   done
 }
 
+draw_emit() {
+  (( draw_remain > 0 )) || return 1
+  print -r -- "$1"
+  (( draw_remain-- ))
+  return 0
+}
+
+draw_help() {
+  local -i max=$1
+  local -a keys
+  local buf piece
+  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "h 换机器" "r 刷新" "q 退出")
+  buf=""
+  for piece in "${keys[@]}"; do
+    if [[ -z $buf ]]; then
+      buf="  $piece"
+      continue
+    fi
+    if (( $(dw "$buf  $piece") > max )); then
+      draw_emit "${c_dim}${buf}${c_reset}" || return 1
+      buf="  $piece"
+    else
+      buf+="  $piece"
+    fi
+  done
+  [[ -n $buf ]] && draw_emit "${c_dim}${buf}${c_reset}"
+}
+
 draw() {
   local -i cols rows i n session_end=0
   local mark line header sep
@@ -549,33 +578,34 @@ draw() {
   rows=$(term_lines)
   n=${#items_kind}
   compute_layout $(( cols - 10 ))
+  draw_remain=$(( rows > 1 ? rows - 1 : 1 ))
 
   for i in {1..$n}; do
     [[ ${items_kind[$i]} == session ]] && session_end=$i
   done
 
   print -n $'\e[H\e[J'
-  print "${c_bold}  $(hostname -s)  选择 tmux session${c_reset}"
-  print "${c_dim}  ↑↓/jk 选择   Enter 进入   n 新建   d 删除   h 换机器   r 刷新   q 退出${c_reset}"
-  print
+  draw_emit "${c_bold}  $(fit_right "$(hostname -s)  选择 tmux session" $(( cols - 2 )))${c_reset}" || return
+  draw_help $cols || return
+  draw_emit "" || return
 
   if [[ $HAS_TMUX -ne 1 ]]; then
-    print "  ${c_dim}（这台机器上没有 tmux，可以直接进普通 shell；exit 或 Ctrl+D 返回）${c_reset}"
-    print
+    draw_emit "  ${c_dim}（这台机器上没有 tmux，可以直接进普通 shell；exit 或 Ctrl+D 返回）${c_reset}" || return
+    draw_emit "" || return
   elif (( session_end == 0 )); then
-    print "  ${c_dim}（当前没有 session）${c_reset}"
-    print
+    draw_emit "  ${c_dim}（当前没有 session）${c_reset}" || return
+    draw_emit "" || return
   else
     header=$(fmt_header)
-    print "  ${c_dim}    #  ${header}${c_reset}"
+    draw_emit "  ${c_dim}    #  ${header}${c_reset}" || return
     sep=$(printf '%*s' $(( cols - 4 )) '')
     sep=${sep// /─}
-    print "  ${c_dim}${sep}${c_reset}"
+    draw_emit "  ${c_dim}${sep}${c_reset}" || return
   fi
 
   for i in {1..$n}; do
     if (( i == session_end + 1 && session_end > 0 )); then
-      print
+      draw_emit "" || break
     fi
     if [[ ${items_kind[$i]} == session ]]; then
       line=$(fmt_session_row $i)
@@ -589,24 +619,24 @@ draw() {
       mark=" "
       line=" ${line}"
     fi
-    printf '  %s %2d  %s\n' "$mark" "$i" "$line"
+    draw_emit "$(printf '  %s %2d  %s' "$mark" "$i" "$line")" || break
   done
 
-  if [[ ${items_kind[$cursor]} == session ]]; then
-    local -i printed preview_n
-    printed=3
-    (( printed += 2 ))
-    (( printed += n ))
-    (( session_end > 0 )) && (( printed += 1 ))
-    (( printed += 3 ))
-    preview_n=$(( rows - printed ))
-    (( preview_n < 1 )) && preview_n=1
-    print
-    print "  ${c_cyan}预览${c_reset}  ${c_bold}${items_name[$cursor]}${c_reset}  ${c_dim}${items_summary[$cursor]}${c_reset}"
-    print "  ${c_dim}${items_path[$cursor]}  ·  ${items_cmd[$cursor]}${c_reset}"
-    session_preview_lines "${items_id[$cursor]}" $preview_n $(( cols - 4 )) "${items_cmd[$cursor]}" | while IFS= read -r line; do
-      print "  ${c_dim}${line}${c_reset}"
-    done
+  if [[ ${items_kind[$cursor]} == session ]] && (( draw_remain >= 3 )); then
+    local pname psum pmeta pl
+    local -a plines
+    draw_emit "" || return
+    pname=$(fit_right "${items_name[$cursor]}" 20)
+    psum=$(fit_right "${items_summary[$cursor]}" $(( cols - 10 - $(dw "$pname") )))
+    draw_emit "  ${c_cyan}预览${c_reset}  ${c_bold}${pname}${c_reset}  ${c_dim}${psum}${c_reset}" || return
+    pmeta=$(fit_right "${items_path[$cursor]}  ·  ${items_cmd[$cursor]}" $(( cols - 4 )))
+    draw_emit "  ${c_dim}${pmeta}${c_reset}" || return
+    if (( draw_remain > 0 )); then
+      plines=("${(@f)$(session_preview_lines "${items_id[$cursor]}" $draw_remain $(( cols - 4 )) "${items_cmd[$cursor]}")}")
+      for pl in "${plines[@]}"; do
+        draw_emit "  ${c_dim}${pl}${c_reset}" || break
+      done
+    fi
   fi
 }
 
@@ -638,6 +668,7 @@ read_key() {
     s|S) REPLY=s ;;
     r|R) REPLY=r ;;
     d|D) REPLY=d ;;
+    e|E) REPLY=e ;;
     h|H) REPLY=h ;;
     g) REPLY=top ;;
     G) REPLY=bottom ;;
@@ -734,6 +765,55 @@ prompt_delete() {
   draw
 }
 
+prompt_rename() {
+  [[ $HAS_TMUX -eq 1 ]] || return
+  if [[ ${items_kind[$cursor]} != session ]]; then
+    return
+  fi
+  local old=${items_id[$cursor]} name err
+  restore_tty
+  print
+  print -n "将 session「${old}」重命名为（回车取消）: "
+  read -r name
+  name=${name##[[:space:]]#}
+  name=${name%%[[:space:]]#}
+  if [[ -z $name || $name == "$old" ]]; then
+    setup_tty
+    draw
+    return
+  fi
+  if [[ $name == *:* || $name == *.* ]]; then
+    print "名称不能包含冒号或点。"
+    print -n "按回车继续…"
+    read -r
+    setup_tty
+    load_items "$old"
+    draw
+    return
+  fi
+  if tmuxx has-session -t "=$name" 2>/dev/null; then
+    print "session「${name}」已存在。"
+    print -n "按回车继续…"
+    read -r
+    setup_tty
+    load_items "$old"
+    draw
+    return
+  fi
+  err=$(tmuxx rename-session -t "=$old" "$name" 2>&1) || {
+    print "重命名失败${err:+：${err}}。"
+    print -n "按回车继续…"
+    read -r
+    setup_tty
+    load_items "$old"
+    draw
+    return
+  }
+  setup_tty
+  load_items "$name"
+  draw
+}
+
 tmux_prepare_color
 tmux_prepare_keys
 load_items
@@ -772,6 +852,9 @@ while true; do
       ;;
     d)
       prompt_delete
+      ;;
+    e)
+      prompt_rename
       ;;
     h)
       activate ${items_kind[(i)hosts]}

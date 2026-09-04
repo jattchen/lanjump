@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/jattchen/lanjump/main/install.zsh |
 
 主机列表：`↑` `↓` / `j` `k` 选择，`Enter` 连接（或进入本机），`r` 扫描，`d` 忘掉，`q` 退出。
 
-tmux 列表：`Enter` 进入，`n` 新建，`d` 删除，`h` 换机器，`s` 普通 shell（`exit` 返回），`q` 退出。
+tmux 列表：`Enter` 进入，`n` 新建，`e` 重命名，`d` 删除，`h` 换机器，`s` 普通 shell（`exit` 返回），`q` 退出。
 
 上次连的是本机还是远程，下次打开会记住并跳过扫描。
 
