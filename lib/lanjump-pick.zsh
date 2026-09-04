@@ -13,7 +13,7 @@ else
   TMUX_BIN=""
 fi
 
-if [[ ${1:-} != --digit-selftest ]]; then
+if [[ ${1:-} != --digit-selftest && ${1:-} != --pick-selftest ]]; then
   if [[ ! -t 0 || ! -t 1 ]]; then
     print "需要交互式终端。"
     exit 1
@@ -42,6 +42,9 @@ w_name=4 w_status=6 w_time=11 w_summary=4 w_path=4
 show_summary=1
 show_path=1
 draw_remain=0
+host_short=""
+prepared_keys=0
+prepared_color=0
 
 tmuxx() {
   [[ -n $TMUX_BIN ]] || return 1
@@ -81,6 +84,7 @@ tmux_has_feature() {
 
 tmux_prepare_keys() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
+  (( prepared_keys )) && return 0
   tmuxx set-option -g extended-keys always 2>/dev/null || \
     tmuxx set-option -g extended-keys on 2>/dev/null || true
   tmuxx set-option -s extended-keys-format csi-u 2>/dev/null || true
@@ -90,24 +94,14 @@ tmux_prepare_keys() {
   if [[ ${TERM_PROGRAM:-} != Apple_Terminal ]]; then
     tmux_has_feature RGB || tmuxx set-option -as terminal-features ',*:RGB' 2>/dev/null || true
   fi
-  local s w len keys
+  local len
   len=$(tmuxx show-options -gv status-left-length 2>/dev/null || true)
   [[ $len == [0-9]## ]] || len=0
   if (( len < 40 )); then
     tmuxx set-option -g status-left-length 40 2>/dev/null || true
   fi
-  keys=$(tmuxx list-keys -T root 2>/dev/null || true)
-  if [[ $keys != *S-Enter* ]]; then
-    tmuxx bind-key -n S-Enter send-keys Escape Enter 2>/dev/null || true
-  fi
-  for s in "${(@f)$(tmuxx list-sessions -F '#{session_name}' 2>/dev/null)}"; do
-    [[ -n $s ]] || continue
-    tmuxx set-option -t "$s" extended-keys always 2>/dev/null || true
-  done
-  for w in "${(@f)$(tmuxx list-windows -a -F '#{session_name}:#{window_index}' 2>/dev/null)}"; do
-    [[ -n $w ]] || continue
-    tmuxx set-option -w -t "$w" allow-passthrough on 2>/dev/null || true
-  done
+  tmuxx bind-key -n S-Enter send-keys Escape Enter 2>/dev/null || true
+  prepared_keys=1
 }
 
 tmux_tty() {
@@ -120,6 +114,7 @@ tmux_tty() {
 # 24-bit backgrounds that Terminal.app ignores, so the TUI sits on white.
 tmux_prepare_color() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
+  (( prepared_color )) && return 0
   local dt apple=0
   [[ ${TERM_PROGRAM:-} == Apple_Terminal ]] && apple=1
 
@@ -162,6 +157,7 @@ tmux_prepare_color() {
   # over SSH; it must not override a configured/default GrokNight session.
   tmuxx set-environment -gu LC_GROK_APPEARANCE 2>/dev/null || true
   tmuxx set-environment -gu GROK_APPEARANCE 2>/dev/null || true
+  prepared_color=1
 }
 
 restore_tty() {
@@ -178,9 +174,11 @@ setup_tty() {
 on_exit() {
   restore_tty
 }
-trap on_exit EXIT
-trap 'restore_tty; exit 130' INT
-trap '[[ $loading -eq 1 ]] || draw' WINCH
+if [[ ${1:-} != --digit-selftest && ${1:-} != --pick-selftest ]]; then
+  trap on_exit EXIT
+  trap 'restore_tty; exit 130' INT
+  trap '[[ $loading -eq 1 ]] || draw' WINCH
+fi
 
 term_cols() {
   local c=${COLUMNS:-0}
@@ -200,86 +198,113 @@ term_lines() {
   print -r -- $r
 }
 
-dw() {
-  local s=$1 c
-  local -i w=0 i
-  for (( i = 1; i <= ${#s}; i++ )); do
-    c=$s[i]
-    if [[ $c < $'\x7f' ]]; then
-      (( w++ ))
-    else
-      (( w += 2 ))
-    fi
-  done
-  print -r -- $w
+# ASCII 0x00-0x7e → width 1; anything else → width 2.
+# Do not call this per character via $(dw): that is a subshell each time
+# and made the session list hitch on Grok's long CJK titles and previews.
+display_width() {
+  local stripped=${1//[$'\x00'-$'\x7e']/}
+  REPLY=$(( ${#1} + ${#stripped} ))
 }
 
+dw() {
+  display_width "$1"
+  print -r -- $REPLY
+}
+
+# Truncate/pad helpers set REPLY so the list renderer can avoid $(...) subshells.
 fit_right() {
+  _fit_right "$1" $2
+  print -r -- "$REPLY"
+}
+
+_fit_right() {
   local s=$1
-  local -i max=$2 w=0 i cw
-  local c out=
-  if (( max <= 0 )); then
-    return
-  fi
-  if (( $(dw "$s") <= max )); then
-    print -r -- "$s"
+  local -i max=$2 w=0 i cw lim
+  local c out= stripped
+  REPLY=
+  (( max <= 0 )) && return
+  stripped=${s//[$'\x00'-$'\x7e']/}
+  if (( ${#s} + ${#stripped} <= max )); then
+    REPLY=$s
     return
   fi
   if (( max <= 1 )); then
-    print -r -- '…'
+    REPLY='…'
     return
   fi
-  for (( i = 1; i <= ${#s}; i++ )); do
+  lim=${#s}
+  (( lim > max )) && lim=max
+  for (( i = 1; i <= lim; i++ )); do
     c=$s[i]
-    cw=$(dw "$c")
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
     if (( w + cw > max - 1 )); then
       break
     fi
     out+="$c"
     (( w += cw ))
   done
-  print -r -- "${out}…"
+  REPLY="${out}…"
 }
 
 fit_left() {
+  _fit_left "$1" $2
+  print -r -- "$REPLY"
+}
+
+_fit_left() {
   local s=$1
-  local -i max=$2 w=0 i cw
-  local c out=
-  if (( max <= 0 )); then
-    return
-  fi
-  if (( $(dw "$s") <= max )); then
-    print -r -- "$s"
+  local -i max=$2 w=0 i cw start
+  local c out= stripped
+  REPLY=
+  (( max <= 0 )) && return
+  stripped=${s//[$'\x00'-$'\x7e']/}
+  if (( ${#s} + ${#stripped} <= max )); then
+    REPLY=$s
     return
   fi
   if (( max <= 1 )); then
-    print -r -- '…'
+    REPLY='…'
     return
   fi
-  for (( i = ${#s}; i >= 1; i-- )); do
+  start=1
+  (( ${#s} > max )) && start=$(( ${#s} - max + 1 ))
+  for (( i = ${#s}; i >= start; i-- )); do
     c=$s[i]
-    cw=$(dw "$c")
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
     if (( w + cw > max - 1 )); then
       break
     fi
     out="$c$out"
     (( w += cw ))
   done
-  print -r -- "…${out}"
+  REPLY="…${out}"
 }
 
 padw() {
+  _padw "$1" $2
+  print -r -- "$REPLY"
+}
+
+_padw() {
   local s=$1
   local -i width=$2 d
-  d=$(dw "$s")
-  if (( width <= 0 )); then
-    return
-  fi
+  local stripped=${s//[$'\x00'-$'\x7e']/}
+  REPLY=
+  d=$(( ${#s} + ${#stripped} ))
+  (( width <= 0 )) && return
   if (( d > width )); then
-    fit_right "$s" $width
+    _fit_right "$s" $width
     return
   fi
-  printf '%s%*s' "$s" $(( width - d )) ''
+  printf -v REPLY '%s%*s' "$s" $(( width - d )) ''
 }
 
 short_path() {
@@ -309,10 +334,12 @@ useful_summary() {
 }
 
 max_dw() {
-  local best=$1 item
+  local -i best=$1
+  local item
   shift
   for item in "$@"; do
-    (( $(dw "$item") > best )) && best=$(dw "$item")
+    display_width "$item"
+    (( REPLY > best )) && best=REPLY
   done
   print -r -- $best
 }
@@ -389,8 +416,13 @@ compute_layout() {
 }
 
 fmt_session_row() {
+  _fmt_session_row $1
+  print -r -- "$REPLY"
+}
+
+_fmt_session_row() {
   local i=$1
-  local att_txt att_col name_cell status_cell time_cell extra=""
+  local att_txt att_col extra
   if [[ ${items_att[$i]} == 1 ]]; then
     att_txt="占用中"
     att_col=$c_green
@@ -398,33 +430,50 @@ fmt_session_row() {
     att_txt="空闲"
     att_col=$c_dim
   fi
-  name_cell=$(padw "${items_name[$i]}" $w_name)
-  status_cell="${att_col}$(padw "$att_txt" $w_status)${c_reset}"
-  time_cell=$(padw "${items_time[$i]}" $w_time)
-  extra="$name_cell  $status_cell  $time_cell"
+  _padw "${items_name[$i]}" $w_name
+  extra=$REPLY
+  _padw "$att_txt" $w_status
+  extra+="  ${att_col}${REPLY}${c_reset}"
+  _padw "${items_time[$i]}" $w_time
+  extra+="  $REPLY"
   if (( show_summary )); then
-    extra+="  $(padw "${items_summary[$i]}" $w_summary)"
+    _padw "${items_summary[$i]}" $w_summary
+    extra+="  $REPLY"
   fi
   if (( show_path )); then
-    if (( $(dw "${items_path[$i]}") > w_path )); then
-      extra+="  $(fit_left "${items_path[$i]}" $w_path)"
+    display_width "${items_path[$i]}"
+    if (( REPLY > w_path )); then
+      _fit_left "${items_path[$i]}" $w_path
     else
-      extra+="  $(padw "${items_path[$i]}" $w_path)"
+      _padw "${items_path[$i]}" $w_path
     fi
+    extra+="  $REPLY"
   fi
-  print -r -- "$extra"
+  REPLY=$extra
 }
 
 fmt_header() {
+  _fmt_header
+  print -r -- "$REPLY"
+}
+
+_fmt_header() {
   local extra
-  extra="$(padw 名称 $w_name)  $(padw 状态 $w_status)  $(padw 最近活动 $w_time)"
+  _padw 名称 $w_name
+  extra=$REPLY
+  _padw 状态 $w_status
+  extra+="  $REPLY"
+  _padw 最近活动 $w_time
+  extra+="  $REPLY"
   if (( show_summary )); then
-    extra+="  $(padw 摘要 $w_summary)"
+    _padw 摘要 $w_summary
+    extra+="  $REPLY"
   fi
   if (( show_path )); then
-    extra+="  $(padw 路径 $w_path)"
+    _padw 路径 $w_path
+    extra+="  $REPLY"
   fi
-  print -r -- "$extra"
+  REPLY=$extra
 }
 
 load_items() {
@@ -528,9 +577,7 @@ session_preview_lines() {
   local -a kept raw_lines
   kept=()
   (( max_lines < 1 )) && return
-  hist=$(( max_lines + 120 ))
-  (( hist < 160 )) && hist=160
-  (( hist > 400 )) && hist=400
+  hist=$(( max_lines + 40 ))
   cap=$(tmuxx capture-pane -t "=$name:." -p -J -S -$hist 2>/dev/null) || cap=""
   if [[ -z ${cap//[$' \t\n']/} ]]; then
     cap=$(tmuxx capture-pane -t "=$name:." -a -p -J -S -$hist 2>/dev/null) || cap=""
@@ -552,7 +599,8 @@ session_preview_lines() {
     fi
   fi
   for line in "${kept[@]}"; do
-    print -r -- "$(fit_right "$line" $cols)"
+    _fit_right "$line" $cols
+    print -r -- "$REPLY"
   done
 }
 
@@ -574,7 +622,8 @@ draw_help() {
       buf="  $piece"
       continue
     fi
-    if (( $(dw "$buf  $piece") > max )); then
+    display_width "$buf  $piece"
+    if (( REPLY > max )); then
       draw_emit "${c_dim}${buf}${c_reset}" || return 1
       buf="  $piece"
     else
@@ -598,7 +647,9 @@ draw() {
   done
 
   print -n $'\e[H\e[J'
-  draw_emit "${c_bold}  $(fit_right "$(hostname -s)  选择 tmux session" $(( cols - 2 )))${c_reset}" || return
+  [[ -n $host_short ]] || host_short=$(hostname -s)
+  _fit_right "$host_short  选择 tmux session" $(( cols - 2 ))
+  draw_emit "${c_bold}  ${REPLY}${c_reset}" || return
   draw_help $cols || return
   draw_emit "" || return
 
@@ -609,9 +660,10 @@ draw() {
     draw_emit "  ${c_dim}（当前没有 session）${c_reset}" || return
     draw_emit "" || return
   else
-    header=$(fmt_header)
+    _fmt_header
+    header=$REPLY
     draw_emit "  ${c_dim}    #  ${header}${c_reset}" || return
-    sep=$(printf '%*s' $(( cols - 4 )) '')
+    printf -v sep '%*s' $(( cols - 4 )) ''
     sep=${sep// /─}
     draw_emit "  ${c_dim}${sep}${c_reset}" || return
   fi
@@ -621,7 +673,8 @@ draw() {
       draw_emit "" || break
     fi
     if [[ ${items_kind[$i]} == session ]]; then
-      line=$(fmt_session_row $i)
+      _fmt_session_row $i
+      line=$REPLY
     else
       line=${items_name[$i]}
     fi
@@ -632,17 +685,24 @@ draw() {
       mark=" "
       line=" ${line}"
     fi
-    draw_emit "$(printf '  %s %2d  %s' "$mark" "$i" "$line")" || break
+    printf -v line '  %s %2d  %s' "$mark" "$i" "$line"
+    draw_emit "$line" || break
   done
 
   if [[ ${items_kind[$cursor]} == session ]] && (( draw_remain >= 3 )); then
     local pname psum pmeta pl
+    local -i pname_w
     local -a plines
     draw_emit "" || return
-    pname=$(fit_right "${items_name[$cursor]}" 20)
-    psum=$(fit_right "${items_summary[$cursor]}" $(( cols - 10 - $(dw "$pname") )))
+    _fit_right "${items_name[$cursor]}" 20
+    pname=$REPLY
+    display_width "$pname"
+    pname_w=REPLY
+    _fit_right "${items_summary[$cursor]}" $(( cols - 10 - pname_w ))
+    psum=$REPLY
     draw_emit "  ${c_cyan}预览${c_reset}  ${c_bold}${pname}${c_reset}  ${c_dim}${psum}${c_reset}" || return
-    pmeta=$(fit_right "${items_path[$cursor]}  ·  ${items_cmd[$cursor]}" $(( cols - 4 )))
+    _fit_right "${items_path[$cursor]}  ·  ${items_cmd[$cursor]}" $(( cols - 4 ))
+    pmeta=$REPLY
     draw_emit "  ${c_dim}${pmeta}${c_reset}" || return
     if (( draw_remain > 0 )); then
       plines=("${(@f)$(session_preview_lines "${items_id[$cursor]}" $draw_remain $(( cols - 4 )) "${items_cmd[$cursor]}")}")
@@ -890,6 +950,12 @@ prompt_rename() {
 if [[ ${1:-} == --digit-selftest ]]; then
   . "${0:A:h}/lanjump-digit-selftest.zsh"
   digit_selftest
+  exit $?
+fi
+
+if [[ ${1:-} == --pick-selftest ]]; then
+  . "${0:A:h}/lanjump-pick-selftest.zsh"
+  pick_selftest
   exit $?
 fi
 
