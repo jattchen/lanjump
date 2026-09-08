@@ -4,8 +4,9 @@
 Reads STDIN/STDOUT only (never /dev/tty) so it can run inside `grok wrap`.
 
 Apple Terminal: CR+Shift → CSI-u Shift+Enter.
-Ghostty: CSI-u Shift+Enter → Alt+Enter (ESC CR). Grok often prints
-"[13;2u" if that CSI-u sequence is passed through. ESC+CR is left as-is.
+Ghostty: CSI-u Shift+Enter → Alt+Enter (ESC CR), including kitty
+event-type forms ([13;2:1u press / :3u release dropped). Grok often
+prints "[13;2u" if CSI-u is passed through. ESC+CR is left as-is.
 """
 from __future__ import print_function
 
@@ -48,14 +49,74 @@ def _shift_down():
     )
 
 
-def _csi_shift_enter(buf):
-    if len(buf) < 6 or buf[0] != 0x5B or buf[-1] != 0x75:
-        return False
-    if not (buf[1] == 0x31 and buf[2] == 0x33 and buf[3] == 0x3B and buf[4] == 0x32):
-        return False
-    if len(buf) == 6:
-        return True
-    return len(buf) == 8 and buf[5] == 0x3B and buf[6] in (0x31, 0x32)
+def _parse_uint(buf, i):
+    n = len(buf)
+    if i >= n or not (0x30 <= buf[i] <= 0x39):
+        return None, i
+    v = 0
+    while i < n and 0x30 <= buf[i] <= 0x39:
+        v = v * 10 + (buf[i] - 0x30)
+        i += 1
+    return v, i
+
+
+def _skip_colon_nums(buf, i):
+    n = len(buf)
+    while i < n and buf[i] == 0x3A:
+        i += 1
+        v, i = _parse_uint(buf, i)
+        if v is None:
+            return None
+    return i
+
+
+def _csi_action(buf):
+    """1 = Alt+Enter, -1 = drop release, 0 = pass through."""
+    n = len(buf)
+    if n < 2:
+        return 0
+    if buf[-1] == 0x7E:
+        if bytes(buf) == b"[27;2;13~":
+            return 1
+        return 0
+    if buf[0] != 0x5B or buf[-1] != 0x75:
+        return 0
+    i = 1
+    key, i = _parse_uint(buf, i)
+    if key != 13:
+        return 0
+    i = _skip_colon_nums(buf, i)
+    if i is None:
+        return 0
+    mods, kind = 1, 1
+    if i < n - 1 and buf[i] == 0x3B:
+        i += 1
+        mods, i = _parse_uint(buf, i)
+        if mods is None:
+            return 0
+        if i < n - 1 and buf[i] == 0x3A:
+            i += 1
+            kind, i = _parse_uint(buf, i)
+            if kind is None:
+                return 0
+        elif i < n - 1 and buf[i] == 0x3B:
+            extra, j = _parse_uint(buf, i + 1)
+            if extra is not None and j == n - 1 and extra in (1, 2, 3):
+                kind = extra
+                i = j
+        while i < n - 1 and buf[i] in (0x3B, 0x3A):
+            i += 1
+            if i < n - 1 and 0x30 <= buf[i] <= 0x39:
+                extra, i = _parse_uint(buf, i)
+                if extra is None:
+                    return 0
+    if i != n - 1 or mods != 2:
+        return 0
+    if kind == 3:
+        return -1
+    if kind in (1, 2):
+        return 1
+    return 0
 
 
 def _csi_final(b):
@@ -106,9 +167,10 @@ def _rewrite(data):
         if len(_csi) < 24:
             _csi.append(b)
         if len(_csi) == 24 or _csi_final(b):
-            if _csi_shift_enter(_csi):
+            act = _csi_action(_csi)
+            if act > 0:
                 out.extend(ALT_ENTER)
-            else:
+            elif act == 0:
                 out.append(0x1B)
                 out.extend(_csi)
             _rw_st = ST_NORM
