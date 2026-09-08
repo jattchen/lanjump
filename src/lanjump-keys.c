@@ -7,6 +7,11 @@
  * Ghostty already emits that CSI-u sequence. Grok often does not parse it
  * (ESC is consumed, "[13;2u" is inserted as text). Translate CSI-u
  * Shift+Enter to Alt+Enter (ESC CR), which Grok always treats as newline.
+ *
+ * After Grok pushes the kitty keyboard protocol, Ghostty 1.3 sends event
+ * types with a colon ([13;2:1u press / :2 repeat / :3 release). Those
+ * must be rewritten too; release is dropped so it is not inserted as text.
+ * xterm modifyOtherKeys Shift+Enter ([27;2;13~) is treated the same.
  * CR/LF that already follows ESC is left alone (Ghostty Alt+Enter keybind).
  *
  * Reads STDIN / writes STDOUT only — never /dev/tty — so it can sit inside
@@ -122,17 +127,96 @@ csi_final(unsigned char b)
 	return b >= 0x40 && b <= 0x7e;
 }
 
-/* [13;2u / [13;2;1u / [13;2;2u — not release (;3u). */
 static int
-csi_shift_enter(const unsigned char *s, size_t n)
+parse_uint(const unsigned char *s, size_t n, size_t *i, unsigned *out)
 {
-	if (n < 6 || s[0] != '[' || s[n - 1] != 'u')
+	unsigned v = 0;
+	int any = 0;
+
+	while (*i < n && s[*i] >= '0' && s[*i] <= '9') {
+		v = v * 10u + (unsigned)(s[*i] - '0');
+		(*i)++;
+		any = 1;
+	}
+	if (!any)
 		return 0;
-	if (!(s[1] == '1' && s[2] == '3' && s[3] == ';' && s[4] == '2'))
+	*out = v;
+	return 1;
+}
+
+static int
+skip_colon_nums(const unsigned char *s, size_t n, size_t *i)
+{
+	while (*i < n && s[*i] == ':') {
+		unsigned dummy;
+
+		(*i)++;
+		if (!parse_uint(s, n, i, &dummy))
+			return 0;
+	}
+	return 1;
+}
+
+/*
+ * 1 = emit Alt+Enter, -1 = drop (key release), 0 = pass through.
+ * CSI-u Shift+Enter: [13;2u, [13;2;1u / ;2u, [13;2:1u / :2u.
+ * Release (;3u / :3u) is dropped. [27;2;13~ is modifyOtherKeys Shift+Enter.
+ */
+static int
+csi_action(const unsigned char *s, size_t n)
+{
+	size_t i;
+	unsigned key, mods, kind, extra;
+
+	if (n < 2)
 		return 0;
-	if (n == 6)
-		return 1;
-	if (n == 8 && s[5] == ';' && (s[6] == '1' || s[6] == '2'))
+	if (s[n - 1] == '~') {
+		if (n == 9 && memcmp(s, "[27;2;13~", 9) == 0)
+			return 1;
+		return 0;
+	}
+	if (s[0] != '[' || s[n - 1] != 'u')
+		return 0;
+
+	i = 1;
+	if (!parse_uint(s, n, &i, &key) || key != 13)
+		return 0;
+	if (!skip_colon_nums(s, n, &i))
+		return 0;
+
+	mods = 1;
+	kind = 1;
+	if (i < n - 1 && s[i] == ';') {
+		i++;
+		if (!parse_uint(s, n, &i, &mods))
+			return 0;
+		if (i < n - 1 && s[i] == ':') {
+			i++;
+			if (!parse_uint(s, n, &i, &kind))
+				return 0;
+		} else if (i < n - 1 && s[i] == ';') {
+			size_t j = i + 1;
+
+			if (parse_uint(s, n, &j, &extra) && j == n - 1 &&
+			    extra >= 1 && extra <= 3) {
+				kind = extra;
+				i = j;
+			}
+		}
+		while (i < n - 1 && (s[i] == ';' || s[i] == ':')) {
+			i++;
+			if (i < n - 1 && s[i] >= '0' && s[i] <= '9' &&
+			    !parse_uint(s, n, &i, &extra))
+				return 0;
+		}
+	}
+	if (i != n - 1)
+		return 0;
+	if (mods != 2)
+		return 0;
+	if (kind == 3)
+		return -1;
+	if (kind == 1 || kind == 2)
 		return 1;
 	return 0;
 }
@@ -189,11 +273,13 @@ rewrite_and_write(int fd, const unsigned char *buf, size_t n)
 		if (csi_len < sizeof csi)
 			csi[csi_len++] = b;
 		if (csi_len == sizeof csi || csi_final(b)) {
-			if (csi_shift_enter(csi, csi_len)) {
+			int act = csi_action(csi, csi_len);
+
+			if (act > 0) {
 				if (emit_bytes(fd, out, &o, ALT_ENTER,
 				        ALT_ENTER_LEN) < 0)
 					return -1;
-			} else {
+			} else if (act == 0) {
 				if (emit_byte(fd, out, &o, 0x1b) < 0)
 					return -1;
 				if (emit_bytes(fd, out, &o, csi, csi_len) < 0)
