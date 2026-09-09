@@ -888,6 +888,7 @@ add_pin_record() {
   cwd=$REPLY
   sanitize_pin_field "$grok"
   grok=$REPLY
+  [[ $grok == [A-Za-z0-9._-]## ]] || grok=
   load_pinned_sessions
   if pin_record_exists "$name"; then
     pinned_cwd[$name]=$cwd
@@ -1001,8 +1002,8 @@ restore_pinned_sessions() {
     else
       tmuxx new-session -d -s "$name" 2>/dev/null || continue
     fi
-    if [[ -n $grok ]]; then
-      tmuxx send-keys -t "=$name" "grok --resume $grok" Enter 2>/dev/null || true
+    if [[ -n $grok && $grok == [A-Za-z0-9._-]## ]]; then
+      tmuxx send-keys -t "=$name" "grok --resume ${grok}" Enter 2>/dev/null || true
     fi
     tmux_set_pinned "$name" 1
   done
