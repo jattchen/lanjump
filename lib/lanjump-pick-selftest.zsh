@@ -276,6 +276,7 @@ pick_selftest() {
 
   HAS_TMUX=1
   host_short=testhost
+  preview_on=0
   items_kind=() items_id=() items_name=() items_att=() items_time=()
   items_path=() items_summary=() items_cmd=()
   for i in {1..32}; do
@@ -391,12 +392,14 @@ pick_selftest() {
   view_start=1
   cursor=1
   LINES=40
+  preview_on=1
   out=$(draw)
   plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
   if [[ $plain != *预览* ]]; then
     print -u2 "FAIL draw/viewport leftover preview missing"
     (( fails++ ))
   fi
+  preview_on=0
 
   items_kind=() items_id=() items_name=() items_att=() items_time=()
   items_path=() items_summary=() items_cmd=()
@@ -419,6 +422,40 @@ pick_selftest() {
     print -u2 "FAIL draw/viewport tiny screen missing selected sess-32"
     (( fails++ ))
   fi
+
+  HAS_TMUX=1
+  host_short=testhost
+  COLUMNS=120
+  preview_on=1
+  preview_defer=0
+  preview_cache=()
+  view_start=1
+  cursor=32
+  LINES=14
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *sess-32* ]]; then
+    print -u2 "FAIL draw/preview-reserve missing selected sess-32"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'预览'*sess-32* && $plain != *'预览  sess-32'* ]]; then
+    if [[ $plain != *$'\n  预览'* ]]; then
+      print -u2 "FAIL draw/preview-reserve missing preview block"
+      (( fails++ ))
+    fi
+  fi
+  preview_on=0
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain == *$'\n  预览'* ]]; then
+    print -u2 "FAIL draw/preview-off still showed preview block"
+    (( fails++ ))
+  fi
+  if [[ $plain != *sess-32* ]]; then
+    print -u2 "FAIL draw/preview-off missing selected sess-32"
+    (( fails++ ))
+  fi
+  preview_on=1
 
   local time_order occupied_order pinned_order actions
   actions='new shell hosts quit'

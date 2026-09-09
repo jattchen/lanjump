@@ -51,6 +51,7 @@ digit_wait=0.5
 preview_defer=0
 preview_wait=0.08
 preview_max_lines=10
+typeset -i preview_on=1 preview_band=6
 w_name=4 w_status=6 w_time=11 w_summary=4 w_path=4
 show_summary=1
 show_path=1
@@ -1338,7 +1339,12 @@ draw_help() {
   else
     filter_key='f 筛选'
   fi
-  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "p 常驻" "X 删空闲" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "/ 包含" "! 排除" "q 退出")
+  if (( preview_on )); then
+    preview_key='v 关预览'
+  else
+    preview_key='v 预览'
+  fi
+  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "p 常驻" "X 删空闲" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "$preview_key" "/ 包含" "! 排除" "q 退出")
   buf=""
   for piece in "${keys[@]}"; do
     if [[ -z $buf ]]; then
@@ -1359,7 +1365,7 @@ draw_help() {
 }
 
 draw() {
-  local -i cols rows i n session_end=0
+  local -i cols rows i n session_end=0 list_body preview_keep
   local mark line header sep title
   cols=$(term_cols)
   rows=$(term_lines)
@@ -1410,7 +1416,18 @@ draw() {
     draw_emit "  ${c_dim}${sep}${c_reset}" || return
   fi
 
-  plan_list_view $draw_remain $n $cursor $session_end
+  list_body=$draw_remain
+  preview_keep=0
+  if (( preview_on )) && [[ ${items_kind[$cursor]} == session ]]; then
+    # chrome already drawn; keep ≥1 list row, rest can be the preview band.
+    preview_keep=$(( 3 + preview_band ))
+    (( preview_keep > draw_remain - 1 )) && preview_keep=$(( draw_remain - 1 ))
+    (( preview_keep < 3 )) && preview_keep=3
+    (( preview_keep > draw_remain - 1 )) && preview_keep=$(( draw_remain > 1 ? draw_remain - 1 : 0 ))
+    list_body=$(( draw_remain - preview_keep ))
+    (( list_body < 1 )) && list_body=1
+  fi
+  plan_list_view $list_body $n $cursor $session_end
   (( view_above > 0 )) && draw_emit "  ${c_dim}↑ 还有 ${view_above}${c_reset}"
   for (( i = view_start; i <= view_end; i++ )); do
     if (( i == session_end + 1 && session_end > 0 )); then
@@ -1434,7 +1451,7 @@ draw() {
   done
   (( view_below > 0 )) && draw_emit "  ${c_dim}↓ 还有 ${view_below}${c_reset}"
 
-  if [[ ${items_kind[$cursor]} == session ]] && (( draw_remain >= 3 )); then
+  if (( preview_on )) && [[ ${items_kind[$cursor]} == session ]] && (( draw_remain >= 3 )); then
     local pname psum pmeta pl cache_key
     local -i pname_w cap_lines
     draw_emit "" || return
@@ -1566,6 +1583,7 @@ read_key() {
     e|E) REPLY=e ;;
     h|H) REPLY=h ;;
     o|O) REPLY=o ;;
+    v|V) REPLY=v ;;
     p|P) REPLY=p ;;
     X) REPLY=X ;;
     f|F) REPLY=f ;;
@@ -1877,6 +1895,11 @@ while true; do
       ;;
     o)
       toggle_sort_mode
+      draw
+      ;;
+    v)
+      preview_on=$(( 1 - preview_on ))
+      preview_defer=0
       draw
       ;;
     f)
