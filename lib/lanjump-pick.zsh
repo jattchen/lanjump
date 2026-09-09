@@ -32,8 +32,16 @@ else
   c_reset= c_bold= c_dim= c_green= c_cyan= c_red= c_rev=
 fi
 
-typeset -a items_kind items_id items_name items_att items_time items_path items_summary items_cmd
+typeset -a items_kind items_id items_name items_att items_time items_path items_summary items_cmd items_activity items_pinned
+typeset -a all_kind all_id all_name all_att all_time all_path all_summary all_cmd all_activity all_pinned
 cursor=1
+# time = all by last activity desc; attached = 占用中 first, idle after, each time-desc.
+sort_mode=time
+filter_include=
+filter_exclude=
+typeset -i filter_on=0 filter_match_count=0 filter_total_count=0
+typeset -a pinned_names
+typeset -A pinned_cwd pinned_grok
 loading=0
 stty_orig=
 PENDING_KEY=""
@@ -360,7 +368,11 @@ compute_layout() {
   for i in {1..${#items_kind}}; do
     if [[ ${items_kind[$i]} == session ]]; then
       (( n_sess++ ))
-      names+=("${items_name[$i]}")
+      if [[ ${items_pinned[$i]:-0} == 1 ]]; then
+        names+=("${items_name[$i]}*")
+      else
+        names+=("${items_name[$i]}")
+      fi
       summaries+=("${items_summary[$i]}")
       paths+=("${items_path[$i]}")
     fi
@@ -426,7 +438,7 @@ fmt_session_row() {
 
 _fmt_session_row() {
   local i=$1
-  local att_txt att_col extra
+  local att_txt att_col extra shown
   if [[ ${items_att[$i]} == 1 ]]; then
     att_txt="占用中"
     att_col=$c_green
@@ -434,7 +446,11 @@ _fmt_session_row() {
     att_txt="空闲"
     att_col=$c_dim
   fi
-  _padw "${items_name[$i]}" $w_name
+  shown=${items_name[$i]}
+  if [[ ${items_pinned[$i]:-0} == 1 ]]; then
+    shown="${shown}*"
+  fi
+  _padw "$shown" $w_name
   extra=$REPLY
   _padw "$att_txt" $w_status
   extra+="  ${att_col}${REPLY}${c_reset}"
@@ -480,13 +496,42 @@ _fmt_header() {
   REPLY=$extra
 }
 
-load_items() {
-  loading=1
-  local keep="${1-}" line when title cmd wname
-  local -a raw sorted f
+sort_session_items() {
+  local keep="${1-}" line
+  local -i i idx
+  local -a skind sid sname satt stime spath ssummary scmd sact spinned
+  local -a akind aid aname aatt atime apath asummary acmd aact apinned
+  local -a decorated lines
+
   if [[ -z $keep ]] && (( cursor >= 1 && cursor <= ${#items_id} )); then
     keep=${items_id[$cursor]}
   fi
+
+  for (( i = 1; i <= ${#items_kind}; i++ )); do
+    if [[ ${items_kind[$i]} == session ]]; then
+      skind+=("${items_kind[$i]}")
+      sid+=("${items_id[$i]}")
+      sname+=("${items_name[$i]}")
+      satt+=("${items_att[$i]}")
+      stime+=("${items_time[$i]}")
+      spath+=("${items_path[$i]}")
+      ssummary+=("${items_summary[$i]}")
+      scmd+=("${items_cmd[$i]}")
+      sact+=("${items_activity[$i]}")
+      spinned+=("${items_pinned[$i]:-}")
+    else
+      akind+=("${items_kind[$i]}")
+      aid+=("${items_id[$i]}")
+      aname+=("${items_name[$i]}")
+      aatt+=("${items_att[$i]}")
+      atime+=("${items_time[$i]}")
+      apath+=("${items_path[$i]}")
+      asummary+=("${items_summary[$i]}")
+      acmd+=("${items_cmd[$i]}")
+      aact+=("${items_activity[$i]}")
+      apinned+=("${items_pinned[$i]:-}")
+    fi
+  done
 
   items_kind=()
   items_id=()
@@ -496,6 +541,563 @@ load_items() {
   items_path=()
   items_summary=()
   items_cmd=()
+  items_activity=()
+  items_pinned=()
+
+  if (( ${#skind} )); then
+    local att pin
+    decorated=()
+    for (( i = 1; i <= ${#skind}; i++ )); do
+      att=${satt[$i]:-0}
+      pin=${spinned[$i]:-0}
+      [[ $att == 1 ]] || att=0
+      [[ $pin == 1 ]] || pin=0
+      case ${sort_mode:-time} in
+        occupied)
+          decorated+=("${att}"$'\x1f'"${pin}"$'\x1f'"${sact[$i]}"$'\x1f'"$i")
+          ;;
+        pinned)
+          decorated+=("${pin}"$'\x1f'"${att}"$'\x1f'"${sact[$i]}"$'\x1f'"$i")
+          ;;
+        *)
+          decorated+=("${sact[$i]}"$'\x1f'"$i")
+          ;;
+      esac
+    done
+    if [[ ${sort_mode:-time} == occupied || ${sort_mode:-time} == pinned ]]; then
+      lines=("${(@f)$(printf '%s\n' "${decorated[@]}" | sort -t $'\x1f' -k1,1nr -k2,2nr -k3,3nr)}")
+    else
+      lines=("${(@f)$(printf '%s\n' "${decorated[@]}" | sort -t $'\x1f' -k1,1nr)}")
+    fi
+    for line in "${lines[@]}"; do
+      [[ -z $line ]] && continue
+      idx=${line##*$'\x1f'}
+      items_kind+=("${skind[$idx]}")
+      items_id+=("${sid[$idx]}")
+      items_name+=("${sname[$idx]}")
+      items_att+=("${satt[$idx]}")
+      items_time+=("${stime[$idx]}")
+      items_path+=("${spath[$idx]}")
+      items_summary+=("${ssummary[$idx]}")
+      items_cmd+=("${scmd[$idx]}")
+      items_activity+=("${sact[$idx]}")
+      items_pinned+=("${spinned[$idx]:-}")
+    done
+  fi
+
+  for (( i = 1; i <= ${#akind}; i++ )); do
+    items_kind+=("${akind[$i]}")
+    items_id+=("${aid[$i]}")
+    items_name+=("${aname[$i]}")
+    items_att+=("${aatt[$i]}")
+    items_time+=("${atime[$i]}")
+    items_path+=("${apath[$i]}")
+    items_summary+=("${asummary[$i]}")
+    items_cmd+=("${acmd[$i]}")
+    items_activity+=("${aact[$i]}")
+    items_pinned+=("${apinned[$i]:-}")
+  done
+
+  cursor=1
+  if [[ -n $keep ]]; then
+    for (( i = 1; i <= ${#items_id}; i++ )); do
+      if [[ ${items_id[$i]} == "$keep" ]]; then
+        cursor=$i
+        break
+      fi
+    done
+  fi
+}
+
+toggle_sort_mode() {
+  case ${sort_mode:-time} in
+    time) sort_mode=occupied ;;
+    occupied) sort_mode=pinned ;;
+    *) sort_mode=time ;;
+  esac
+  if (( ${#all_kind} )); then
+    copy_all_to_items
+  fi
+  sort_session_items
+  copy_items_to_all
+  filter_session_items
+}
+
+copy_items_to_all() {
+  all_kind=("${items_kind[@]}")
+  all_id=("${items_id[@]}")
+  all_name=("${items_name[@]}")
+  all_att=("${items_att[@]}")
+  all_time=("${items_time[@]}")
+  all_path=("${items_path[@]}")
+  all_summary=("${items_summary[@]}")
+  all_cmd=("${items_cmd[@]}")
+  all_activity=("${items_activity[@]}")
+  all_pinned=("${items_pinned[@]}")
+}
+
+copy_all_to_items() {
+  items_kind=("${all_kind[@]}")
+  items_id=("${all_id[@]}")
+  items_name=("${all_name[@]}")
+  items_att=("${all_att[@]}")
+  items_time=("${all_time[@]}")
+  items_path=("${all_path[@]}")
+  items_summary=("${all_summary[@]}")
+  items_cmd=("${all_cmd[@]}")
+  items_activity=("${all_activity[@]}")
+  items_pinned=("${all_pinned[@]}")
+}
+
+session_filter_file() {
+  REPLY="$HOME/Library/Application Support/lanjump/session-filter"
+}
+
+sanitize_filter_keyword() {
+  local s=$1
+  s=${s##[[:space:]]#}
+  s=${s%%[[:space:]]#}
+  s=${s//[$'\x00'-$'\x1f'$'\x7f']/}
+  if (( ${#s} > 80 )); then
+    s=$s[1,80]
+  fi
+  REPLY=$s
+}
+
+save_session_filter() {
+  local file dir
+  session_filter_file
+  file=$REPLY
+  dir=${file:h}
+  mkdir -p "$dir"
+  sanitize_filter_keyword "$filter_include"
+  filter_include=$REPLY
+  sanitize_filter_keyword "$filter_exclude"
+  filter_exclude=$REPLY
+  print -r -- "include ${filter_include}" >"$file"
+  print -r -- "exclude ${filter_exclude}" >>"$file"
+}
+
+load_session_filter() {
+  local file line key val
+  session_filter_file
+  file=$REPLY
+  filter_include=
+  filter_exclude=
+  [[ -f $file ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -z $line ]] && continue
+    key=${line%% *}
+    if [[ $line == *' '* ]]; then
+      val=${line#* }
+    else
+      val=
+    fi
+    sanitize_filter_keyword "$val"
+    val=$REPLY
+    case $key in
+      include) filter_include=$val ;;
+      exclude) filter_exclude=$val ;;
+    esac
+  done <"$file"
+}
+
+session_src_matches() {
+  local i=$1
+  local hay needle
+  hay="${all_name[$i]}"$'\x1f'"${all_summary[$i]}"$'\x1f'"${all_path[$i]}"
+  hay=${hay:l}
+  if [[ -n $filter_include ]]; then
+    needle=${filter_include:l}
+    [[ $hay == *${(b)needle}* ]] || return 1
+  fi
+  if [[ -n $filter_exclude ]]; then
+    needle=${filter_exclude:l}
+    [[ $hay == *${(b)needle}* ]] && return 1
+  fi
+  return 0
+}
+
+filter_session_items() {
+  local -i i n_sess=0 n_match=0
+  local keep
+  if (( ${#all_kind} == 0 )); then
+    copy_items_to_all
+  fi
+  if (( cursor >= 1 && cursor <= ${#items_id} )); then
+    keep=${items_id[$cursor]}
+  fi
+  items_kind=()
+  items_id=()
+  items_name=()
+  items_att=()
+  items_time=()
+  items_path=()
+  items_summary=()
+  items_cmd=()
+  items_activity=()
+  items_pinned=()
+  for (( i = 1; i <= ${#all_kind}; i++ )); do
+    if [[ ${all_kind[$i]} == session ]]; then
+      (( n_sess++ ))
+      if (( filter_on )) && ! session_src_matches $i; then
+        continue
+      fi
+      (( n_match++ ))
+    fi
+    items_kind+=("${all_kind[$i]}")
+    items_id+=("${all_id[$i]}")
+    items_name+=("${all_name[$i]}")
+    items_att+=("${all_att[$i]}")
+    items_time+=("${all_time[$i]}")
+    items_path+=("${all_path[$i]}")
+    items_summary+=("${all_summary[$i]}")
+    items_cmd+=("${all_cmd[$i]}")
+    items_activity+=("${all_activity[$i]}")
+    items_pinned+=("${all_pinned[$i]:-}")
+  done
+  filter_total_count=$n_sess
+  filter_match_count=$n_match
+  cursor=1
+  if [[ -n ${keep:-} ]]; then
+    for (( i = 1; i <= ${#items_id}; i++ )); do
+      if [[ ${items_id[$i]} == "$keep" ]]; then
+        cursor=$i
+        break
+      fi
+    done
+  fi
+}
+
+toggle_session_filter() {
+  if (( filter_on )); then
+    filter_on=0
+  else
+    load_session_filter
+    filter_on=1
+  fi
+  filter_session_items
+}
+
+prompt_filter() {
+  local which=$1 label kw
+  if [[ $which == include ]]; then
+    label='包含关键字（空或 Esc 清除）: '
+  else
+    label='排除关键字（空或 Esc 清除）: '
+  fi
+  restore_tty
+  print
+  print -n "$label"
+  read -r kw || kw=
+  if [[ $kw == $'\e' ]]; then
+    kw=
+  fi
+  sanitize_filter_keyword "$kw"
+  kw=$REPLY
+  if [[ $which == include ]]; then
+    filter_include=$kw
+  else
+    filter_exclude=$kw
+  fi
+  save_session_filter
+  filter_on=1
+  setup_tty
+  filter_session_items
+  draw
+}
+
+pinned_sessions_file() {
+  REPLY="$HOME/Library/Application Support/lanjump/pinned-sessions"
+}
+
+sanitize_pin_field() {
+  local s=$1
+  s=${s##[[:space:]]#}
+  s=${s%%[[:space:]]#}
+  s=${s//[$'\x00'-$'\x1f'$'\x7f']/}
+  REPLY=$s
+}
+
+pin_record_exists() {
+  local n=$1
+  [[ -n $n ]] || return 1
+  (( ${#pinned_names} )) || return 1
+  (( ${pinned_names[(Ie)$n]} ))
+}
+
+load_pinned_sessions() {
+  local file line key val name cwd grok
+  pinned_sessions_file
+  file=$REPLY
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  [[ -f $file ]] || return 0
+  name= cwd= grok=
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ -z $line || $line == '#'* ]]; then
+      if [[ -z $line && -n $name ]]; then
+        pinned_names+=("$name")
+        pinned_cwd[$name]=$cwd
+        pinned_grok[$name]=$grok
+        name= cwd= grok=
+      fi
+      continue
+    fi
+    key=${line%% *}
+    if [[ $line == *' '* ]]; then
+      val=${line#* }
+    else
+      val=
+    fi
+    sanitize_pin_field "$val"
+    val=$REPLY
+    case $key in
+      name)
+        if [[ -n $name ]]; then
+          pinned_names+=("$name")
+          pinned_cwd[$name]=$cwd
+          pinned_grok[$name]=$grok
+          cwd= grok=
+        fi
+        name=$val
+        ;;
+      cwd) cwd=$val ;;
+      grok) grok=$val ;;
+    esac
+  done <"$file"
+  if [[ -n $name ]]; then
+    pinned_names+=("$name")
+    pinned_cwd[$name]=$cwd
+    pinned_grok[$name]=$grok
+  fi
+}
+
+save_pinned_sessions() {
+  local file dir n
+  pinned_sessions_file
+  file=$REPLY
+  dir=${file:h}
+  mkdir -p "$dir"
+  : >"$file"
+  for n in "${pinned_names[@]}"; do
+    [[ -n $n ]] || continue
+    print -r -- "name $n" >>"$file"
+    print -r -- "cwd ${pinned_cwd[$n]:-}" >>"$file"
+    print -r -- "grok ${pinned_grok[$n]:-}" >>"$file"
+    print -r -- "" >>"$file"
+  done
+}
+
+add_pin_record() {
+  local name=$1 cwd=${2:-} grok=${3:-}
+  sanitize_pin_field "$name"
+  name=$REPLY
+  [[ -n $name ]] || return 1
+  sanitize_pin_field "$cwd"
+  cwd=$REPLY
+  sanitize_pin_field "$grok"
+  grok=$REPLY
+  [[ $grok == [A-Za-z0-9._-]## ]] || grok=
+  load_pinned_sessions
+  if pin_record_exists "$name"; then
+    pinned_cwd[$name]=$cwd
+    pinned_grok[$name]=$grok
+  else
+    pinned_names+=("$name")
+    pinned_cwd[$name]=$cwd
+    pinned_grok[$name]=$grok
+  fi
+  save_pinned_sessions
+}
+
+remove_pin_record() {
+  local name=$1
+  local -i i
+  sanitize_pin_field "$name"
+  name=$REPLY
+  [[ -n $name ]] || return 0
+  load_pinned_sessions
+  pin_record_exists "$name" || return 0
+  for (( i = 1; i <= ${#pinned_names}; i++ )); do
+    if [[ ${pinned_names[$i]} == "$name" ]]; then
+      pinned_names[$i]=()
+      break
+    fi
+  done
+  unset "pinned_cwd[$name]"
+  unset "pinned_grok[$name]"
+  save_pinned_sessions
+}
+
+rename_pin_record() {
+  local old=$1 new=$2
+  local -i i
+  sanitize_pin_field "$old"
+  old=$REPLY
+  sanitize_pin_field "$new"
+  new=$REPLY
+  [[ -n $old && -n $new && $old != "$new" ]] || return 0
+  load_pinned_sessions
+  pin_record_exists "$old" || return 0
+  for (( i = 1; i <= ${#pinned_names}; i++ )); do
+    if [[ ${pinned_names[$i]} == "$old" ]]; then
+      pinned_names[$i]=$new
+      pinned_cwd[$new]=${pinned_cwd[$old]:-}
+      pinned_grok[$new]=${pinned_grok[$old]:-}
+      unset "pinned_cwd[$old]"
+      unset "pinned_grok[$old]"
+      save_pinned_sessions
+      return 0
+    fi
+  done
+}
+
+tmux_set_pinned() {
+  local name=$1 on=$2
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  if [[ $on == 1 ]]; then
+    tmuxx set-option -t "=$name" @lanjump_pinned 1 2>/dev/null || true
+  else
+    tmuxx set-option -u -t "=$name" @lanjump_pinned 2>/dev/null || true
+  fi
+}
+
+grok_id_for_pid() {
+  local pid=$1
+  local file="$HOME/.grok/active_sessions.json" sid
+  REPLY=
+  [[ -n $pid && -f $file ]] || return 0
+  (( ${+commands[python3]} )) || return 0
+  sid=$(python3 -c '
+import json, sys
+pid = sys.argv[1]
+path = sys.argv[2]
+try:
+    data = json.load(open(path))
+except Exception:
+    raise SystemExit(0)
+best = None
+best_ts = ""
+for row in data:
+    if str(row.get("pid", "")) != pid:
+        continue
+    ts = str(row.get("opened_at") or "")
+    if best is None or ts >= best_ts:
+        best = row
+        best_ts = ts
+sid = (best or {}).get("session_id") or ""
+if sid:
+    print(sid)
+' "$pid" "$file" 2>/dev/null) || sid=
+  REPLY=$sid
+  print -r -- "$sid"
+}
+
+restore_pinned_sessions() {
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  local name cwd grok
+  load_pinned_sessions
+  for name in "${pinned_names[@]}"; do
+    [[ -n $name ]] || continue
+    cwd=${pinned_cwd[$name]:-}
+    grok=${pinned_grok[$name]:-}
+    if tmuxx has-session -t "=$name" 2>/dev/null; then
+      tmux_set_pinned "$name" 1
+      continue
+    fi
+    if [[ -n $cwd ]]; then
+      tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || \
+        tmuxx new-session -d -s "$name" 2>/dev/null || continue
+    else
+      tmuxx new-session -d -s "$name" 2>/dev/null || continue
+    fi
+    if [[ -n $grok && $grok == [A-Za-z0-9._-]## ]]; then
+      tmuxx send-keys -t "=$name" "grok --resume ${grok}" Enter 2>/dev/null || true
+    fi
+    tmux_set_pinned "$name" 1
+  done
+}
+
+bulk_idle_unpinned_names() {
+  local -i i
+  local -a names
+  names=()
+  for (( i = 1; i <= ${#items_kind}; i++ )); do
+    [[ ${items_kind[$i]} == session ]] || continue
+    [[ ${items_att[$i]} == 1 ]] && continue
+    [[ ${items_pinned[$i]:-0} == 1 ]] && continue
+    names+=("${items_id[$i]}")
+  done
+  print -r -- "${names[*]}"
+}
+
+delete_idle_unpinned_sessions() {
+  local -i i
+  for (( i = 1; i <= ${#items_kind}; i++ )); do
+    [[ ${items_kind[$i]} == session ]] || continue
+    [[ ${items_att[$i]} == 1 ]] && continue
+    [[ ${items_pinned[$i]:-0} == 1 ]] && continue
+    tmuxx kill-session -t "=${items_id[$i]}" 2>/dev/null || true
+  done
+}
+
+session_delete_needs_pin_warning() {
+  [[ ${items_kind[$cursor]:-} == session && ${items_pinned[$cursor]:-0} == 1 ]]
+}
+
+pin_delete_warning_text() {
+  print -r -- '该 session 为常驻状态，是否确认删除？'
+}
+
+toggle_session_pin() {
+  [[ $HAS_TMUX -eq 1 ]] || return
+  if [[ ${items_kind[$cursor]:-} != session ]]; then
+    return
+  fi
+  local name=${items_id[$cursor]} cwd pid grok
+  local -i i on=0
+  if [[ ${items_pinned[$cursor]:-0} == 1 ]]; then
+    remove_pin_record "$name"
+    tmux_set_pinned "$name" 0
+    on=0
+  else
+    cwd=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
+    pid=$(tmuxx display-message -p -t "=$name" '#{pane_pid}' 2>/dev/null || true)
+    grok=$(grok_id_for_pid "$pid")
+    add_pin_record "$name" "$cwd" "$grok"
+    tmux_set_pinned "$name" 1
+    on=1
+  fi
+  items_pinned[$cursor]=$on
+  for (( i = 1; i <= ${#all_id}; i++ )); do
+    if [[ ${all_id[$i]} == "$name" ]]; then
+      all_pinned[$i]=$on
+      break
+    fi
+  done
+}
+
+load_items() {
+  loading=1
+  local keep="${1-}" line when title cmd wname pin
+  local -a raw f
+  if [[ -z $keep ]] && (( cursor >= 1 && cursor <= ${#items_id} )); then
+    keep=${items_id[$cursor]}
+  fi
+
+  load_pinned_sessions
+  items_kind=()
+  items_id=()
+  items_name=()
+  items_att=()
+  items_time=()
+  items_path=()
+  items_summary=()
+  items_cmd=()
+  items_activity=()
+  items_pinned=()
   raw=()
 
   if [[ $HAS_TMUX -eq 1 ]] && tmuxx list-sessions >/dev/null 2>&1; then
@@ -503,8 +1105,7 @@ load_items() {
   fi
 
   if (( ${#raw} )); then
-    sorted=("${(@f)$(printf '%s\n' "${raw[@]}" | sort -t $'\x1f' -k1,1nr)}")
-    for line in "${sorted[@]}"; do
+    for line in "${raw[@]}"; do
       [[ -z $line ]] && continue
       f=("${(@ps:\x1f:)line}")
       (( ${#f} < 8 )) && continue
@@ -512,6 +1113,8 @@ load_items() {
       wname=${f[6]}
       title=${f[7]}
       cmd=${f[8]}
+      pin=0
+      pin_record_exists "${f[2]}" && pin=1
       items_kind+=("session")
       items_id+=("${f[2]}")
       items_name+=("${f[2]}")
@@ -520,6 +1123,8 @@ load_items() {
       items_path+=("$(short_path "${f[5]}")")
       items_summary+=("$(useful_summary "$title" "$cmd" "$wname")")
       items_cmd+=("$cmd")
+      items_activity+=("${f[1]}")
+      items_pinned+=("$pin")
     done
   fi
 
@@ -532,6 +1137,8 @@ load_items() {
     items_path+=("")
     items_summary+=("")
     items_cmd+=("")
+    items_activity+=("")
+    items_pinned+=("")
   fi
 
   items_kind+=("shell")
@@ -542,6 +1149,8 @@ load_items() {
   items_path+=("")
   items_summary+=("")
   items_cmd+=("")
+  items_activity+=("")
+  items_pinned+=("")
 
   items_kind+=("hosts")
   items_id+=("hosts")
@@ -551,6 +1160,8 @@ load_items() {
   items_path+=("")
   items_summary+=("")
   items_cmd+=("")
+  items_activity+=("")
+  items_pinned+=("")
 
   items_kind+=("quit")
   items_id+=("quit")
@@ -560,17 +1171,12 @@ load_items() {
   items_path+=("")
   items_summary+=("")
   items_cmd+=("")
+  items_activity+=("")
+  items_pinned+=("")
 
-  cursor=1
-  if [[ -n $keep ]]; then
-    local i
-    for i in {1..${#items_id}}; do
-      if [[ ${items_id[$i]} == "$keep" ]]; then
-        cursor=$i
-        break
-      fi
-    done
-  fi
+  sort_session_items "$keep"
+  copy_items_to_all
+  filter_session_items
   loading=0
 }
 
@@ -695,8 +1301,18 @@ draw_emit() {
 draw_help() {
   local -i max=$1
   local -a keys
-  local buf piece
-  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "h 换机器" "r 刷新" "q 退出")
+  local buf piece sort_key filter_key
+  case ${sort_mode:-time} in
+    occupied) sort_key='o 占用' ;;
+    pinned) sort_key='o 常驻' ;;
+    *) sort_key='o 时间' ;;
+  esac
+  if (( filter_on )); then
+    filter_key='f 显示全部'
+  else
+    filter_key='f 筛选'
+  fi
+  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "p 常驻" "X 删空闲" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "/ 包含" "! 排除" "q 退出")
   buf=""
   for piece in "${keys[@]}"; do
     if [[ -z $buf ]]; then
@@ -705,6 +1321,8 @@ draw_help() {
     fi
     display_width "$buf  $piece"
     if (( REPLY > max )); then
+      # Keep header + selected row visible on short terminals.
+      (( draw_remain < 6 )) && break
       draw_emit "${c_dim}${buf}${c_reset}" || return 1
       buf="  $piece"
     else
@@ -716,7 +1334,7 @@ draw_help() {
 
 draw() {
   local -i cols rows i n session_end=0
-  local mark line header sep
+  local mark line header sep title
   cols=$(term_cols)
   rows=$(term_lines)
   n=${#items_kind}
@@ -729,8 +1347,21 @@ draw() {
 
   print -n $'\e[H\e[J'
   [[ -n $host_short ]] || host_short=$(hostname -s)
-  _fit_right "$host_short  选择 tmux session" $(( cols - 2 ))
-  draw_emit "${c_bold}  ${REPLY}${c_reset}" || return
+  title="$host_short  选择 tmux session"
+  _fit_right "$title" $(( cols - 2 ))
+  title="  ${c_bold}${REPLY}${c_reset}"
+  if (( filter_on )); then
+    if [[ -n $filter_include ]]; then
+      _fit_right "含 ${filter_include}" 24
+      title+="  ${c_cyan}${REPLY}${c_reset}"
+    fi
+    if [[ -n $filter_exclude ]]; then
+      _fit_right "不含 ${filter_exclude}" 24
+      title+="  ${c_red}${REPLY}${c_reset}"
+    fi
+    title+="  ${c_dim}${filter_match_count}/${filter_total_count}${c_reset}"
+  fi
+  draw_emit "$title" || return
   draw_help $cols || return
   draw_emit "" || return
 
@@ -738,7 +1369,11 @@ draw() {
     draw_emit "  ${c_dim}（这台机器上没有 tmux，可以直接进普通 shell；exit 或 Ctrl+D 返回）${c_reset}" || return
     draw_emit "" || return
   elif (( session_end == 0 )); then
-    draw_emit "  ${c_dim}（当前没有 session）${c_reset}" || return
+    if (( filter_on )); then
+      draw_emit "  ${c_dim}（没有匹配的 session）${c_reset}" || return
+    else
+      draw_emit "  ${c_dim}（当前没有 session）${c_reset}" || return
+    fi
     draw_emit "" || return
   else
     _fmt_header
@@ -887,6 +1522,12 @@ read_key() {
     d|D) REPLY=d ;;
     e|E) REPLY=e ;;
     h|H) REPLY=h ;;
+    o|O) REPLY=o ;;
+    p|P) REPLY=p ;;
+    X) REPLY=X ;;
+    f|F) REPLY=f ;;
+    /) REPLY=/ ;;
+    !) REPLY=! ;;
     g) REPLY=top ;;
     G) REPLY=bottom ;;
     [0-9]) REPLY="num$k" ;;
@@ -938,17 +1579,53 @@ prompt_new() {
   restore_tty
   print
   print -n "新 session 名称（回车=自动命名）: "
-  local name
+  local name pinans created
+  local -i pin=0
   read -r name
   name=${name##[[:space:]]#}
   name=${name%%[[:space:]]#}
-  if [[ -z $name ]]; then
-    tmux_tty new-session
-  elif tmuxx has-session -t "=$name" 2>/dev/null; then
+  print -n "常驻（y=是，回车=否）: "
+  read -r pinans || pinans=
+  if [[ $pinans == y || $pinans == Y ]]; then
+    pin=1
+  fi
+  tmux_prepare_color
+  tmux_prepare_keys
+  if [[ -n $name ]] && tmuxx has-session -t "=$name" 2>/dev/null; then
     print "session「${name}」已存在，直接进入。"
+    if (( pin )); then
+      add_pin_record "$name" "$PWD" ""
+      tmux_set_pinned "$name" 1
+    fi
     tmux_tty attach-session -t "=$name"
   else
-    tmux_tty new-session -s "$name"
+    if [[ -z $name ]]; then
+      created=$(tmuxx new-session -d -P -F '#{session_name}' 2>/dev/null) || created=
+      created=${created%%$'\n'*}
+      if [[ -z $created ]]; then
+        tmux_tty new-session
+        setup_tty
+        load_items
+        draw
+        return
+      fi
+    else
+      if ! tmuxx new-session -d -s "$name" 2>/dev/null; then
+        print "创建失败。"
+        print -n "按回车继续…"
+        read -r
+        setup_tty
+        load_items
+        draw
+        return
+      fi
+      created=$name
+    fi
+    if (( pin )); then
+      add_pin_record "$created" "$PWD" ""
+      tmux_set_pinned "$created" 1
+    fi
+    tmux_tty attach-session -t "=$created"
   fi
   setup_tty
   load_items
@@ -961,8 +1638,13 @@ prompt_delete() {
     return
   fi
   local name=${items_id[$cursor]} ans
+  local -i was_pinned=0
+  [[ ${items_pinned[$cursor]:-0} == 1 ]] && was_pinned=1
   restore_tty
   print
+  if session_delete_needs_pin_warning; then
+    print "${c_red}$(pin_delete_warning_text)${c_reset}"
+  fi
   if [[ ${items_att[$cursor]} == 1 ]]; then
     print "${c_red}session「${name}」正在占用中，删除会断开里面正在跑的程序。${c_reset}"
   else
@@ -975,7 +1657,35 @@ prompt_delete() {
       print "删除失败。"
       print -n "按回车继续…"
       read -r
+    elif (( was_pinned )); then
+      remove_pin_record "$name"
     fi
+  fi
+  setup_tty
+  load_items
+  draw
+}
+
+prompt_bulk_idle_delete() {
+  [[ $HAS_TMUX -eq 1 ]] || return
+  local names ans
+  names=$(bulk_idle_unpinned_names)
+  restore_tty
+  print
+  if [[ -z $names ]]; then
+    print "没有可删除的空闲 session。"
+    print -n "按回车继续…"
+    read -r
+    setup_tty
+    draw
+    return
+  fi
+  print "${c_red}高风险：将删除下列空闲且非常驻的 session，不能恢复。${c_reset}"
+  print "  ${c_red}${names}${c_reset}"
+  print -n "${c_red}确认删除请输入 y，其他键取消: ${c_reset}"
+  read -r ans
+  if [[ $ans == y || $ans == Y ]]; then
+    delete_idle_unpinned_sessions
   fi
   setup_tty
   load_items
@@ -1026,6 +1736,7 @@ prompt_rename() {
     draw
     return
   }
+  rename_pin_record "$old" "$name"
   setup_tty
   load_items "$name"
   draw
@@ -1043,8 +1754,12 @@ if [[ ${1:-} == --pick-selftest ]]; then
   exit $?
 fi
 
+load_pinned_sessions
+restore_pinned_sessions
 tmux_prepare_color
 tmux_prepare_keys
+load_session_filter
+filter_on=0
 load_items
 setup_tty
 draw
@@ -1082,6 +1797,13 @@ while true; do
     d)
       prompt_delete
       ;;
+    p)
+      toggle_session_pin
+      draw
+      ;;
+    X)
+      prompt_bulk_idle_delete
+      ;;
     e)
       prompt_rename
       ;;
@@ -1096,6 +1818,20 @@ while true; do
     r)
       load_items
       draw
+      ;;
+    o)
+      toggle_sort_mode
+      draw
+      ;;
+    f)
+      toggle_session_filter
+      draw
+      ;;
+    /)
+      prompt_filter include
+      ;;
+    !)
+      prompt_filter exclude
       ;;
     num*)
       collect_index_digits "${REPLY#num}" ${#items_kind}

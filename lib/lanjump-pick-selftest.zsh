@@ -1,5 +1,10 @@
 # Sourced by lanjump-pick.zsh --pick-selftest.
-# Expects dw, fit_right, fit_left, padw, compute_layout, fmt_session_row, draw.
+# Expects dw, fit_right, fit_left, padw, compute_layout, fmt_session_row, draw,
+# sort_session_items, toggle_sort_mode, filter_session_items,
+# toggle_session_filter, save_session_filter, load_session_filter,
+# bulk_idle_unpinned_names, delete_idle_unpinned_sessions,
+# session_delete_needs_pin_warning, pin_delete_warning_text,
+# rename_pin_record, restore_pinned_sessions.
 
 pick_selftest() {
   local -i fails=0
@@ -246,6 +251,419 @@ pick_selftest() {
     print -u2 "FAIL draw/viewport tiny screen missing selected sess-32"
     (( fails++ ))
   fi
+
+  local time_order occupied_order pinned_order actions
+  actions='new shell hosts quit'
+  time_order="idle-free idle-pin busy-free busy-pin $actions"
+  occupied_order="busy-pin busy-free idle-pin idle-free $actions"
+  pinned_order="busy-pin idle-pin busy-free idle-free $actions"
+
+  sort_fixture() {
+    items_kind=(session session session session new shell hosts quit)
+    items_id=(busy-pin idle-free idle-pin busy-free new shell hosts quit)
+    items_name=("${items_id[@]}")
+    items_att=(1 0 0 1 '' '' '' '')
+    items_pinned=(1 0 1 0 '' '' '' '')
+    items_time=('01-01 00:01' '01-01 00:04' '01-01 00:03' '01-01 00:02' '' '' '' '')
+    items_activity=(60 90 80 70 '' '' '' '')
+    items_path=('~/a' '~/b' '~/c' '~/d' '' '' '' '')
+    items_summary=('sa' 'sb' 'sc' 'sd' '' '' '' '')
+    items_cmd=(zsh zsh zsh zsh '' '' '' '')
+    all_kind=() all_id=() all_name=() all_att=() all_time=()
+    all_path=() all_summary=() all_cmd=() all_activity=() all_pinned=()
+    filter_include=
+    filter_exclude=
+    filter_on=0
+    sort_mode=time
+    cursor=1
+  }
+
+  sort_fixture
+  sort_session_items
+  expect sort/time-desc "$time_order" "${items_id[*]}"
+
+  sort_mode=occupied
+  sort_session_items
+  expect sort/occupied "$occupied_order" "${items_id[*]}"
+
+  sort_mode=pinned
+  sort_session_items
+  expect sort/pinned "$pinned_order" "${items_id[*]}"
+
+  sort_mode=occupied
+  toggle_sort_mode
+  expect sort/toggle-to-pinned "$pinned_order" "${items_id[*]}"
+  toggle_sort_mode
+  expect sort/toggle-to-time "$time_order" "${items_id[*]}"
+
+  sort_fixture
+  sort_session_items
+  cursor=3
+  expect sort/cursor-before busy-free "${items_id[$cursor]}"
+  toggle_sort_mode
+  expect sort/cursor-keep busy-free "${items_id[$cursor]}"
+  expect sort/cursor-keep-order "$occupied_order" "${items_id[*]}"
+
+  HAS_TMUX=1
+  host_short=testhost
+  COLUMNS=120
+  LINES=40
+  sort_fixture
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'o 时间'* ]]; then
+    print -u2 "FAIL help/time missing o 时间"
+    (( fails++ ))
+  fi
+  sort_mode=occupied
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'o 占用'* ]]; then
+    print -u2 "FAIL help/occupied missing o 占用"
+    (( fails++ ))
+  fi
+  sort_mode=pinned
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'o 常驻'* ]]; then
+    print -u2 "FAIL help/pinned missing o 常驻"
+    (( fails++ ))
+  fi
+
+  local oldhome testhome
+  oldhome=$HOME
+  testhome=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-filter.XXXXXX")
+  HOME=$testhome
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+
+  filter_fixture() {
+    items_kind=(session session session session session new shell hosts quit)
+    items_id=(grok-new grok-old other-new other-old cmd-only new shell hosts quit)
+    items_name=(Grok-new grok-old other-new other-old plain new shell hosts quit)
+    items_att=(1 0 0 1 0 '' '' '' '')
+    items_time=('01-01 00:05' '01-01 00:01' '01-01 00:04' '01-01 00:00' '01-01 00:02' '' '' '' '')
+    items_activity=(300 100 200 50 150 '' '' '' '')
+    items_path=('~/proj/grok' '~/proj/old-grok' '~/proj/other' '~/old/other' '~/plain' '' '' '' '')
+    items_summary=('work grok' 'old grok notes' 'other work' 'legacy stash' 'plain' '' '' '' '')
+    items_cmd=(zsh zsh zsh zsh grok-bin '' '' '' '')
+    all_kind=() all_id=() all_name=() all_att=() all_time=()
+    all_path=() all_summary=() all_cmd=() all_activity=()
+    filter_include=
+    filter_exclude=
+    filter_on=0
+    sort_mode=time
+    cursor=1
+    HAS_TMUX=1
+    host_short=testhost
+    COLUMNS=120
+    LINES=40
+  }
+
+  local actions='new shell hosts quit'
+  local all_ids='grok-new grok-old other-new other-old cmd-only new shell hosts quit'
+
+  filter_fixture
+  filter_include=grok
+  filter_on=1
+  filter_session_items
+  expect filter/include-ids "grok-new grok-old $actions" "${items_id[*]}"
+  if [[ ${items_id[*]} == *cmd-only* ]]; then
+    print -u2 "FAIL filter/include matched pane command grok-bin"
+    (( fails++ ))
+  fi
+
+  filter_fixture
+  filter_exclude=old
+  filter_on=1
+  filter_session_items
+  expect filter/exclude-ids "grok-new other-new cmd-only $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include=grok
+  filter_exclude=old
+  filter_on=1
+  filter_session_items
+  expect filter/stack-ids "grok-new $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include=GROK
+  filter_on=1
+  filter_session_items
+  expect filter/case-ids "grok-new grok-old $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include=legacy
+  filter_on=1
+  filter_session_items
+  expect filter/summary-ids "other-old $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include='proj/other'
+  filter_on=1
+  filter_session_items
+  expect filter/path-ids "other-new $actions" "${items_id[*]}"
+
+  filter_fixture
+  session_preview_lines() { print -r -- 'preview has grok secret'; }
+  filter_include=secret
+  filter_on=1
+  filter_session_items
+  expect filter/ignore-preview "$actions" "${items_id[*]}"
+  session_preview_lines() { return 0 }
+
+  filter_fixture
+  filter_include=grok
+  filter_exclude=old
+  save_session_filter
+  filter_on=1
+  filter_session_items
+  expect filter/saved-apply "grok-new $actions" "${items_id[*]}"
+  toggle_session_filter
+  expect filter/f-off "$all_ids" "${items_id[*]}"
+  expect filter/f-off-keeps-include grok "$filter_include"
+  expect filter/f-off-keeps-exclude old "$filter_exclude"
+  filter_include=wiped
+  filter_exclude=wiped
+  load_session_filter
+  expect filter/saved-pair-include grok "$filter_include"
+  expect filter/saved-pair-exclude old "$filter_exclude"
+  toggle_session_filter
+  expect filter/f-on-again "grok-new $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_exclude=plain
+  filter_on=1
+  sort_mode=time
+  sort_session_items
+  filter_session_items
+  expect filter/sort-time "grok-new other-new grok-old other-old $actions" "${items_id[*]}"
+  filter_fixture
+  filter_exclude=plain
+  filter_on=1
+  sort_mode=occupied
+  sort_session_items
+  filter_session_items
+  expect filter/sort-occupied "grok-new other-old other-new grok-old $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include=grok
+  filter_on=0
+  filter_session_items
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *other-new* ]]; then
+    print -u2 "FAIL filter/draw-off missing unfiltered other-new"
+    (( fails++ ))
+  fi
+  if [[ $plain == *'含 grok'* ]]; then
+    print -u2 "FAIL filter/draw-off showed inactive include"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'f 筛选'* ]]; then
+    print -u2 "FAIL filter/draw-off missing f 筛选"
+    (( fails++ ))
+  fi
+
+  filter_fixture
+  filter_include=grok
+  filter_exclude=old
+  filter_on=1
+  filter_session_items
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'含 grok'* ]]; then
+    print -u2 "FAIL filter/draw-on missing 含 grok"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'不含 old'* ]]; then
+    print -u2 "FAIL filter/draw-on missing 不含 old"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'1/5'* ]]; then
+    print -u2 "FAIL filter/draw-on missing match count 1/5"
+    (( fails++ ))
+  fi
+  if [[ $plain != *Grok-new* && $plain != *grok-new* ]]; then
+    print -u2 "FAIL filter/draw-on missing matching session"
+    (( fails++ ))
+  fi
+  if [[ $plain == *other-new* ]]; then
+    print -u2 "FAIL filter/draw-on showed excluded other-new"
+    (( fails++ ))
+  fi
+  if [[ $plain != *退出* ]]; then
+    print -u2 "FAIL filter/draw-on missing action 退出"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'f 显示全部'* ]]; then
+    print -u2 "FAIL filter/draw-on missing f 显示全部"
+    (( fails++ ))
+  fi
+
+  HOME=$oldhome
+  rm -rf "$testhome"
+
+  items_kind=(session session)
+  items_id=(keep loose)
+  items_name=(keep loose)
+  items_att=(0 0)
+  items_time=('01-01 00:00' '01-01 00:00')
+  items_path=('~/keep' '~/loose')
+  items_summary=('sa' 'sb')
+  items_cmd=(zsh zsh)
+  items_pinned=(1 0)
+  w_name=8 w_status=6 w_time=11
+  show_summary=0
+  show_path=0
+  _fmt_session_row 1
+  if [[ $REPLY != keep\** ]]; then
+    print -u2 "FAIL pin/marker-on missing keep* got=$(printf %q "$REPLY")"
+    (( fails++ ))
+  fi
+  _fmt_session_row 2
+  if [[ $REPLY == *loose\** ]]; then
+    print -u2 "FAIL pin/marker-off showed * on unpinned got=$(printf %q "$REPLY")"
+    (( fails++ ))
+  fi
+
+  oldhome=$HOME
+  testhome=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-pin.XXXXXX")
+  HOME=$testhome
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+
+  pin_fixture() {
+    items_kind=(session session session session new shell hosts quit)
+    items_id=(idle-pin idle-free busy-free busy-pin new shell hosts quit)
+    items_name=("${items_id[@]}")
+    items_att=(0 0 1 1 '' '' '' '')
+    items_time=('01-01 00:00' '01-01 00:00' '01-01 00:00' '01-01 00:00' '' '' '' '')
+    items_activity=(1 2 3 4 '' '' '' '')
+    items_path=('~/pin' '~/free' '~/busy' '~/busypin' '' '' '' '')
+    items_summary=(sa sb sc sd '' '' '' '')
+    items_cmd=(zsh zsh zsh zsh '' '' '' '')
+    items_pinned=(1 0 0 1 '' '' '' '')
+    all_kind=() all_id=() all_name=() all_att=() all_time=()
+    all_path=() all_summary=() all_cmd=() all_activity=() all_pinned=()
+    filter_include=
+    filter_exclude=
+    filter_on=0
+    sort_mode=time
+    cursor=1
+    HAS_TMUX=1
+  }
+
+  pin_fixture
+  expect pin/bulk-targets idle-free "$(bulk_idle_unpinned_names)"
+
+  pin_fixture
+  filter_include=idle
+  filter_on=1
+  copy_items_to_all
+  filter_session_items
+  expect pin/bulk-filter-targets idle-free "$(bulk_idle_unpinned_names)"
+
+  local tmux_log killed
+  tmux_log=$testhome/tmux.log
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      kill-session) return 0 ;;
+      has-session) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  pin_fixture
+  delete_idle_unpinned_sessions
+  killed=$(grep -E 'kill-session' "$tmux_log" | tr '\n' ' ')
+  if [[ $killed != *'kill-session -t =idle-free'* ]]; then
+    print -u2 "FAIL pin/bulk-kill missing idle-free got=$(printf %q "$killed")"
+    (( fails++ ))
+  fi
+  if [[ $killed == *idle-pin* || $killed == *busy-free* || $killed == *busy-pin* ]]; then
+    print -u2 "FAIL pin/bulk-kill hit protected session got=$(printf %q "$killed")"
+    (( fails++ ))
+  fi
+
+  pin_fixture
+  cursor=1
+  if ! session_delete_needs_pin_warning; then
+    print -u2 "FAIL pin/delete-warn pinned session skipped warning"
+    (( fails++ ))
+  fi
+  expect pin/delete-warn-text '该 session 为常驻状态，是否确认删除？' "$(pin_delete_warning_text)"
+  cursor=2
+  if session_delete_needs_pin_warning; then
+    print -u2 "FAIL pin/delete-warn unpinned session still warned"
+    (( fails++ ))
+  fi
+  cursor=5
+  if session_delete_needs_pin_warning; then
+    print -u2 "FAIL pin/delete-warn action row warned"
+    (( fails++ ))
+  fi
+
+  print -r -- $'name keep\ncwd /tmp/keep\ngrok gid-keep\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  rename_pin_record keep keep-renamed
+  load_pinned_sessions
+  if ! pin_record_exists keep-renamed; then
+    print -u2 "FAIL pin/rename missing new name in pin file"
+    (( fails++ ))
+  fi
+  if pin_record_exists keep; then
+    print -u2 "FAIL pin/rename left old name in pin file"
+    (( fails++ ))
+  fi
+  if [[ ${pinned_cwd[keep-renamed]:-} != /tmp/keep ]]; then
+    print -u2 "FAIL pin/rename dropped cwd got=${pinned_cwd[keep-renamed]:-}"
+    (( fails++ ))
+  fi
+  if [[ ${pinned_grok[keep-renamed]:-} != gid-keep ]]; then
+    print -u2 "FAIL pin/rename dropped grok id got=${pinned_grok[keep-renamed]:-}"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  print -r -- $'name missing\ncwd /tmp/missing-cwd\ngrok gid-missing\n\nname still-live\ncwd /tmp/live\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session)
+        [[ $2 == -t && $3 == '=still-live' ]] && return 0
+        return 1
+        ;;
+      new-session|set-option|send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  load_pinned_sessions
+  restore_pinned_sessions
+  local restore_log
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s missing -c /tmp/missing-cwd'* ]]; then
+    print -u2 "FAIL pin/restore missing new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'grok --resume gid-missing'* ]]; then
+    print -u2 "FAIL pin/restore missing grok resume got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s still-live'* ]]; then
+    print -u2 "FAIL pin/restore recreated live session"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s idle-free'* ]]; then
+    print -u2 "FAIL pin/restore created unpinned session"
+    (( fails++ ))
+  fi
+
+  HOME=$oldhome
+  rm -rf "$testhome"
+  unset -f tmuxx
+  tmuxx() {
+    [[ -n $TMUX_BIN ]] || return 1
+    command "$TMUX_BIN" "$@" </dev/null
+  }
 
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
