@@ -101,6 +101,152 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  HAS_TMUX=1
+  host_short=testhost
+  items_kind=() items_id=() items_name=() items_att=() items_time=()
+  items_path=() items_summary=() items_cmd=()
+  for i in {1..32}; do
+    items_kind+=("session")
+    items_id+=("sess-$i")
+    items_name+=("sess-$i")
+    items_att+=("0")
+    items_time+=("09-04 12:00")
+    items_path+=("~/p/$i")
+    items_summary+=("sum $i")
+    items_cmd+=("zsh")
+  done
+  cursor=32
+  COLUMNS=120
+  LINES=14
+  local out plain kind name
+  local -a lines
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *sess-32* ]]; then
+    print -u2 "FAIL draw/viewport missing selected sess-32"
+    (( fails++ ))
+  fi
+  if [[ $plain != *还有* ]]; then
+    print -u2 "FAIL draw/viewport missing overflow hint"
+    (( fails++ ))
+  fi
+  if [[ $plain == *sess-1* && $plain != *sess-32* ]]; then
+    print -u2 "FAIL draw/viewport stayed on first page"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'↑ 还有'* ]]; then
+    print -u2 "FAIL draw/viewport missing above hint"
+    (( fails++ ))
+  fi
+
+  LINES=8
+  expect term_lines/phone 8 "$(term_lines)"
+  LINES=24
+  expect term_lines/normal 24 "$(term_lines)"
+  LINES=14
+
+  view_start=1
+  cursor=1
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *sess-1* ]]; then
+    print -u2 "FAIL draw/viewport top missing sess-1"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'↓ 还有'* ]]; then
+    print -u2 "FAIL draw/viewport top missing below hint"
+    (( fails++ ))
+  fi
+  if [[ $plain == *sess-32* ]]; then
+    print -u2 "FAIL draw/viewport top showed last row"
+    (( fails++ ))
+  fi
+
+  cursor=32
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *sess-32* ]]; then
+    print -u2 "FAIL draw/viewport wrap-to-last missing sess-32"
+    (( fails++ ))
+  fi
+
+  cursor=1
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *sess-1* ]]; then
+    print -u2 "FAIL draw/viewport wrap-to-first missing sess-1"
+    (( fails++ ))
+  fi
+
+  lines=("${(@f)plain}")
+  if (( ${#lines} > LINES )); then
+    print -u2 "FAIL draw/viewport drew ${#lines} lines on LINES=$LINES"
+    (( fails++ ))
+  fi
+
+  for kind name in new '新建 session' shell '普通 shell' hosts '换一台机器' quit '退出'; do
+    items_kind+=("$kind")
+    items_id+=("$kind")
+    items_name+=("$name")
+    items_att+=("")
+    items_time+=("")
+    items_path+=("")
+    items_summary+=("")
+    items_cmd+=("")
+  done
+  view_start=1
+  cursor=${#items_kind}
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *退出* ]]; then
+    print -u2 "FAIL draw/viewport missing last action"
+    (( fails++ ))
+  fi
+
+  items_kind=() items_id=() items_name=() items_att=() items_time=()
+  items_path=() items_summary=() items_cmd=()
+  for i in {1..3}; do
+    items_kind+=("session")
+    items_id+=("sess-$i")
+    items_name+=("sess-$i")
+    items_att+=("0")
+    items_time+=("09-04 12:00")
+    items_path+=("~/p/$i")
+    items_summary+=("sum $i")
+    items_cmd+=("zsh")
+  done
+  view_start=1
+  cursor=1
+  LINES=40
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *预览* ]]; then
+    print -u2 "FAIL draw/viewport leftover preview missing"
+    (( fails++ ))
+  fi
+
+  items_kind=() items_id=() items_name=() items_att=() items_time=()
+  items_path=() items_summary=() items_cmd=()
+  for i in {1..32}; do
+    items_kind+=("session")
+    items_id+=("sess-$i")
+    items_name+=("sess-$i")
+    items_att+=("0")
+    items_time+=("09-04 12:00")
+    items_path+=("~/p/$i")
+    items_summary+=("sum $i")
+    items_cmd+=("zsh")
+  done
+  view_start=1
+  cursor=32
+  LINES=7
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *sess-32* ]]; then
+    print -u2 "FAIL draw/viewport tiny screen missing selected sess-32"
+    (( fails++ ))
+  fi
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1

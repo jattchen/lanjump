@@ -25,6 +25,11 @@ typeset -a s_alias s_host s_ip s_mac
 typeset -a MYIPS
 cursor=1
 loading=0
+draw_remain=0
+view_start=1
+view_end=0
+view_above=0
+view_below=0
 stty_orig=
 PENDING_KEY=""
 digit_wait=0.5
@@ -83,6 +88,15 @@ term_cols() {
   fi
   (( c < 40 )) && c=40
   print -r -- $c
+}
+
+term_lines() {
+  local r=${LINES:-0}
+  if (( r < 1 )); then
+    r=$(stty size 2>/dev/null | awk '{print $1}')
+  fi
+  (( r < 1 )) && r=1
+  print -r -- $r
 }
 
 dw() {
@@ -778,10 +792,95 @@ do_scan() {
   setup_tty
 }
 
+# Sticky window of `vis` item rows that keeps `cur` on screen.
+# Sets view_start view_end view_above view_below (1-based inclusive).
+list_window() {
+  local -i n=$1 vis=$2 cur=$3
+  view_end=0
+  view_above=0
+  view_below=0
+  (( n < 1 )) && { view_start=1; return }
+  (( vis < 1 )) && vis=1
+  (( vis > n )) && vis=n
+  (( cur < 1 )) && cur=1
+  (( cur > n )) && cur=n
+  (( view_start < 1 )) && view_start=1
+  if (( cur < view_start )); then
+    view_start=$cur
+  fi
+  if (( cur > view_start + vis - 1 )); then
+    view_start=$(( cur - vis + 1 ))
+  fi
+  if (( view_start + vis - 1 > n )); then
+    view_start=$(( n - vis + 1 ))
+  fi
+  (( view_start < 1 )) && view_start=1
+  view_end=$(( view_start + vis - 1 ))
+  (( view_end > n )) && view_end=n
+  view_above=$(( view_start - 1 ))
+  view_below=$(( n - view_end ))
+}
+
+# Fit list + overflow hints + optional section gap into `body` rows.
+# gap_after: emit a blank after this index when the window spans it (0 = none).
+plan_list_view() {
+  local -i body=$1 n=$2 cur=$3 gap_after=${4:-0}
+  local -i hints vis need max_hints
+  (( n < 1 || body < 1 )) && {
+    view_start=1
+    view_end=0
+    view_above=0
+    view_below=0
+    return
+  }
+  # Keep at least one row for the selected item; hints use leftovers only.
+  max_hints=2
+  (( max_hints > body - 1 )) && max_hints=$(( body - 1 ))
+  (( max_hints < 0 )) && max_hints=0
+  for (( hints = 0; hints <= max_hints; hints++ )); do
+    vis=$(( body - hints ))
+    (( vis < 1 )) && vis=1
+    list_window $n $vis $cur
+    if (( gap_after > 0 && view_start <= gap_after && view_end > gap_after )); then
+      vis=$(( body - hints - 1 ))
+      (( vis < 1 )) && vis=1
+      list_window $n $vis $cur
+    fi
+    need=0
+    (( view_above > 0 )) && (( need++ ))
+    (( view_below > 0 )) && (( need++ ))
+    (( need == hints )) && break
+  done
+  (( hints > max_hints )) && hints=$max_hints
+  # Drop hints that did not get a row so they cannot steal the selected item.
+  if (( view_above > 0 )); then
+    if (( hints > 0 )); then
+      (( hints-- ))
+    else
+      view_above=0
+    fi
+  fi
+  if (( view_below > 0 )); then
+    if (( hints > 0 )); then
+      (( hints-- ))
+    else
+      view_below=0
+    fi
+  fi
+}
+
+draw_emit() {
+  (( draw_remain > 0 )) || return 1
+  print -r -- "$1"
+  (( draw_remain-- ))
+  return 0
+}
+
 draw() {
-  local -i cols i n w_name=4 w_addr=8 w_user=4 w_stat=4
+  local -i cols rows i n w_name=4 w_addr=8 w_user=4 w_stat=4
   local mark line sep addr
   cols=$(term_cols)
+  rows=$(term_lines)
   n=${#items_kind}
   for (( i = 1; i <= n; i++ )); do
     [[ ${items_kind[$i]} == host ]] || continue
@@ -807,28 +906,31 @@ draw() {
     fi
   fi
 
+  draw_remain=$(( rows > 1 ? rows - 1 : 1 ))
   print -n $'\e[H\e[J'
-  print "${c_bold}  局域网 SSH${c_reset}"
-  print "${c_dim}  ↑↓/jk 选择   Enter 进入   r 扫描   d 忘掉   q 退出${c_reset}"
+  draw_emit "${c_bold}  局域网 SSH${c_reset}" || return
+  draw_emit "${c_dim}  ↑↓/jk 选择   Enter 进入   r 扫描   d 忘掉   q 退出${c_reset}" || return
   if [[ -n $notice ]]; then
-    print "  ${c_cyan}${notice}${c_reset}"
+    draw_emit "  ${c_cyan}${notice}${c_reset}" || return
   else
-    print
+    draw_emit "" || return
   fi
 
-  print "  ${c_dim}    #  $(padw 名称 $w_name)  $(padw 地址 $w_addr)  $(padw 用户 $w_user)  $(padw 状态 $w_stat)${c_reset}"
+  draw_emit "  ${c_dim}    #  $(padw 名称 $w_name)  $(padw 地址 $w_addr)  $(padw 用户 $w_user)  $(padw 状态 $w_stat)${c_reset}" || return
   sep=$(printf '%*s' $(( cols - 4 )) '')
   sep=${sep// /─}
-  print "  ${c_dim}${sep}${c_reset}"
+  draw_emit "  ${c_dim}${sep}${c_reset}" || return
 
   local host_end=0
   for (( i = 1; i <= n; i++ )); do
     [[ ${items_kind[$i]} == host ]] && host_end=$i
   done
 
-  for (( i = 1; i <= n; i++ )); do
+  plan_list_view $draw_remain $n $cursor $host_end
+  (( view_above > 0 )) && draw_emit "  ${c_dim}↑ 还有 ${view_above}${c_reset}"
+  for (( i = view_start; i <= view_end; i++ )); do
     if (( i == host_end + 1 && host_end > 0 )); then
-      print
+      draw_emit "" || break
     fi
     if [[ ${items_kind[$i]} == host ]]; then
       addr=${items_ip[$i]:-${items_hostname[$i]}}
@@ -843,8 +945,10 @@ draw() {
       mark=" "
       line=" ${line}"
     fi
-    printf '  %s %2d  %s\n' "$mark" "$i" "$line"
+    printf -v line '  %s %2d  %s' "$mark" "$i" "$line"
+    draw_emit "$line" || break
   done
+  (( view_below > 0 )) && draw_emit "  ${c_dim}↓ 还有 ${view_below}${c_reset}"
 }
 
 # True if another digit could still name a list index.
@@ -928,8 +1032,8 @@ read_key() {
   fi
   case $k in
     $'\n'|$'\r'|' ') REPLY=enter ;;
-    k|K) REPLY=up ;;
-    j|J) REPLY=down ;;
+    j|J) REPLY=up ;;
+    k|K) REPLY=down ;;
     q|Q) REPLY=q ;;
     r|R) REPLY=r ;;
     d|D) REPLY=d ;;
@@ -1228,6 +1332,12 @@ activate() {
 if [[ ${1:-} == --digit-selftest ]]; then
   . "${0:A:h}/lanjump-digit-selftest.zsh"
   digit_selftest
+  exit $?
+fi
+
+if [[ ${1:-} == --host-selftest ]]; then
+  . "${0:A:h}/lanjump-host-selftest.zsh"
+  host_selftest
   exit $?
 fi
 

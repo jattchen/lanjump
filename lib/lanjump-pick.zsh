@@ -42,6 +42,10 @@ w_name=4 w_status=6 w_time=11 w_summary=4 w_path=4
 show_summary=1
 show_path=1
 draw_remain=0
+view_start=1
+view_end=0
+view_above=0
+view_below=0
 host_short=""
 prepared_keys=0
 prepared_color=0
@@ -191,10 +195,10 @@ term_cols() {
 
 term_lines() {
   local r=${LINES:-0}
-  if (( r < 8 )); then
+  if (( r < 1 )); then
     r=$(stty size 2>/dev/null | awk '{print $1}')
   fi
-  (( r < 12 )) && r=12
+  (( r < 1 )) && r=1
   print -r -- $r
 }
 
@@ -604,6 +608,83 @@ session_preview_lines() {
   done
 }
 
+# Sticky window of `vis` item rows that keeps `cur` on screen.
+# Sets view_start view_end view_above view_below (1-based inclusive).
+list_window() {
+  local -i n=$1 vis=$2 cur=$3
+  view_end=0
+  view_above=0
+  view_below=0
+  (( n < 1 )) && { view_start=1; return }
+  (( vis < 1 )) && vis=1
+  (( vis > n )) && vis=n
+  (( cur < 1 )) && cur=1
+  (( cur > n )) && cur=n
+  (( view_start < 1 )) && view_start=1
+  if (( cur < view_start )); then
+    view_start=$cur
+  fi
+  if (( cur > view_start + vis - 1 )); then
+    view_start=$(( cur - vis + 1 ))
+  fi
+  if (( view_start + vis - 1 > n )); then
+    view_start=$(( n - vis + 1 ))
+  fi
+  (( view_start < 1 )) && view_start=1
+  view_end=$(( view_start + vis - 1 ))
+  (( view_end > n )) && view_end=n
+  view_above=$(( view_start - 1 ))
+  view_below=$(( n - view_end ))
+}
+
+# Fit list + overflow hints + optional section gap into `body` rows.
+# gap_after: emit a blank after this index when the window spans it (0 = none).
+plan_list_view() {
+  local -i body=$1 n=$2 cur=$3 gap_after=${4:-0}
+  local -i hints vis need max_hints
+  (( n < 1 || body < 1 )) && {
+    view_start=1
+    view_end=0
+    view_above=0
+    view_below=0
+    return
+  }
+  # Keep at least one row for the selected item; hints use leftovers only.
+  max_hints=2
+  (( max_hints > body - 1 )) && max_hints=$(( body - 1 ))
+  (( max_hints < 0 )) && max_hints=0
+  for (( hints = 0; hints <= max_hints; hints++ )); do
+    vis=$(( body - hints ))
+    (( vis < 1 )) && vis=1
+    list_window $n $vis $cur
+    if (( gap_after > 0 && view_start <= gap_after && view_end > gap_after )); then
+      vis=$(( body - hints - 1 ))
+      (( vis < 1 )) && vis=1
+      list_window $n $vis $cur
+    fi
+    need=0
+    (( view_above > 0 )) && (( need++ ))
+    (( view_below > 0 )) && (( need++ ))
+    (( need == hints )) && break
+  done
+  (( hints > max_hints )) && hints=$max_hints
+  # Drop hints that did not get a row so they cannot steal the selected item.
+  if (( view_above > 0 )); then
+    if (( hints > 0 )); then
+      (( hints-- ))
+    else
+      view_above=0
+    fi
+  fi
+  if (( view_below > 0 )); then
+    if (( hints > 0 )); then
+      (( hints-- ))
+    else
+      view_below=0
+    fi
+  fi
+}
+
 draw_emit() {
   (( draw_remain > 0 )) || return 1
   print -r -- "$1"
@@ -668,7 +749,9 @@ draw() {
     draw_emit "  ${c_dim}${sep}${c_reset}" || return
   fi
 
-  for i in {1..$n}; do
+  plan_list_view $draw_remain $n $cursor $session_end
+  (( view_above > 0 )) && draw_emit "  ${c_dim}↑ 还有 ${view_above}${c_reset}"
+  for (( i = view_start; i <= view_end; i++ )); do
     if (( i == session_end + 1 && session_end > 0 )); then
       draw_emit "" || break
     fi
@@ -688,6 +771,7 @@ draw() {
     printf -v line '  %s %2d  %s' "$mark" "$i" "$line"
     draw_emit "$line" || break
   done
+  (( view_below > 0 )) && draw_emit "  ${c_dim}↓ 还有 ${view_below}${c_reset}"
 
   if [[ ${items_kind[$cursor]} == session ]] && (( draw_remain >= 3 )); then
     local pname psum pmeta pl
@@ -794,8 +878,8 @@ read_key() {
   fi
   case $k in
     $'\n'|$'\r'|' ') REPLY=enter ;;
-    k|K) REPLY=up ;;
-    j|J) REPLY=down ;;
+    j|J) REPLY=up ;;
+    k|K) REPLY=down ;;
     q|Q) REPLY=q ;;
     n|N) REPLY=n ;;
     s|S) REPLY=s ;;
