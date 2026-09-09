@@ -1,5 +1,6 @@
 # Sourced by lanjump-pick.zsh --pick-selftest.
-# Expects dw, fit_right, fit_left, padw, compute_layout, fmt_session_row, draw.
+# Expects dw, fit_right, fit_left, padw, compute_layout, fmt_session_row, draw,
+# sort_session_items, toggle_sort_mode.
 
 pick_selftest() {
   local -i fails=0
@@ -244,6 +245,66 @@ pick_selftest() {
   plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
   if [[ $plain != *sess-32* ]]; then
     print -u2 "FAIL draw/viewport tiny screen missing selected sess-32"
+    (( fails++ ))
+  fi
+
+  local time_order attached_order
+  time_order='idle-new att-new att-old idle-old new shell hosts quit'
+  attached_order='att-new att-old idle-new idle-old new shell hosts quit'
+
+  sort_fixture() {
+    items_kind=(session session session session new shell hosts quit)
+    items_id=(att-old idle-old idle-new att-new new shell hosts quit)
+    items_name=("${items_id[@]}")
+    items_att=(1 0 0 1 '' '' '' '')
+    items_time=('01-01 00:01' '01-01 00:00' '01-01 00:05' '01-01 00:03' '' '' '' '')
+    items_activity=(100 50 300 200 '' '' '' '')
+    items_path=('~/a' '~/b' '~/c' '~/d' '' '' '' '')
+    items_summary=('sa' 'sb' 'sc' 'sd' '' '' '' '')
+    items_cmd=(zsh zsh zsh zsh '' '' '' '')
+    sort_mode=time
+    cursor=1
+  }
+
+  sort_fixture
+  sort_session_items
+  expect sort/time-desc "$time_order" "${items_id[*]}"
+
+  sort_mode=attached
+  sort_session_items
+  expect sort/attached-first "$attached_order" "${items_id[*]}"
+
+  toggle_sort_mode
+  expect sort/toggle-back "$time_order" "${items_id[*]}"
+
+  sort_fixture
+  sort_session_items
+  cursor=3
+  expect sort/cursor-before att-old "${items_id[$cursor]}"
+  toggle_sort_mode
+  expect sort/cursor-keep att-old "${items_id[$cursor]}"
+  expect sort/cursor-keep-order "$attached_order" "${items_id[*]}"
+
+  HAS_TMUX=1
+  host_short=testhost
+  COLUMNS=120
+  LINES=40
+  sort_fixture
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'o 占用优先'* ]]; then
+    print -u2 "FAIL help/time missing o 占用优先"
+    (( fails++ ))
+  fi
+  sort_mode=attached
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'o 按时间'* ]]; then
+    print -u2 "FAIL help/attached missing o 按时间"
+    (( fails++ ))
+  fi
+  if [[ $plain == *'o 占用优先'* ]]; then
+    print -u2 "FAIL help/attached still shows o 占用优先"
     (( fails++ ))
   fi
 

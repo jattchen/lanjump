@@ -32,8 +32,10 @@ else
   c_reset= c_bold= c_dim= c_green= c_cyan= c_red= c_rev=
 fi
 
-typeset -a items_kind items_id items_name items_att items_time items_path items_summary items_cmd
+typeset -a items_kind items_id items_name items_att items_time items_path items_summary items_cmd items_activity
 cursor=1
+# time = all by last activity desc; attached = 占用中 first, idle after, each time-desc.
+sort_mode=time
 loading=0
 stty_orig=
 PENDING_KEY=""
@@ -480,10 +482,116 @@ _fmt_header() {
   REPLY=$extra
 }
 
+sort_session_items() {
+  local keep="${1-}" line
+  local -i i idx
+  local -a skind sid sname satt stime spath ssummary scmd sact
+  local -a akind aid aname aatt atime apath asummary acmd aact
+  local -a decorated lines
+
+  if [[ -z $keep ]] && (( cursor >= 1 && cursor <= ${#items_id} )); then
+    keep=${items_id[$cursor]}
+  fi
+
+  for (( i = 1; i <= ${#items_kind}; i++ )); do
+    if [[ ${items_kind[$i]} == session ]]; then
+      skind+=("${items_kind[$i]}")
+      sid+=("${items_id[$i]}")
+      sname+=("${items_name[$i]}")
+      satt+=("${items_att[$i]}")
+      stime+=("${items_time[$i]}")
+      spath+=("${items_path[$i]}")
+      ssummary+=("${items_summary[$i]}")
+      scmd+=("${items_cmd[$i]}")
+      sact+=("${items_activity[$i]}")
+    else
+      akind+=("${items_kind[$i]}")
+      aid+=("${items_id[$i]}")
+      aname+=("${items_name[$i]}")
+      aatt+=("${items_att[$i]}")
+      atime+=("${items_time[$i]}")
+      apath+=("${items_path[$i]}")
+      asummary+=("${items_summary[$i]}")
+      acmd+=("${items_cmd[$i]}")
+      aact+=("${items_activity[$i]}")
+    fi
+  done
+
+  items_kind=()
+  items_id=()
+  items_name=()
+  items_att=()
+  items_time=()
+  items_path=()
+  items_summary=()
+  items_cmd=()
+  items_activity=()
+
+  if (( ${#skind} )); then
+    decorated=()
+    for (( i = 1; i <= ${#skind}; i++ )); do
+      if [[ ${sort_mode:-time} == attached ]]; then
+        decorated+=("${satt[$i]}"$'\x1f'"${sact[$i]}"$'\x1f'"$i")
+      else
+        decorated+=("${sact[$i]}"$'\x1f'"$i")
+      fi
+    done
+    if [[ ${sort_mode:-time} == attached ]]; then
+      lines=("${(@f)$(printf '%s\n' "${decorated[@]}" | sort -t $'\x1f' -k1,1nr -k2,2nr)}")
+    else
+      lines=("${(@f)$(printf '%s\n' "${decorated[@]}" | sort -t $'\x1f' -k1,1nr)}")
+    fi
+    for line in "${lines[@]}"; do
+      [[ -z $line ]] && continue
+      idx=${line##*$'\x1f'}
+      items_kind+=("${skind[$idx]}")
+      items_id+=("${sid[$idx]}")
+      items_name+=("${sname[$idx]}")
+      items_att+=("${satt[$idx]}")
+      items_time+=("${stime[$idx]}")
+      items_path+=("${spath[$idx]}")
+      items_summary+=("${ssummary[$idx]}")
+      items_cmd+=("${scmd[$idx]}")
+      items_activity+=("${sact[$idx]}")
+    done
+  fi
+
+  for (( i = 1; i <= ${#akind}; i++ )); do
+    items_kind+=("${akind[$i]}")
+    items_id+=("${aid[$i]}")
+    items_name+=("${aname[$i]}")
+    items_att+=("${aatt[$i]}")
+    items_time+=("${atime[$i]}")
+    items_path+=("${apath[$i]}")
+    items_summary+=("${asummary[$i]}")
+    items_cmd+=("${acmd[$i]}")
+    items_activity+=("${aact[$i]}")
+  done
+
+  cursor=1
+  if [[ -n $keep ]]; then
+    for (( i = 1; i <= ${#items_id}; i++ )); do
+      if [[ ${items_id[$i]} == "$keep" ]]; then
+        cursor=$i
+        break
+      fi
+    done
+  fi
+}
+
+toggle_sort_mode() {
+  if [[ ${sort_mode:-time} == attached ]]; then
+    sort_mode=time
+  else
+    sort_mode=attached
+  fi
+  sort_session_items
+}
+
 load_items() {
   loading=1
   local keep="${1-}" line when title cmd wname
-  local -a raw sorted f
+  local -a raw f
   if [[ -z $keep ]] && (( cursor >= 1 && cursor <= ${#items_id} )); then
     keep=${items_id[$cursor]}
   fi
@@ -496,6 +604,7 @@ load_items() {
   items_path=()
   items_summary=()
   items_cmd=()
+  items_activity=()
   raw=()
 
   if [[ $HAS_TMUX -eq 1 ]] && tmuxx list-sessions >/dev/null 2>&1; then
@@ -503,8 +612,7 @@ load_items() {
   fi
 
   if (( ${#raw} )); then
-    sorted=("${(@f)$(printf '%s\n' "${raw[@]}" | sort -t $'\x1f' -k1,1nr)}")
-    for line in "${sorted[@]}"; do
+    for line in "${raw[@]}"; do
       [[ -z $line ]] && continue
       f=("${(@ps:\x1f:)line}")
       (( ${#f} < 8 )) && continue
@@ -520,6 +628,7 @@ load_items() {
       items_path+=("$(short_path "${f[5]}")")
       items_summary+=("$(useful_summary "$title" "$cmd" "$wname")")
       items_cmd+=("$cmd")
+      items_activity+=("${f[1]}")
     done
   fi
 
@@ -532,6 +641,7 @@ load_items() {
     items_path+=("")
     items_summary+=("")
     items_cmd+=("")
+    items_activity+=("")
   fi
 
   items_kind+=("shell")
@@ -542,6 +652,7 @@ load_items() {
   items_path+=("")
   items_summary+=("")
   items_cmd+=("")
+  items_activity+=("")
 
   items_kind+=("hosts")
   items_id+=("hosts")
@@ -551,6 +662,7 @@ load_items() {
   items_path+=("")
   items_summary+=("")
   items_cmd+=("")
+  items_activity+=("")
 
   items_kind+=("quit")
   items_id+=("quit")
@@ -560,17 +672,9 @@ load_items() {
   items_path+=("")
   items_summary+=("")
   items_cmd+=("")
+  items_activity+=("")
 
-  cursor=1
-  if [[ -n $keep ]]; then
-    local i
-    for i in {1..${#items_id}}; do
-      if [[ ${items_id[$i]} == "$keep" ]]; then
-        cursor=$i
-        break
-      fi
-    done
-  fi
+  sort_session_items "$keep"
   loading=0
 }
 
@@ -695,8 +799,13 @@ draw_emit() {
 draw_help() {
   local -i max=$1
   local -a keys
-  local buf piece
-  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "h 换机器" "r 刷新" "q 退出")
+  local buf piece sort_key
+  if [[ ${sort_mode:-time} == attached ]]; then
+    sort_key='o 按时间'
+  else
+    sort_key='o 占用优先'
+  fi
+  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "h 换机器" "r 刷新" "$sort_key" "q 退出")
   buf=""
   for piece in "${keys[@]}"; do
     if [[ -z $buf ]]; then
@@ -887,6 +996,7 @@ read_key() {
     d|D) REPLY=d ;;
     e|E) REPLY=e ;;
     h|H) REPLY=h ;;
+    o|O) REPLY=o ;;
     g) REPLY=top ;;
     G) REPLY=bottom ;;
     [0-9]) REPLY="num$k" ;;
@@ -1095,6 +1205,10 @@ while true; do
       ;;
     r)
       load_items
+      draw
+      ;;
+    o)
+      toggle_sort_mode
       draw
       ;;
     num*)
