@@ -1,6 +1,7 @@
 # Sourced by lanjump-pick.zsh --pick-selftest.
 # Expects dw, fit_right, fit_left, padw, compute_layout, fmt_session_row, draw,
-# sort_session_items, toggle_sort_mode.
+# sort_session_items, toggle_sort_mode, filter_session_items,
+# toggle_session_filter, save_session_filter, load_session_filter.
 
 pick_selftest() {
   local -i fails=0
@@ -262,6 +263,11 @@ pick_selftest() {
     items_path=('~/a' '~/b' '~/c' '~/d' '' '' '' '')
     items_summary=('sa' 'sb' 'sc' 'sd' '' '' '' '')
     items_cmd=(zsh zsh zsh zsh '' '' '' '')
+    all_kind=() all_id=() all_name=() all_att=() all_time=()
+    all_path=() all_summary=() all_cmd=() all_activity=()
+    filter_include=
+    filter_exclude=
+    filter_on=0
     sort_mode=time
     cursor=1
   }
@@ -307,6 +313,179 @@ pick_selftest() {
     print -u2 "FAIL help/attached still shows o 占用优先"
     (( fails++ ))
   fi
+
+  local oldhome testhome
+  oldhome=$HOME
+  testhome=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-filter.XXXXXX")
+  HOME=$testhome
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+
+  filter_fixture() {
+    items_kind=(session session session session session new shell hosts quit)
+    items_id=(grok-new grok-old other-new other-old cmd-only new shell hosts quit)
+    items_name=(Grok-new grok-old other-new other-old plain new shell hosts quit)
+    items_att=(1 0 0 1 0 '' '' '' '')
+    items_time=('01-01 00:05' '01-01 00:01' '01-01 00:04' '01-01 00:00' '01-01 00:02' '' '' '' '')
+    items_activity=(300 100 200 50 150 '' '' '' '')
+    items_path=('~/proj/grok' '~/proj/old-grok' '~/proj/other' '~/old/other' '~/plain' '' '' '' '')
+    items_summary=('work grok' 'old grok notes' 'other work' 'legacy stash' 'plain' '' '' '' '')
+    items_cmd=(zsh zsh zsh zsh grok-bin '' '' '' '')
+    all_kind=() all_id=() all_name=() all_att=() all_time=()
+    all_path=() all_summary=() all_cmd=() all_activity=()
+    filter_include=
+    filter_exclude=
+    filter_on=0
+    sort_mode=time
+    cursor=1
+    HAS_TMUX=1
+    host_short=testhost
+    COLUMNS=120
+    LINES=40
+  }
+
+  local actions='new shell hosts quit'
+  local all_ids='grok-new grok-old other-new other-old cmd-only new shell hosts quit'
+
+  filter_fixture
+  filter_include=grok
+  filter_on=1
+  filter_session_items
+  expect filter/include-ids "grok-new grok-old $actions" "${items_id[*]}"
+  if [[ ${items_id[*]} == *cmd-only* ]]; then
+    print -u2 "FAIL filter/include matched pane command grok-bin"
+    (( fails++ ))
+  fi
+
+  filter_fixture
+  filter_exclude=old
+  filter_on=1
+  filter_session_items
+  expect filter/exclude-ids "grok-new other-new cmd-only $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include=grok
+  filter_exclude=old
+  filter_on=1
+  filter_session_items
+  expect filter/stack-ids "grok-new $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include=GROK
+  filter_on=1
+  filter_session_items
+  expect filter/case-ids "grok-new grok-old $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include=legacy
+  filter_on=1
+  filter_session_items
+  expect filter/summary-ids "other-old $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include='proj/other'
+  filter_on=1
+  filter_session_items
+  expect filter/path-ids "other-new $actions" "${items_id[*]}"
+
+  filter_fixture
+  session_preview_lines() { print -r -- 'preview has grok secret'; }
+  filter_include=secret
+  filter_on=1
+  filter_session_items
+  expect filter/ignore-preview "$actions" "${items_id[*]}"
+  session_preview_lines() { return 0 }
+
+  filter_fixture
+  filter_include=grok
+  filter_exclude=old
+  save_session_filter
+  filter_on=1
+  filter_session_items
+  expect filter/saved-apply "grok-new $actions" "${items_id[*]}"
+  toggle_session_filter
+  expect filter/f-off "$all_ids" "${items_id[*]}"
+  expect filter/f-off-keeps-include grok "$filter_include"
+  expect filter/f-off-keeps-exclude old "$filter_exclude"
+  filter_include=wiped
+  filter_exclude=wiped
+  load_session_filter
+  expect filter/saved-pair-include grok "$filter_include"
+  expect filter/saved-pair-exclude old "$filter_exclude"
+  toggle_session_filter
+  expect filter/f-on-again "grok-new $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_exclude=plain
+  filter_on=1
+  sort_mode=time
+  sort_session_items
+  filter_session_items
+  expect filter/sort-time "grok-new other-new grok-old other-old $actions" "${items_id[*]}"
+  filter_fixture
+  filter_exclude=plain
+  filter_on=1
+  sort_mode=attached
+  sort_session_items
+  filter_session_items
+  expect filter/sort-attached "grok-new other-old other-new grok-old $actions" "${items_id[*]}"
+
+  filter_fixture
+  filter_include=grok
+  filter_on=0
+  filter_session_items
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *other-new* ]]; then
+    print -u2 "FAIL filter/draw-off missing unfiltered other-new"
+    (( fails++ ))
+  fi
+  if [[ $plain == *'含 grok'* ]]; then
+    print -u2 "FAIL filter/draw-off showed inactive include"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'f 筛选'* ]]; then
+    print -u2 "FAIL filter/draw-off missing f 筛选"
+    (( fails++ ))
+  fi
+
+  filter_fixture
+  filter_include=grok
+  filter_exclude=old
+  filter_on=1
+  filter_session_items
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'含 grok'* ]]; then
+    print -u2 "FAIL filter/draw-on missing 含 grok"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'不含 old'* ]]; then
+    print -u2 "FAIL filter/draw-on missing 不含 old"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'1/5'* ]]; then
+    print -u2 "FAIL filter/draw-on missing match count 1/5"
+    (( fails++ ))
+  fi
+  if [[ $plain != *Grok-new* && $plain != *grok-new* ]]; then
+    print -u2 "FAIL filter/draw-on missing matching session"
+    (( fails++ ))
+  fi
+  if [[ $plain == *other-new* ]]; then
+    print -u2 "FAIL filter/draw-on showed excluded other-new"
+    (( fails++ ))
+  fi
+  if [[ $plain != *退出* ]]; then
+    print -u2 "FAIL filter/draw-on missing action 退出"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'f 显示全部'* ]]; then
+    print -u2 "FAIL filter/draw-on missing f 显示全部"
+    (( fails++ ))
+  fi
+
+  HOME=$oldhome
+  rm -rf "$testhome"
 
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"

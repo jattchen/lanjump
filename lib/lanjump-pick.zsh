@@ -33,9 +33,13 @@ else
 fi
 
 typeset -a items_kind items_id items_name items_att items_time items_path items_summary items_cmd items_activity
+typeset -a all_kind all_id all_name all_att all_time all_path all_summary all_cmd all_activity
 cursor=1
 # time = all by last activity desc; attached = 占用中 first, idle after, each time-desc.
 sort_mode=time
+filter_include=
+filter_exclude=
+typeset -i filter_on=0 filter_match_count=0 filter_total_count=0
 loading=0
 stty_orig=
 PENDING_KEY=""
@@ -585,7 +589,192 @@ toggle_sort_mode() {
   else
     sort_mode=attached
   fi
+  if (( ${#all_kind} )); then
+    copy_all_to_items
+  fi
   sort_session_items
+  copy_items_to_all
+  filter_session_items
+}
+
+copy_items_to_all() {
+  all_kind=("${items_kind[@]}")
+  all_id=("${items_id[@]}")
+  all_name=("${items_name[@]}")
+  all_att=("${items_att[@]}")
+  all_time=("${items_time[@]}")
+  all_path=("${items_path[@]}")
+  all_summary=("${items_summary[@]}")
+  all_cmd=("${items_cmd[@]}")
+  all_activity=("${items_activity[@]}")
+}
+
+copy_all_to_items() {
+  items_kind=("${all_kind[@]}")
+  items_id=("${all_id[@]}")
+  items_name=("${all_name[@]}")
+  items_att=("${all_att[@]}")
+  items_time=("${all_time[@]}")
+  items_path=("${all_path[@]}")
+  items_summary=("${all_summary[@]}")
+  items_cmd=("${all_cmd[@]}")
+  items_activity=("${all_activity[@]}")
+}
+
+session_filter_file() {
+  REPLY="$HOME/Library/Application Support/lanjump/session-filter"
+}
+
+sanitize_filter_keyword() {
+  local s=$1
+  s=${s##[[:space:]]#}
+  s=${s%%[[:space:]]#}
+  s=${s//[$'\x00'-$'\x1f'$'\x7f']/}
+  if (( ${#s} > 80 )); then
+    s=$s[1,80]
+  fi
+  REPLY=$s
+}
+
+save_session_filter() {
+  local file dir
+  session_filter_file
+  file=$REPLY
+  dir=${file:h}
+  mkdir -p "$dir"
+  sanitize_filter_keyword "$filter_include"
+  filter_include=$REPLY
+  sanitize_filter_keyword "$filter_exclude"
+  filter_exclude=$REPLY
+  print -r -- "include ${filter_include}" >"$file"
+  print -r -- "exclude ${filter_exclude}" >>"$file"
+}
+
+load_session_filter() {
+  local file line key val
+  session_filter_file
+  file=$REPLY
+  filter_include=
+  filter_exclude=
+  [[ -f $file ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -z $line ]] && continue
+    key=${line%% *}
+    if [[ $line == *' '* ]]; then
+      val=${line#* }
+    else
+      val=
+    fi
+    sanitize_filter_keyword "$val"
+    val=$REPLY
+    case $key in
+      include) filter_include=$val ;;
+      exclude) filter_exclude=$val ;;
+    esac
+  done <"$file"
+}
+
+session_src_matches() {
+  local i=$1
+  local hay needle
+  hay="${all_name[$i]}"$'\x1f'"${all_summary[$i]}"$'\x1f'"${all_path[$i]}"
+  hay=${hay:l}
+  if [[ -n $filter_include ]]; then
+    needle=${filter_include:l}
+    [[ $hay == *${(b)needle}* ]] || return 1
+  fi
+  if [[ -n $filter_exclude ]]; then
+    needle=${filter_exclude:l}
+    [[ $hay == *${(b)needle}* ]] && return 1
+  fi
+  return 0
+}
+
+filter_session_items() {
+  local -i i n_sess=0 n_match=0
+  local keep
+  if (( ${#all_kind} == 0 )); then
+    copy_items_to_all
+  fi
+  if (( cursor >= 1 && cursor <= ${#items_id} )); then
+    keep=${items_id[$cursor]}
+  fi
+  items_kind=()
+  items_id=()
+  items_name=()
+  items_att=()
+  items_time=()
+  items_path=()
+  items_summary=()
+  items_cmd=()
+  items_activity=()
+  for (( i = 1; i <= ${#all_kind}; i++ )); do
+    if [[ ${all_kind[$i]} == session ]]; then
+      (( n_sess++ ))
+      if (( filter_on )) && ! session_src_matches $i; then
+        continue
+      fi
+      (( n_match++ ))
+    fi
+    items_kind+=("${all_kind[$i]}")
+    items_id+=("${all_id[$i]}")
+    items_name+=("${all_name[$i]}")
+    items_att+=("${all_att[$i]}")
+    items_time+=("${all_time[$i]}")
+    items_path+=("${all_path[$i]}")
+    items_summary+=("${all_summary[$i]}")
+    items_cmd+=("${all_cmd[$i]}")
+    items_activity+=("${all_activity[$i]}")
+  done
+  filter_total_count=$n_sess
+  filter_match_count=$n_match
+  cursor=1
+  if [[ -n ${keep:-} ]]; then
+    for (( i = 1; i <= ${#items_id}; i++ )); do
+      if [[ ${items_id[$i]} == "$keep" ]]; then
+        cursor=$i
+        break
+      fi
+    done
+  fi
+}
+
+toggle_session_filter() {
+  if (( filter_on )); then
+    filter_on=0
+  else
+    load_session_filter
+    filter_on=1
+  fi
+  filter_session_items
+}
+
+prompt_filter() {
+  local which=$1 label kw
+  if [[ $which == include ]]; then
+    label='包含关键字（空或 Esc 清除）: '
+  else
+    label='排除关键字（空或 Esc 清除）: '
+  fi
+  restore_tty
+  print
+  print -n "$label"
+  read -r kw || kw=
+  if [[ $kw == $'\e' ]]; then
+    kw=
+  fi
+  sanitize_filter_keyword "$kw"
+  kw=$REPLY
+  if [[ $which == include ]]; then
+    filter_include=$kw
+  else
+    filter_exclude=$kw
+  fi
+  save_session_filter
+  filter_on=1
+  setup_tty
+  filter_session_items
+  draw
 }
 
 load_items() {
@@ -675,6 +864,8 @@ load_items() {
   items_activity+=("")
 
   sort_session_items "$keep"
+  copy_items_to_all
+  filter_session_items
   loading=0
 }
 
@@ -799,13 +990,18 @@ draw_emit() {
 draw_help() {
   local -i max=$1
   local -a keys
-  local buf piece sort_key
+  local buf piece sort_key filter_key
   if [[ ${sort_mode:-time} == attached ]]; then
     sort_key='o 按时间'
   else
     sort_key='o 占用优先'
   fi
-  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "h 换机器" "r 刷新" "$sort_key" "q 退出")
+  if (( filter_on )); then
+    filter_key='f 显示全部'
+  else
+    filter_key='f 筛选'
+  fi
+  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "/ 包含" "! 排除" "q 退出")
   buf=""
   for piece in "${keys[@]}"; do
     if [[ -z $buf ]]; then
@@ -825,7 +1021,7 @@ draw_help() {
 
 draw() {
   local -i cols rows i n session_end=0
-  local mark line header sep
+  local mark line header sep title
   cols=$(term_cols)
   rows=$(term_lines)
   n=${#items_kind}
@@ -838,7 +1034,13 @@ draw() {
 
   print -n $'\e[H\e[J'
   [[ -n $host_short ]] || host_short=$(hostname -s)
-  _fit_right "$host_short  选择 tmux session" $(( cols - 2 ))
+  title="$host_short  选择 tmux session"
+  if (( filter_on )); then
+    [[ -n $filter_include ]] && title+="  含 ${filter_include}"
+    [[ -n $filter_exclude ]] && title+="  不含 ${filter_exclude}"
+    title+="  ${filter_match_count}/${filter_total_count}"
+  fi
+  _fit_right "$title" $(( cols - 2 ))
   draw_emit "${c_bold}  ${REPLY}${c_reset}" || return
   draw_help $cols || return
   draw_emit "" || return
@@ -847,7 +1049,11 @@ draw() {
     draw_emit "  ${c_dim}（这台机器上没有 tmux，可以直接进普通 shell；exit 或 Ctrl+D 返回）${c_reset}" || return
     draw_emit "" || return
   elif (( session_end == 0 )); then
-    draw_emit "  ${c_dim}（当前没有 session）${c_reset}" || return
+    if (( filter_on )); then
+      draw_emit "  ${c_dim}（没有匹配的 session）${c_reset}" || return
+    else
+      draw_emit "  ${c_dim}（当前没有 session）${c_reset}" || return
+    fi
     draw_emit "" || return
   else
     _fmt_header
@@ -997,6 +1203,9 @@ read_key() {
     e|E) REPLY=e ;;
     h|H) REPLY=h ;;
     o|O) REPLY=o ;;
+    f|F) REPLY=f ;;
+    /) REPLY=/ ;;
+    !) REPLY=! ;;
     g) REPLY=top ;;
     G) REPLY=bottom ;;
     [0-9]) REPLY="num$k" ;;
@@ -1155,6 +1364,8 @@ fi
 
 tmux_prepare_color
 tmux_prepare_keys
+load_session_filter
+filter_on=0
 load_items
 setup_tty
 draw
@@ -1210,6 +1421,16 @@ while true; do
     o)
       toggle_sort_mode
       draw
+      ;;
+    f)
+      toggle_session_filter
+      draw
+      ;;
+    /)
+      prompt_filter include
+      ;;
+    !)
+      prompt_filter exclude
       ;;
     num*)
       collect_index_digits "${REPLY#num}" ${#items_kind}
