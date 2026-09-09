@@ -1347,6 +1347,15 @@ if [[ ${1:-} == --print-lan ]]; then
   exit 0
 fi
 
+if [[ ${1:-} == attach ]]; then
+  picker=$(picker_path)
+  if [[ -z $picker ]]; then
+    print -u2 "本机 tmux 选择界面不存在。请重新安装：lanjump upgrade"
+    exit 1
+  fi
+  exec /bin/zsh "$picker" --attach "${2:-}"
+fi
+
 ensure_setup
 detect_lan
 load_hosts
