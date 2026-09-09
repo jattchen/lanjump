@@ -1,7 +1,10 @@
 # Sourced by lanjump-pick.zsh --pick-selftest.
 # Expects dw, fit_right, fit_left, padw, compute_layout, fmt_session_row, draw,
 # sort_session_items, toggle_sort_mode, filter_session_items,
-# toggle_session_filter, save_session_filter, load_session_filter.
+# toggle_session_filter, save_session_filter, load_session_filter,
+# bulk_idle_unpinned_names, delete_idle_unpinned_sessions,
+# session_delete_needs_pin_warning, pin_delete_warning_text,
+# rename_pin_record, restore_pinned_sessions.
 
 pick_selftest() {
   local -i fails=0
@@ -486,6 +489,168 @@ pick_selftest() {
 
   HOME=$oldhome
   rm -rf "$testhome"
+
+  items_kind=(session session)
+  items_id=(keep loose)
+  items_name=(keep loose)
+  items_att=(0 0)
+  items_time=('01-01 00:00' '01-01 00:00')
+  items_path=('~/keep' '~/loose')
+  items_summary=('sa' 'sb')
+  items_cmd=(zsh zsh)
+  items_pinned=(1 0)
+  w_name=8 w_status=6 w_time=11
+  show_summary=0
+  show_path=0
+  _fmt_session_row 1
+  if [[ $REPLY != keep\** ]]; then
+    print -u2 "FAIL pin/marker-on missing keep* got=$(printf %q "$REPLY")"
+    (( fails++ ))
+  fi
+  _fmt_session_row 2
+  if [[ $REPLY == *loose\** ]]; then
+    print -u2 "FAIL pin/marker-off showed * on unpinned got=$(printf %q "$REPLY")"
+    (( fails++ ))
+  fi
+
+  oldhome=$HOME
+  testhome=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-pin.XXXXXX")
+  HOME=$testhome
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+
+  pin_fixture() {
+    items_kind=(session session session session new shell hosts quit)
+    items_id=(idle-pin idle-free busy-free busy-pin new shell hosts quit)
+    items_name=("${items_id[@]}")
+    items_att=(0 0 1 1 '' '' '' '')
+    items_time=('01-01 00:00' '01-01 00:00' '01-01 00:00' '01-01 00:00' '' '' '' '')
+    items_activity=(1 2 3 4 '' '' '' '')
+    items_path=('~/pin' '~/free' '~/busy' '~/busypin' '' '' '' '')
+    items_summary=(sa sb sc sd '' '' '' '')
+    items_cmd=(zsh zsh zsh zsh '' '' '' '')
+    items_pinned=(1 0 0 1 '' '' '' '')
+    all_kind=() all_id=() all_name=() all_att=() all_time=()
+    all_path=() all_summary=() all_cmd=() all_activity=() all_pinned=()
+    filter_include=
+    filter_exclude=
+    filter_on=0
+    sort_mode=time
+    cursor=1
+    HAS_TMUX=1
+  }
+
+  pin_fixture
+  expect pin/bulk-targets idle-free "$(bulk_idle_unpinned_names)"
+
+  pin_fixture
+  filter_include=idle
+  filter_on=1
+  copy_items_to_all
+  filter_session_items
+  expect pin/bulk-filter-targets idle-free "$(bulk_idle_unpinned_names)"
+
+  local tmux_log killed
+  tmux_log=$testhome/tmux.log
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      kill-session) return 0 ;;
+      has-session) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  pin_fixture
+  delete_idle_unpinned_sessions
+  killed=$(grep -E 'kill-session' "$tmux_log" | tr '\n' ' ')
+  if [[ $killed != *'kill-session -t =idle-free'* ]]; then
+    print -u2 "FAIL pin/bulk-kill missing idle-free got=$(printf %q "$killed")"
+    (( fails++ ))
+  fi
+  if [[ $killed == *idle-pin* || $killed == *busy-free* || $killed == *busy-pin* ]]; then
+    print -u2 "FAIL pin/bulk-kill hit protected session got=$(printf %q "$killed")"
+    (( fails++ ))
+  fi
+
+  pin_fixture
+  cursor=1
+  if ! session_delete_needs_pin_warning; then
+    print -u2 "FAIL pin/delete-warn pinned session skipped warning"
+    (( fails++ ))
+  fi
+  expect pin/delete-warn-text '该 session 为常驻状态，是否确认删除？' "$(pin_delete_warning_text)"
+  cursor=2
+  if session_delete_needs_pin_warning; then
+    print -u2 "FAIL pin/delete-warn unpinned session still warned"
+    (( fails++ ))
+  fi
+  cursor=5
+  if session_delete_needs_pin_warning; then
+    print -u2 "FAIL pin/delete-warn action row warned"
+    (( fails++ ))
+  fi
+
+  print -r -- $'name keep\ncwd /tmp/keep\ngrok gid-keep\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  rename_pin_record keep keep-renamed
+  load_pinned_sessions
+  if ! pin_record_exists keep-renamed; then
+    print -u2 "FAIL pin/rename missing new name in pin file"
+    (( fails++ ))
+  fi
+  if pin_record_exists keep; then
+    print -u2 "FAIL pin/rename left old name in pin file"
+    (( fails++ ))
+  fi
+  if [[ ${pinned_cwd[keep-renamed]:-} != /tmp/keep ]]; then
+    print -u2 "FAIL pin/rename dropped cwd got=${pinned_cwd[keep-renamed]:-}"
+    (( fails++ ))
+  fi
+  if [[ ${pinned_grok[keep-renamed]:-} != gid-keep ]]; then
+    print -u2 "FAIL pin/rename dropped grok id got=${pinned_grok[keep-renamed]:-}"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  print -r -- $'name missing\ncwd /tmp/missing-cwd\ngrok gid-missing\n\nname still-live\ncwd /tmp/live\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session)
+        [[ $2 == -t && $3 == '=still-live' ]] && return 0
+        return 1
+        ;;
+      new-session|set-option|send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  load_pinned_sessions
+  restore_pinned_sessions
+  local restore_log
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s missing -c /tmp/missing-cwd'* ]]; then
+    print -u2 "FAIL pin/restore missing new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'grok --resume gid-missing'* ]]; then
+    print -u2 "FAIL pin/restore missing grok resume got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s still-live'* ]]; then
+    print -u2 "FAIL pin/restore recreated live session"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s idle-free'* ]]; then
+    print -u2 "FAIL pin/restore created unpinned session"
+    (( fails++ ))
+  fi
+
+  HOME=$oldhome
+  rm -rf "$testhome"
+  unset -f tmuxx
+  tmuxx() {
+    [[ -n $TMUX_BIN ]] || return 1
+    command "$TMUX_BIN" "$@" </dev/null
+  }
 
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
