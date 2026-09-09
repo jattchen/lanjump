@@ -32,12 +32,17 @@ else
   c_reset= c_bold= c_dim= c_green= c_cyan= c_red= c_rev=
 fi
 
-typeset -a items_kind items_id items_name items_att items_time items_path items_summary items_cmd
+typeset -a items_kind items_id items_name items_att items_time items_path items_summary items_cmd items_activity
+typeset -a preview_lines
+typeset -A preview_cache
 cursor=1
 loading=0
 stty_orig=
 PENDING_KEY=""
 digit_wait=0.5
+preview_defer=0
+preview_wait=0.08
+preview_max_lines=10
 w_name=4 w_status=6 w_time=11 w_summary=4 w_path=4
 show_summary=1
 show_path=1
@@ -496,6 +501,8 @@ load_items() {
   items_path=()
   items_summary=()
   items_cmd=()
+  items_activity=()
+  preview_cache=()
   raw=()
 
   if [[ $HAS_TMUX -eq 1 ]] && tmuxx list-sessions >/dev/null 2>&1; then
@@ -520,6 +527,7 @@ load_items() {
       items_path+=("$(short_path "${f[5]}")")
       items_summary+=("$(useful_summary "$title" "$cmd" "$wname")")
       items_cmd+=("$cmd")
+      items_activity+=("${f[1]}")
     done
   fi
 
@@ -575,37 +583,59 @@ load_items() {
 }
 
 session_preview_lines() {
-  local name=$1 cmd=$4
-  local -i max_lines=$2 cols=$3 hist start i
+  local name=$1 cmd=$3
+  local -i max_lines=$2 start grok=0 saw_blank=0
   local cap line stripped
   local -a kept raw_lines
-  kept=()
+  preview_lines=()
+  (( max_lines > preview_max_lines )) && max_lines=$preview_max_lines
   (( max_lines < 1 )) && return
-  hist=$(( max_lines + 40 ))
-  cap=$(tmuxx capture-pane -t "=$name:." -p -J -S -$hist 2>/dev/null) || cap=""
-  if [[ -z ${cap//[$' \t\n']/} ]]; then
-    cap=$(tmuxx capture-pane -t "=$name:." -a -p -J -S -$hist 2>/dev/null) || cap=""
+  [[ $cmd == (#i)*grok* ]] && grok=1
+
+  if (( grok )); then
+    cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
+  else
+    cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
+    if [[ -z ${cap//[$' \t\n']/} ]]; then
+      cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
+    fi
   fi
+
   raw_lines=("${(@f)cap}")
+  kept=()
   for line in "${raw_lines[@]}"; do
     line="${line%"${line##*[![:space:]]}"}"
     stripped=${line//[[:space:]]/}
-    [[ -z $stripped || $stripped == █ ]] && continue
+    if [[ -z $stripped ]]; then
+      (( saw_blank )) && continue
+      kept+=("")
+      saw_blank=1
+      continue
+    fi
+    if [[ $stripped == █## ]]; then
+      continue
+    fi
+    saw_blank=0
     kept+=("$line")
   done
-  (( ${#kept} == 0 )) && return
-  if (( ${#kept} > max_lines )); then
-    if [[ $cmd == *grok* ]]; then
-      kept=("${(@)kept[1,max_lines]}")
-    else
-      start=$(( ${#kept} - max_lines + 1 ))
-      kept=("${(@)kept[start,-1]}")
+  while (( ${#kept} )) && [[ -z "${kept[1]}" ]]; do
+    kept=("${(@)kept[2,-1]}")
+  done
+  while (( ${#kept} )) && [[ -z "${kept[-1]}" ]]; do
+    kept=("${(@)kept[1,-2]}")
+  done
+  if (( ${#kept} )); then
+    stripped=${kept[-1]//[[:space:]]/}
+    if [[ $stripped != *[[:alnum:]]* ]]; then
+      kept=("${(@)kept[1,-2]}")
     fi
   fi
-  for line in "${kept[@]}"; do
-    _fit_right "$line" $cols
-    print -r -- "$REPLY"
-  done
+  (( ${#kept} == 0 )) && return
+  if (( ${#kept} > max_lines )); then
+    start=$(( ${#kept} - max_lines + 1 ))
+    kept=("${(@)kept[start,-1]}")
+  fi
+  preview_lines=("${kept[@]}")
 }
 
 # Sticky window of `vis` item rows that keeps `cur` on screen.
@@ -774,9 +804,8 @@ draw() {
   (( view_below > 0 )) && draw_emit "  ${c_dim}↓ 还有 ${view_below}${c_reset}"
 
   if [[ ${items_kind[$cursor]} == session ]] && (( draw_remain >= 3 )); then
-    local pname psum pmeta pl
-    local -i pname_w
-    local -a plines
+    local pname psum pmeta pl cache_key
+    local -i pname_w cap_lines
     draw_emit "" || return
     _fit_right "${items_name[$cursor]}" 20
     pname=$REPLY
@@ -788,12 +817,26 @@ draw() {
     _fit_right "${items_path[$cursor]}  ·  ${items_cmd[$cursor]}" $(( cols - 4 ))
     pmeta=$REPLY
     draw_emit "  ${c_dim}${pmeta}${c_reset}" || return
-    if (( draw_remain > 0 )); then
-      plines=("${(@f)$(session_preview_lines "${items_id[$cursor]}" $draw_remain $(( cols - 4 )) "${items_cmd[$cursor]}")}")
-      for pl in "${plines[@]}"; do
-        draw_emit "  ${c_dim}${pl}${c_reset}" || break
-      done
+    cap_lines=$draw_remain
+    (( cap_lines > preview_max_lines )) && cap_lines=$preview_max_lines
+    cache_key="${items_id[$cursor]}"$'\x1f'"${items_activity[$cursor]:-}"
+    if [[ -n ${preview_cache[$cache_key]+x} ]]; then
+      if [[ -n ${preview_cache[$cache_key]} ]]; then
+        preview_lines=("${(@ps:\x1e:)preview_cache[$cache_key]}")
+      else
+        preview_lines=()
+      fi
+    elif (( preview_defer )); then
+      draw_emit "  ${c_dim}…${c_reset}" || return
+      return
+    else
+      session_preview_lines "${items_id[$cursor]}" $cap_lines "${items_cmd[$cursor]}"
+      preview_cache[$cache_key]="${(pj:\x1e:)preview_lines}"
     fi
+    for pl in "${preview_lines[@]}"; do
+      _fit_right "$pl" $(( cols - 4 ))
+      draw_emit "  ${c_dim}${REPLY}${c_reset}" || break
+    done
   fi
 }
 
@@ -853,10 +896,14 @@ collect_index_digits() {
 }
 
 read_key() {
+  local timeout=${1-}
   local k k2 k3
   if [[ -n $PENDING_KEY ]]; then
     k=$PENDING_KEY
     PENDING_KEY=""
+  elif [[ -n $timeout ]]; then
+    read_byte_timeout $timeout || return 1
+    k=$REPLY
   else
     IFS= read -rsk1 k || return 1
   fi
@@ -1050,16 +1097,29 @@ setup_tty
 draw
 
 while true; do
-  read_key || continue
+  if (( preview_defer )); then
+    if ! read_key $preview_wait; then
+      preview_defer=0
+      draw
+      continue
+    fi
+  else
+    read_key || continue
+  fi
+  if [[ $REPLY != up && $REPLY != down ]]; then
+    preview_defer=0
+  fi
   case $REPLY in
     up)
       (( cursor-- ))
       (( cursor < 1 )) && cursor=${#items_kind}
+      preview_defer=1
       draw
       ;;
     down)
       (( cursor++ ))
       (( cursor > ${#items_kind} )) && cursor=1
+      preview_defer=1
       draw
       ;;
     top)
