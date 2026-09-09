@@ -30,6 +30,8 @@ lanjump upgrade
 
 tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 进入，`n` 新建，`e` 重命名，`d` 删除，`p` 常驻，`X` 删空闲，`h` 换机器，`o` 时间/占用/常驻，`v` 开关预览，`/` 包含，`!` 排除，`f` 开关上次筛选，`s` 普通 shell（`exit` 返回），`q` 退出。
 
+重启电脑或 `tmux kill-server` 之后再打开 tmux 列表：会重建常驻和上次占用中的命名 session（只回到当时目录，不自动开 grok；纯数字名不重建）。本机 Ghostty 会问一次要不要按占用中的 session 各开一个标签。也可以 `lanjump attach 名字` 直接进入已有 session。
+
 上次连的是本机还是远程，下次打开会记住并跳过扫描。
 
 ## 要求

@@ -4,7 +4,9 @@
 # toggle_session_filter, save_session_filter, load_session_filter,
 # bulk_idle_unpinned_names, delete_idle_unpinned_sessions,
 # session_delete_needs_pin_warning, pin_delete_warning_text,
-# rename_pin_record, restore_pinned_sessions.
+# rename_pin_record, restore_pinned_sessions, numeric_session_name,
+# collect_restore_names, should_restore_sessions, restore_saved_sessions,
+# ghostty_restore_available, ghostty_osascript_for_sessions.
 
 pick_selftest() {
   local -i fails=0
@@ -849,8 +851,8 @@ pick_selftest() {
     print -u2 "FAIL pin/restore missing new-session got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
-  if [[ $restore_log != *'grok --resume gid-missing'* ]]; then
-    print -u2 "FAIL pin/restore missing grok resume got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'grok --resume'* ]]; then
+    print -u2 "FAIL pin/restore still launched grok got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
   if [[ $restore_log == *'new-session -d -s still-live'* ]]; then
@@ -859,6 +861,185 @@ pick_selftest() {
   fi
   if [[ $restore_log == *'new-session -d -s idle-free'* ]]; then
     print -u2 "FAIL pin/restore created unpinned session"
+    (( fails++ ))
+  fi
+
+  if numeric_session_name 12; then
+    :
+  else
+    print -u2 "FAIL restore/numeric 12 not treated as numeric"
+    (( fails++ ))
+  fi
+  if numeric_session_name lanjump; then
+    print -u2 "FAIL restore/numeric lanjump treated as numeric"
+    (( fails++ ))
+  fi
+  if numeric_session_name 1a; then
+    print -u2 "FAIL restore/numeric 1a treated as numeric"
+    (( fails++ ))
+  fi
+
+  pinned_names=(missing 5 still-live)
+  pinned_cwd=()
+  pinned_grok=()
+  pinned_cwd[missing]=/tmp/missing-cwd
+  pinned_cwd[5]=/tmp/five
+  pinned_cwd[still-live]=/tmp/live
+  snap_names=(lanjump 6 sysmtn idle-named)
+  snap_cwd=()
+  snap_occupied=()
+  snap_cwd[lanjump]=/proj/lanjump
+  snap_cwd[6]=/tmp/six
+  snap_cwd[sysmtn]=/proj/sysmtn
+  snap_cwd[idle-named]=/proj/idle
+  snap_occupied[lanjump]=1
+  snap_occupied[6]=1
+  snap_occupied[sysmtn]=1
+  snap_occupied[idle-named]=0
+  collect_restore_names
+  expect restore/collect-names 'missing still-live lanjump sysmtn' "${restore_names[*]}"
+  expect restore/collect-cwd-occupied /proj/lanjump "${restore_cwd[lanjump]}"
+  expect restore/collect-cwd-pinned /tmp/missing-cwd "${restore_cwd[missing]}"
+
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session) return 1 ;;
+      new-session|set-option|send-keys|set-environment|show-environment|list-sessions) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  restore_saved_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s lanjump -c /proj/lanjump'* ]]; then
+    print -u2 "FAIL restore/occupied missing lanjump got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-session -d -s sysmtn -c /proj/sysmtn'* ]]; then
+    print -u2 "FAIL restore/occupied missing sysmtn got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s 5'* || $restore_log == *'new-session -d -s 6'* ]]; then
+    print -u2 "FAIL restore/occupied restored numeric session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s idle-named'* ]]; then
+    print -u2 "FAIL restore/occupied restored idle unpinned got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'grok --resume'* ]]; then
+    print -u2 "FAIL restore/occupied launched grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  LANJUMP_BOOT_ID=boot1
+  stamp_boot= stamp_token=
+  : >"$HOME/Library/Application Support/lanjump/restore-stamp"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  if ! should_restore_sessions; then
+    print -u2 "FAIL restore/gate kill-server should restore"
+    (( fails++ ))
+  fi
+
+  tmuxx() {
+    case $1 in
+      list-sessions) return 0 ;;
+      show-environment) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  rm -f "$HOME/Library/Application Support/lanjump/restore-stamp"
+  if should_restore_sessions; then
+    print -u2 "FAIL restore/gate first-run live tmux should migrate not restore"
+    (( fails++ ))
+  fi
+
+  print -r -- $'boot boot1\ntoken tok-old\n' >"$HOME/Library/Application Support/lanjump/restore-stamp"
+  tmuxx() {
+    case $1 in
+      list-sessions) return 0 ;;
+      show-environment)
+        print -r -- 'LANJUMP_RESTORE_TOKEN=tok-old'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  if should_restore_sessions; then
+    print -u2 "FAIL restore/gate same server should skip"
+    (( fails++ ))
+  fi
+
+  tmuxx() {
+    case $1 in
+      list-sessions) return 0 ;;
+      show-environment)
+        print -r -- 'LANJUMP_RESTORE_TOKEN=tok-new'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  if ! should_restore_sessions; then
+    print -u2 "FAIL restore/gate new tmux server should restore"
+    (( fails++ ))
+  fi
+
+  LANJUMP_BOOT_ID=boot2
+  tmuxx() {
+    case $1 in
+      list-sessions) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  if ! should_restore_sessions; then
+    print -u2 "FAIL restore/gate reboot should restore"
+    (( fails++ ))
+  fi
+
+  unset SSH_CONNECTION SSH_CLIENT SSH_TTY
+  LANJUMP_GHOSTTY_APP="$testhome/Ghostty.app"
+  mkdir -p "$LANJUMP_GHOSTTY_APP"
+  if ! ghostty_restore_available; then
+    print -u2 "FAIL ghostty/available local ghostty should be usable"
+    (( fails++ ))
+  fi
+  SSH_CONNECTION='1.2.3.4 22'
+  if ghostty_restore_available; then
+    print -u2 "FAIL ghostty/available over ssh should skip"
+    (( fails++ ))
+  fi
+  unset SSH_CONNECTION
+  expect ghostty/prompt '上次占用中的 session：lanjump、sysmtn
+要在 Ghostty 里各开一个标签并进入吗？（y=是，回车=否）' "$(ghostty_restore_prompt_text lanjump sysmtn)"
+  LANJUMP_ATTACH_BIN=/opt/lanjump/bin/lanjump
+  local script
+  script=$(ghostty_osascript_for_sessions lanjump sysmtn)
+  if [[ $script != *'new window'* ]]; then
+    print -u2 "FAIL ghostty/script missing new window got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'new tab'* ]]; then
+    print -u2 "FAIL ghostty/script missing new tab got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script == *direct:* || $script == *shell:* ]]; then
+    print -u2 "FAIL ghostty/script used direct:/shell: prefix which Ghostty does not attach with got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'/opt/lanjump/bin/lanjump attach lanjump'* ]]; then
+    print -u2 "FAIL ghostty/script missing attach lanjump got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'/opt/lanjump/bin/lanjump attach sysmtn'* ]]; then
+    print -u2 "FAIL ghostty/script missing attach sysmtn got=$(printf %q "$script")"
     (( fails++ ))
   fi
 

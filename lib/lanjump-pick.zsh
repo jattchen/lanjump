@@ -42,8 +42,11 @@ sort_mode=time
 filter_include=
 filter_exclude=
 typeset -i filter_on=0 filter_match_count=0 filter_total_count=0
-typeset -a pinned_names
-typeset -A pinned_cwd pinned_grok
+typeset -a pinned_names snap_names restore_names ghostty_names
+typeset -A pinned_cwd pinned_grok snap_cwd snap_occupied restore_cwd
+stamp_boot=
+stamp_token=
+did_restore=0
 loading=0
 stty_orig=
 PENDING_KEY=""
@@ -119,6 +122,8 @@ tmux_prepare_keys() {
     tmuxx set-option -g status-left-length 40 2>/dev/null || true
   fi
   tmuxx bind-key -n S-Enter send-keys Escape Enter 2>/dev/null || true
+  tmuxx set-option -g set-titles on 2>/dev/null || true
+  tmuxx set-option -g set-titles-string '#S' 2>/dev/null || true
   prepared_keys=1
 }
 
@@ -192,7 +197,7 @@ setup_tty() {
 on_exit() {
   restore_tty
 }
-if [[ ${1:-} != --digit-selftest && ${1:-} != --pick-selftest ]]; then
+if [[ ${1:-} != --digit-selftest && ${1:-} != --pick-selftest && ${1:-} != --attach ]]; then
   trap on_exit EXIT
   trap 'restore_tty; exit 130' INT
   trap '[[ $loading -eq 1 ]] || draw' WINCH
@@ -1003,27 +1008,339 @@ if sid:
 
 restore_pinned_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  local name cwd grok
   load_pinned_sessions
-  for name in "${pinned_names[@]}"; do
-    [[ -n $name ]] || continue
-    cwd=${pinned_cwd[$name]:-}
-    grok=${pinned_grok[$name]:-}
-    if tmuxx has-session -t "=$name" 2>/dev/null; then
-      tmux_set_pinned "$name" 1
+  restore_saved_sessions
+}
+
+numeric_session_name() {
+  [[ -n ${1:-} && $1 == [0-9]## ]]
+}
+
+session_snapshot_file() {
+  REPLY="$HOME/Library/Application Support/lanjump/session-snapshot"
+}
+
+restore_stamp_file() {
+  REPLY="$HOME/Library/Application Support/lanjump/restore-stamp"
+}
+
+load_session_snapshot() {
+  local file line key val name cwd occ
+  session_snapshot_file
+  file=$REPLY
+  snap_names=()
+  snap_cwd=()
+  snap_occupied=()
+  [[ -f $file ]] || return 0
+  name= cwd= occ=
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ -z $line || $line == '#'* ]]; then
+      if [[ -z $line && -n $name ]]; then
+        snap_names+=("$name")
+        snap_cwd[$name]=$cwd
+        snap_occupied[$name]=${occ:-0}
+        name= cwd= occ=
+      fi
       continue
     fi
+    key=${line%% *}
+    if [[ $line == *' '* ]]; then
+      val=${line#* }
+    else
+      val=
+    fi
+    sanitize_pin_field "$val"
+    val=$REPLY
+    case $key in
+      name)
+        if [[ -n $name ]]; then
+          snap_names+=("$name")
+          snap_cwd[$name]=$cwd
+          snap_occupied[$name]=${occ:-0}
+          cwd= occ=
+        fi
+        name=$val
+        ;;
+      cwd) cwd=$val ;;
+      occupied) occ=$val ;;
+    esac
+  done <"$file"
+  if [[ -n $name ]]; then
+    snap_names+=("$name")
+    snap_cwd[$name]=$cwd
+    snap_occupied[$name]=${occ:-0}
+  fi
+}
+
+save_session_snapshot() {
+  local file dir n
+  session_snapshot_file
+  file=$REPLY
+  dir=${file:h}
+  mkdir -p "$dir"
+  : >"$file"
+  for n in "${snap_names[@]}"; do
+    [[ -n $n ]] || continue
+    print -r -- "name $n" >>"$file"
+    print -r -- "cwd ${snap_cwd[$n]:-}" >>"$file"
+    print -r -- "occupied ${snap_occupied[$n]:-0}" >>"$file"
+    print -r -- "" >>"$file"
+  done
+}
+
+snapshot_live_sessions() {
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  tmux_server_running || return 0
+  local line name cwd att
+  local -a raw f
+  snap_names=()
+  snap_cwd=()
+  snap_occupied=()
+  raw=("${(@f)$(tmuxx list-sessions -F $'#{session_name}\x1f#{pane_current_path}\x1f#{?session_attached,1,0}' 2>/dev/null)}")
+  for line in "${raw[@]}"; do
+    [[ -z $line ]] && continue
+    f=("${(@ps:\x1f:)line}")
+    (( ${#f} < 3 )) && continue
+    name=${f[1]}
+    cwd=${f[2]}
+    att=${f[3]}
+    [[ -n $name ]] || continue
+    snap_names+=("$name")
+    snap_cwd[$name]=$cwd
+    snap_occupied[$name]=$att
+  done
+  save_session_snapshot
+}
+
+mark_snapshot_occupied() {
+  local name=$1 cwd
+  [[ -n $name ]] || return 0
+  load_session_snapshot
+  cwd=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
+  if (( ${snap_names[(Ie)$name]} == 0 )); then
+    snap_names+=("$name")
+  fi
+  [[ -n $cwd ]] && snap_cwd[$name]=$cwd
+  snap_occupied[$name]=1
+  save_session_snapshot
+}
+
+collect_restore_names() {
+  restore_names=()
+  restore_cwd=()
+  local n
+  typeset -A seen
+  for n in "${pinned_names[@]}"; do
+    [[ -n $n ]] || continue
+    numeric_session_name "$n" && continue
+    (( ${seen[$n]:-0} )) && continue
+    seen[$n]=1
+    restore_names+=("$n")
+    restore_cwd[$n]=${pinned_cwd[$n]:-${snap_cwd[$n]:-}}
+  done
+  for n in "${snap_names[@]}"; do
+    [[ -n $n ]] || continue
+    numeric_session_name "$n" && continue
+    [[ ${snap_occupied[$n]:-0} == 1 ]] || continue
+    (( ${seen[$n]:-0} )) && continue
+    seen[$n]=1
+    restore_names+=("$n")
+    restore_cwd[$n]=${pinned_cwd[$n]:-${snap_cwd[$n]:-}}
+  done
+}
+
+collect_ghostty_session_names() {
+  ghostty_names=()
+  local n
+  for n in "${restore_names[@]}"; do
+    [[ ${snap_occupied[$n]:-0} == 1 ]] || continue
+    numeric_session_name "$n" && continue
+    ghostty_names+=("$n")
+  done
+}
+
+restore_saved_sessions() {
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  collect_restore_names
+  local name cwd
+  for name in "${restore_names[@]}"; do
+    if tmuxx has-session -t "=$name" 2>/dev/null; then
+      pin_record_exists "$name" && tmux_set_pinned "$name" 1
+      continue
+    fi
+    cwd=${restore_cwd[$name]:-}
     if [[ -n $cwd ]]; then
       tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || \
         tmuxx new-session -d -s "$name" 2>/dev/null || continue
     else
       tmuxx new-session -d -s "$name" 2>/dev/null || continue
     fi
-    if [[ -n $grok && $grok == [A-Za-z0-9._-]## ]]; then
-      tmuxx send-keys -t "=$name" "grok --resume ${grok}" Enter 2>/dev/null || true
-    fi
-    tmux_set_pinned "$name" 1
+    pin_record_exists "$name" && tmux_set_pinned "$name" 1
   done
+}
+
+current_boot_id() {
+  local s
+  if [[ -n ${LANJUMP_BOOT_ID:-} ]]; then
+    print -r -- "$LANJUMP_BOOT_ID"
+    return
+  fi
+  s=$(sysctl -n kern.boottime 2>/dev/null) || s=
+  if [[ $s == *sec\ =\ * ]]; then
+    s=${s#*sec = }
+    s=${s%%,*}
+    s=${s%% *}
+  fi
+  print -r -- "$s"
+}
+
+tmux_server_running() {
+  tmuxx list-sessions >/dev/null 2>&1
+}
+
+tmux_restore_token() {
+  local line
+  line=$(tmuxx show-environment -g LANJUMP_RESTORE_TOKEN 2>/dev/null) || line=
+  if [[ $line == LANJUMP_RESTORE_TOKEN=* ]]; then
+    print -r -- "${line#LANJUMP_RESTORE_TOKEN=}"
+  fi
+}
+
+read_restore_stamp() {
+  local file line key val
+  restore_stamp_file
+  file=$REPLY
+  stamp_boot= stamp_token=
+  [[ -f $file ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -n $line ]] || continue
+    key=${line%% *}
+    if [[ $line == *' '* ]]; then
+      val=${line#* }
+    else
+      val=
+    fi
+    case $key in
+      boot) stamp_boot=$val ;;
+      token) stamp_token=$val ;;
+    esac
+  done <"$file"
+}
+
+write_restore_stamp() {
+  local file dir boot=$1 token=$2
+  restore_stamp_file
+  file=$REPLY
+  dir=${file:h}
+  mkdir -p "$dir"
+  print -r -- "boot $boot" >"$file"
+  print -r -- "token $token" >>"$file"
+}
+
+should_restore_sessions() {
+  local boot live
+  collect_restore_names
+  (( ${#restore_names} )) || return 1
+  boot=$(current_boot_id)
+  read_restore_stamp || true
+  if ! tmux_server_running; then
+    return 0
+  fi
+  live=$(tmux_restore_token)
+  if [[ -z ${stamp_token:-} && -z $live ]]; then
+    return 1
+  fi
+  if [[ $boot == "${stamp_boot:-}" && -n $live && $live == "${stamp_token:-}" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+ensure_restore_token() {
+  local boot token
+  tmux_server_running || return 0
+  boot=$(current_boot_id)
+  token=$(tmux_restore_token)
+  if [[ -z $token ]]; then
+    token="${boot}-${RANDOM}-${EPOCHSECONDS}"
+    tmuxx set-environment -g LANJUMP_RESTORE_TOKEN "$token" 2>/dev/null || true
+    token=$(tmux_restore_token)
+    [[ -n $token ]] || token="${boot}-${RANDOM}-${EPOCHSECONDS}"
+  fi
+  write_restore_stamp "$boot" "$token"
+}
+
+ghostty_restore_available() {
+  local_keyboard || return 1
+  [[ -d ${LANJUMP_GHOSTTY_APP:-/Applications/Ghostty.app} ]]
+}
+
+ghostty_attach_bin() {
+  print -r -- "${LANJUMP_ATTACH_BIN:-$HOME/.local/bin/lanjump}"
+}
+
+ghostty_restore_prompt_text() {
+  print -r -- "上次占用中的 session：${(j:、:)@}"
+  print -r -- "要在 Ghostty 里各开一个标签并进入吗？（y=是，回车=否）"
+}
+
+ghostty_osascript_for_sessions() {
+  local bin first n
+  (( $# )) || return 1
+  bin=$(ghostty_attach_bin)
+  first=$1
+  shift
+  # Ghostty `direct:` / `shell:` prefixes leave an empty 👻 window and never
+  # attach. A command with arguments is run via /bin/sh -c, which does attach.
+  print -r -- 'tell application "Ghostty"'
+  print -r -- '  activate'
+  print -r -- '  set cfg to new surface configuration'
+  print -r -- "  set command of cfg to \"${bin} attach ${first}\""
+  print -r -- '  set wait after command of cfg to true'
+  print -r -- '  set win to new window with configuration cfg'
+  for n in "$@"; do
+    print -r -- '  set cfg to new surface configuration'
+    print -r -- "  set command of cfg to \"${bin} attach ${n}\""
+    print -r -- '  set wait after command of cfg to true'
+    print -r -- '  new tab in win with configuration cfg'
+  done
+  print -r -- 'end tell'
+}
+
+open_ghostty_session_tabs() {
+  (( $# )) || return 0
+  ghostty_osascript_for_sessions "$@" | osascript
+}
+
+maybe_restore_sessions() {
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  load_pinned_sessions
+  load_session_snapshot
+  did_restore=0
+  if should_restore_sessions; then
+    restore_saved_sessions
+    did_restore=1
+  fi
+  if tmux_server_running; then
+    ensure_restore_token
+    if (( ! did_restore )); then
+      snapshot_live_sessions
+    fi
+  fi
+  (( did_restore )) || return 0
+  collect_restore_names
+  collect_ghostty_session_names
+  if (( ${#ghostty_names} )) && ghostty_restore_available; then
+    local ans
+    print
+    ghostty_restore_prompt_text "${ghostty_names[@]}"
+    print -n "> "
+    read -r ans || ans=
+    if [[ $ans == y || $ans == Y ]]; then
+      open_ghostty_session_tabs "${ghostty_names[@]}" || \
+        print -u2 "无法打开 Ghostty 标签。"
+    fi
+  fi
 }
 
 bulk_idle_unpinned_names() {
@@ -1601,9 +1918,11 @@ activate() {
   case ${items_kind[$i]} in
     session)
       [[ $HAS_TMUX -eq 1 ]] || return
+      mark_snapshot_occupied "${items_id[$i]}"
       restore_tty
       print
       tmux_tty attach-session -t "=${items_id[$i]}"
+      snapshot_live_sessions
       setup_tty
       load_items
       draw
@@ -1815,8 +2134,22 @@ if [[ ${1:-} == --pick-selftest ]]; then
   exit $?
 fi
 
-load_pinned_sessions
-restore_pinned_sessions
+if [[ ${1:-} == --attach ]]; then
+  name=${2:-}
+  if [[ -z $name ]]; then
+    print -u2 "用法：lanjump attach <session>"
+    exit 1
+  fi
+  if [[ $HAS_TMUX -ne 1 ]]; then
+    print -u2 "这台机器上没有 tmux。"
+    exit 1
+  fi
+  mark_snapshot_occupied "$name"
+  tmux_tty attach-session -t "=$name"
+  exit $?
+fi
+
+maybe_restore_sessions
 tmux_prepare_color
 tmux_prepare_keys
 load_session_filter
