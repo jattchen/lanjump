@@ -87,14 +87,182 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  functions -c tmuxx _selftest_tmuxx
+  local mock_pane mock_log
+  local -a tmux_argv tmux_calls
+  local -i tmux_n
+  mock_log=$(mktemp) || return 1
+  load_tmux_calls() {
+    tmux_calls=("${(@f)$(<"$mock_log")}")
+    tmux_n=${#tmux_calls}
+    if (( tmux_n )); then
+      tmux_argv=("${(z)tmux_calls[-1]}")
+    else
+      tmux_argv=()
+    fi
+  }
+  tmuxx() {
+    print -r -- "${(j: :)@}" >> "$mock_log"
+    print -r -- "$mock_pane"
+  }
+
+  mock_pane=$'old chrome\nolder row\nlatest dialogue\ninput line'
+  : > "$mock_log"
+  session_preview_lines grok-sess 2 grok-1.0.13-mac
+  expect preview/tail-keep $'latest dialogue\ninput line' "${(F)preview_lines}"
+
+  mock_pane=$'keep\n\n\n   \n█\n████\nreal █ line\n\nend'
+  : > "$mock_log"
+  session_preview_lines sh-sess 10 zsh
+  expect preview/blank-collapse $'keep\n\nreal █ line\n\nend' "${(F)preview_lines}"
+
+  mock_pane=$'hello\n────────'
+  : > "$mock_log"
+  session_preview_lines sh-sess 10 zsh
+  expect preview/skip-status hello "${(F)preview_lines}"
+
+  mock_pane=$(print -l line-{1..20})
+  : > "$mock_log"
+  session_preview_lines sh-sess 30 zsh
+  if (( ${#preview_lines} != 10 )); then
+    print -u2 "FAIL preview/cap got ${#preview_lines} want 10"
+    (( fails++ ))
+  fi
+  expect preview/cap-tail $'line-11\nline-12\nline-13\nline-14\nline-15\nline-16\nline-17\nline-18\nline-19\nline-20' "${(F)preview_lines}"
+
+  mock_pane=$'a\nb'
+  : > "$mock_log"
+  session_preview_lines grok-sess 5 grok
+  load_tmux_calls
+  if (( tmux_n != 1 )); then
+    print -u2 "FAIL preview/grok-once got ${tmux_n} captures want 1"
+    (( fails++ ))
+  fi
+  if [[ ${tmux_argv[(ie)-a]} -gt ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/grok-alt missing -a in ${(j: :)tmux_argv}"
+    (( fails++ ))
+  fi
+  if [[ ${tmux_argv[(ie)-J]} -le ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/grok-no-J got ${(j: :)tmux_argv}"
+    (( fails++ ))
+  fi
+  if [[ ${tmux_argv[(ie)-S]} -le ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/no-hist got -S in ${(j: :)tmux_argv}"
+    (( fails++ ))
+  fi
+
+  mock_pane=$'a\nb'
+  : > "$mock_log"
+  session_preview_lines zsh-sess 5 zsh
+  load_tmux_calls
+  if (( tmux_n != 1 )); then
+    print -u2 "FAIL preview/shell-once got ${tmux_n} captures want 1"
+    (( fails++ ))
+  fi
+  if [[ ${tmux_argv[(ie)-J]} -gt ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/shell-J missing -J in ${(j: :)tmux_argv}"
+    (( fails++ ))
+  fi
+  if [[ ${tmux_argv[(ie)-a]} -le ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/shell-no-alt got ${(j: :)tmux_argv}"
+    (( fails++ ))
+  fi
+  if [[ ${tmux_argv[(ie)-S]} -le ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/shell-no-hist got -S in ${(j: :)tmux_argv}"
+    (( fails++ ))
+  fi
+
+  tmuxx() {
+    print -r -- "${(j: :)@}" >> "$mock_log"
+    if [[ ${argv[(ie)-a]} -le ${#argv} ]]; then
+      print -r -- $'alt dialogue\nalt input'
+    else
+      print -r -- ""
+    fi
+  }
+  : > "$mock_log"
+  session_preview_lines tui-sess 5 bash
+  load_tmux_calls
+  if (( tmux_n != 2 )); then
+    print -u2 "FAIL preview/empty-retry got ${tmux_n} captures want 2"
+    (( fails++ ))
+  fi
+  if [[ ${tmux_calls[1]:-} != *-J* || ${tmux_calls[1]:-} == *-a* ]]; then
+    print -u2 "FAIL preview/empty-first got ${tmux_calls[1]:-}"
+    (( fails++ ))
+  fi
+  if [[ ${tmux_argv[(ie)-a]} -gt ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/empty-alt missing -a in ${(j: :)tmux_argv}"
+    (( fails++ ))
+  fi
+  if [[ ${tmux_argv[(ie)-J]} -le ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/empty-alt-no-J got ${(j: :)tmux_argv}"
+    (( fails++ ))
+  fi
+  expect preview/empty-alt-tail $'alt dialogue\nalt input' "${(F)preview_lines}"
+
+  rm -f "$mock_log"
+  unfunction tmuxx
+  unfunction load_tmux_calls
+  functions -c _selftest_tmuxx tmuxx
+  unfunction _selftest_tmuxx
+
+  local -i preview_calls=0
   session_preview_lines() {
-    local -i max_lines=$2 cols=$3 i
-    local line="预览长行 ${longline}"
+    (( preview_calls++ ))
+    preview_lines=("SECRET_CAPTURE")
+  }
+  items_kind=() items_id=() items_name=() items_att=() items_time=()
+  items_path=() items_summary=() items_cmd=()
+  items_kind+=("session") items_id+=("sess-1") items_name+=("sess-1")
+  items_att+=("0") items_time+=("09-04 12:00") items_path+=("~/p/1")
+  items_summary+=("sum 1") items_cmd+=("zsh")
+  cursor=1
+  COLUMNS=120
+  LINES=40
+  preview_defer=1
+  preview_cache=()
+  preview_calls=0
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if (( preview_calls != 0 )); then
+    print -u2 "FAIL draw/defer-no-capture called session_preview_lines"
+    (( fails++ ))
+  fi
+  if [[ $plain == *SECRET_CAPTURE* ]]; then
+    print -u2 "FAIL draw/defer-placeholder showed capture"
+    (( fails++ ))
+  fi
+  if [[ $plain != *…* ]]; then
+    print -u2 "FAIL draw/defer-placeholder missing ellipsis"
+    (( fails++ ))
+  fi
+  preview_defer=0
+
+  session_preview_lines() {
+    local -i max_lines=$2 i
+    preview_lines=()
     for (( i = 1; i <= max_lines; i++ )); do
-      _fit_right "$line" $cols
-      print -r -- "$REPLY"
+      preview_lines+=("预览长行 ${longline}")
     done
   }
+
+  items_kind=() items_id=() items_name=() items_att=() items_time=()
+  items_path=() items_summary=() items_cmd=()
+  for i in {1..8}; do
+    items_kind+=("session")
+    items_id+=("sess-$i")
+    items_name+=("bmx-session-$i")
+    items_att+=("0")
+    items_time+=("09-04 12:00")
+    items_path+=("~/Documents/projects/lanjump-and-a-quite-long-path-$i")
+    items_summary+=("小兜宝探路：钉死后第一版最终效果 - grok 下载 X 视频到 NAS 影视库 $i")
+    items_cmd+=("grok-1.0.13-mac")
+  done
+  cursor=1
+  COLUMNS=120
+  LINES=40
+  preview_cache=()
 
   t0=$EPOCHREALTIME
   draw >/dev/null
