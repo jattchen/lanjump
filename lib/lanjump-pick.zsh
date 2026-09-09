@@ -545,16 +545,27 @@ sort_session_items() {
   items_pinned=()
 
   if (( ${#skind} )); then
+    local att pin
     decorated=()
     for (( i = 1; i <= ${#skind}; i++ )); do
-      if [[ ${sort_mode:-time} == attached ]]; then
-        decorated+=("${satt[$i]}"$'\x1f'"${sact[$i]}"$'\x1f'"$i")
-      else
-        decorated+=("${sact[$i]}"$'\x1f'"$i")
-      fi
+      att=${satt[$i]:-0}
+      pin=${spinned[$i]:-0}
+      [[ $att == 1 ]] || att=0
+      [[ $pin == 1 ]] || pin=0
+      case ${sort_mode:-time} in
+        occupied)
+          decorated+=("${att}"$'\x1f'"${pin}"$'\x1f'"${sact[$i]}"$'\x1f'"$i")
+          ;;
+        pinned)
+          decorated+=("${pin}"$'\x1f'"${att}"$'\x1f'"${sact[$i]}"$'\x1f'"$i")
+          ;;
+        *)
+          decorated+=("${sact[$i]}"$'\x1f'"$i")
+          ;;
+      esac
     done
-    if [[ ${sort_mode:-time} == attached ]]; then
-      lines=("${(@f)$(printf '%s\n' "${decorated[@]}" | sort -t $'\x1f' -k1,1nr -k2,2nr)}")
+    if [[ ${sort_mode:-time} == occupied || ${sort_mode:-time} == pinned ]]; then
+      lines=("${(@f)$(printf '%s\n' "${decorated[@]}" | sort -t $'\x1f' -k1,1nr -k2,2nr -k3,3nr)}")
     else
       lines=("${(@f)$(printf '%s\n' "${decorated[@]}" | sort -t $'\x1f' -k1,1nr)}")
     fi
@@ -599,11 +610,11 @@ sort_session_items() {
 }
 
 toggle_sort_mode() {
-  if [[ ${sort_mode:-time} == attached ]]; then
-    sort_mode=time
-  else
-    sort_mode=attached
-  fi
+  case ${sort_mode:-time} in
+    time) sort_mode=occupied ;;
+    occupied) sort_mode=pinned ;;
+    *) sort_mode=time ;;
+  esac
   if (( ${#all_kind} )); then
     copy_all_to_items
   fi
@@ -1291,17 +1302,17 @@ draw_help() {
   local -i max=$1
   local -a keys
   local buf piece sort_key filter_key
-  if [[ ${sort_mode:-time} == attached ]]; then
-    sort_key='o 按时间'
-  else
-    sort_key='o 占用优先'
-  fi
+  case ${sort_mode:-time} in
+    occupied) sort_key='o 占用' ;;
+    pinned) sort_key='o 常驻' ;;
+    *) sort_key='o 时间' ;;
+  esac
   if (( filter_on )); then
     filter_key='f 显示全部'
   else
     filter_key='f 筛选'
   fi
-  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "p 常驻" "X 清闲" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "/ 包含" "! 排除" "q 退出")
+  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "p 常驻" "X 删空闲" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "/ 包含" "! 排除" "q 退出")
   buf=""
   for piece in "${keys[@]}"; do
     if [[ -z $buf ]]; then
@@ -1337,13 +1348,20 @@ draw() {
   print -n $'\e[H\e[J'
   [[ -n $host_short ]] || host_short=$(hostname -s)
   title="$host_short  选择 tmux session"
-  if (( filter_on )); then
-    [[ -n $filter_include ]] && title+="  含 ${filter_include}"
-    [[ -n $filter_exclude ]] && title+="  不含 ${filter_exclude}"
-    title+="  ${filter_match_count}/${filter_total_count}"
-  fi
   _fit_right "$title" $(( cols - 2 ))
-  draw_emit "${c_bold}  ${REPLY}${c_reset}" || return
+  title="  ${c_bold}${REPLY}${c_reset}"
+  if (( filter_on )); then
+    if [[ -n $filter_include ]]; then
+      _fit_right "含 ${filter_include}" 24
+      title+="  ${c_cyan}${REPLY}${c_reset}"
+    fi
+    if [[ -n $filter_exclude ]]; then
+      _fit_right "不含 ${filter_exclude}" 24
+      title+="  ${c_red}${REPLY}${c_reset}"
+    fi
+    title+="  ${c_dim}${filter_match_count}/${filter_total_count}${c_reset}"
+  fi
+  draw_emit "$title" || return
   draw_help $cols || return
   draw_emit "" || return
 
@@ -1566,7 +1584,7 @@ prompt_new() {
   read -r name
   name=${name##[[:space:]]#}
   name=${name%%[[:space:]]#}
-  print -n "常驻（Y=常驻，回车=否）: "
+  print -n "常驻（y=是，回车=否）: "
   read -r pinans || pinans=
   if [[ $pinans == y || $pinans == Y ]]; then
     pin=1
@@ -1662,8 +1680,9 @@ prompt_bulk_idle_delete() {
     draw
     return
   fi
-  print "将删除空闲且非常驻的 session：${names}"
-  print -n "确认删除请输入 y，其他键取消: "
+  print "${c_red}高风险：将删除下列空闲且非常驻的 session，不能恢复。${c_reset}"
+  print "  ${c_red}${names}${c_reset}"
+  print -n "${c_red}确认删除请输入 y，其他键取消: ${c_reset}"
   read -r ans
   if [[ $ans == y || $ans == Y ]]; then
     delete_idle_unpinned_sessions

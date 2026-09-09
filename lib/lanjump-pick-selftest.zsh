@@ -252,22 +252,25 @@ pick_selftest() {
     (( fails++ ))
   fi
 
-  local time_order attached_order
-  time_order='idle-new att-new att-old idle-old new shell hosts quit'
-  attached_order='att-new att-old idle-new idle-old new shell hosts quit'
+  local time_order occupied_order pinned_order actions
+  actions='new shell hosts quit'
+  time_order="idle-free idle-pin busy-free busy-pin $actions"
+  occupied_order="busy-pin busy-free idle-pin idle-free $actions"
+  pinned_order="busy-pin idle-pin busy-free idle-free $actions"
 
   sort_fixture() {
     items_kind=(session session session session new shell hosts quit)
-    items_id=(att-old idle-old idle-new att-new new shell hosts quit)
+    items_id=(busy-pin idle-free idle-pin busy-free new shell hosts quit)
     items_name=("${items_id[@]}")
     items_att=(1 0 0 1 '' '' '' '')
-    items_time=('01-01 00:01' '01-01 00:00' '01-01 00:05' '01-01 00:03' '' '' '' '')
-    items_activity=(100 50 300 200 '' '' '' '')
+    items_pinned=(1 0 1 0 '' '' '' '')
+    items_time=('01-01 00:01' '01-01 00:04' '01-01 00:03' '01-01 00:02' '' '' '' '')
+    items_activity=(60 90 80 70 '' '' '' '')
     items_path=('~/a' '~/b' '~/c' '~/d' '' '' '' '')
     items_summary=('sa' 'sb' 'sc' 'sd' '' '' '' '')
     items_cmd=(zsh zsh zsh zsh '' '' '' '')
     all_kind=() all_id=() all_name=() all_att=() all_time=()
-    all_path=() all_summary=() all_cmd=() all_activity=()
+    all_path=() all_summary=() all_cmd=() all_activity=() all_pinned=()
     filter_include=
     filter_exclude=
     filter_on=0
@@ -279,20 +282,27 @@ pick_selftest() {
   sort_session_items
   expect sort/time-desc "$time_order" "${items_id[*]}"
 
-  sort_mode=attached
+  sort_mode=occupied
   sort_session_items
-  expect sort/attached-first "$attached_order" "${items_id[*]}"
+  expect sort/occupied "$occupied_order" "${items_id[*]}"
 
+  sort_mode=pinned
+  sort_session_items
+  expect sort/pinned "$pinned_order" "${items_id[*]}"
+
+  sort_mode=occupied
   toggle_sort_mode
-  expect sort/toggle-back "$time_order" "${items_id[*]}"
+  expect sort/toggle-to-pinned "$pinned_order" "${items_id[*]}"
+  toggle_sort_mode
+  expect sort/toggle-to-time "$time_order" "${items_id[*]}"
 
   sort_fixture
   sort_session_items
   cursor=3
-  expect sort/cursor-before att-old "${items_id[$cursor]}"
+  expect sort/cursor-before busy-free "${items_id[$cursor]}"
   toggle_sort_mode
-  expect sort/cursor-keep att-old "${items_id[$cursor]}"
-  expect sort/cursor-keep-order "$attached_order" "${items_id[*]}"
+  expect sort/cursor-keep busy-free "${items_id[$cursor]}"
+  expect sort/cursor-keep-order "$occupied_order" "${items_id[*]}"
 
   HAS_TMUX=1
   host_short=testhost
@@ -301,19 +311,22 @@ pick_selftest() {
   sort_fixture
   out=$(draw)
   plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
-  if [[ $plain != *'o 占用优先'* ]]; then
-    print -u2 "FAIL help/time missing o 占用优先"
+  if [[ $plain != *'o 时间'* ]]; then
+    print -u2 "FAIL help/time missing o 时间"
     (( fails++ ))
   fi
-  sort_mode=attached
+  sort_mode=occupied
   out=$(draw)
   plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
-  if [[ $plain != *'o 按时间'* ]]; then
-    print -u2 "FAIL help/attached missing o 按时间"
+  if [[ $plain != *'o 占用'* ]]; then
+    print -u2 "FAIL help/occupied missing o 占用"
     (( fails++ ))
   fi
-  if [[ $plain == *'o 占用优先'* ]]; then
-    print -u2 "FAIL help/attached still shows o 占用优先"
+  sort_mode=pinned
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'o 常驻'* ]]; then
+    print -u2 "FAIL help/pinned missing o 常驻"
     (( fails++ ))
   fi
 
@@ -427,10 +440,10 @@ pick_selftest() {
   filter_fixture
   filter_exclude=plain
   filter_on=1
-  sort_mode=attached
+  sort_mode=occupied
   sort_session_items
   filter_session_items
-  expect filter/sort-attached "grok-new other-old other-new grok-old $actions" "${items_id[*]}"
+  expect filter/sort-occupied "grok-new other-old other-new grok-old $actions" "${items_id[*]}"
 
   filter_fixture
   filter_include=grok
