@@ -1032,8 +1032,8 @@ read_key() {
   fi
   case $k in
     $'\n'|$'\r'|' ') REPLY=enter ;;
-    k|K) REPLY=up ;;
-    j|J) REPLY=down ;;
+    j|J) REPLY=up ;;
+    k|K) REPLY=down ;;
     q|Q) REPLY=q ;;
     r|R) REPLY=r ;;
     d|D) REPLY=d ;;
