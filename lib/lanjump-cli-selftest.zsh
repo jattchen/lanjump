@@ -32,6 +32,8 @@ if ! (( ${+functions[cli_dispatch]} )); then
   expect_contains help/go 'go [机器:]名字' "$out"
   expect_contains help/work 'work [机器]' "$out"
   expect_contains help/pins 'pins [机器]' "$out"
+  expect_contains help/new 'new' "$out"
+  expect_contains help/grok '--grok' "$out"
   expect_contains help/settings ', 设置' "$out"
 
   out=$(/bin/zsh "$MAIN" --help)
@@ -104,6 +106,31 @@ cli_open_tabs() {
 
 cli_has_session() {
   print -r -- "HAS host=$1 session=$2" >>"$log"
+  return 0
+}
+
+cli_pick() {
+  print -r -- "PICK ${(j: :)@}" >>"$log"
+}
+
+cli_pick_exec() {
+  print -r -- "PICK_EXEC ${(j: :)@}" >>"$log"
+}
+
+cli_tmux() {
+  print -r -- "TMUX ${(j: :)@}" >>"$log"
+  case $1 in
+    display-message)
+      if [[ $* == *pane_current_command* ]]; then
+        print -r -- zsh
+      elif [[ $* == *pane_current_path* ]]; then
+        print -r -- /tmp/typed-cwd
+      fi
+      ;;
+    new-session)
+      print -r -- auto7
+      ;;
+  esac
   return 0
 }
 
@@ -196,6 +223,50 @@ fi
 expect_contains go-host-session/has 'HAS host=office session=lanjump' "$hay"
 expect_contains go-host-session/open 'OPEN host=office names=lanjump' "$hay"
 expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
+
+LANJUMP_GROK_BIN=grok
+TEST_LAST_HOST=office
+: >"$log"
+st=0
+cli_dispatch new foo --grok >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL new-foo-grok/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains new-foo-grok/create 'PICK --new-session foo' "$hay"
+expect_contains new-foo-grok/grok 'TMUX send-keys' "$hay"
+expect_contains new-foo-grok/grok-bin 'grok -c' "$hay"
+expect_contains new-foo-grok/attach 'PICK_EXEC --attach foo' "$hay"
+expect_absent new-foo-grok/no-open-tabs 'OPEN ' "$hay"
+expect_absent new-foo-grok/no-ghostty '--open-tabs' "$hay"
+
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+cli_dispatch new --grok >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL new-auto-grok/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains new-auto-grok/tmux-new 'TMUX new-session' "$hay"
+expect_contains new-auto-grok/attach 'PICK_EXEC --attach auto7' "$hay"
+expect_contains new-auto-grok/grok 'TMUX send-keys' "$hay"
+expect_absent new-auto-grok/no-named 'PICK --new-session' "$hay"
+expect_absent new-auto-grok/no-open-tabs 'OPEN ' "$hay"
+
+: >"$log"
+st=0
+err=$(cli_dispatch new foo 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL new-without-grok/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains new-without-grok/usage '用法：lanjump new' "$err"
+hay=$(read_log)
+expect_absent new-without-grok/no-create 'PICK --new-session' "$hay"
+expect_absent new-without-grok/no-attach 'PICK_EXEC' "$hay"
 
 if (( fails )); then
   print -u2 "cli-selftest: $fails failed"

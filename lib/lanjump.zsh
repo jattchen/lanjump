@@ -1585,6 +1585,59 @@ cli_attach_one() {
   fi
 }
 
+cli_tmux() {
+  local bin
+  bin="${commands[tmux]:-/usr/local/bin/tmux}"
+  "$bin" "$@"
+}
+
+cli_grok_bin() {
+  local c
+  if [[ -n ${LANJUMP_GROK_BIN:-} ]]; then
+    print -r -- "$LANJUMP_GROK_BIN"
+    return 0
+  fi
+  for c in "$HOME/.grok/bin/grok" "$HOME/.local/bin/grok"; do
+    [[ -x $c ]] && { print -r -- "$c"; return 0 }
+  done
+  (( $+commands[grok] )) && { print -r -- "${commands[grok]}"; return 0 }
+  print -r -- grok
+}
+
+cli_auto_new_session() {
+  local created
+  created=$(cli_tmux new-session -d -P -F '#{session_name}' -c "$PWD" 2>/dev/null) || created=
+  created=${created%%$'\n'*}
+  [[ -n $created ]] || {
+    print -u2 "无法新建 session。"
+    return 1
+  }
+  print -r -- "$created"
+}
+
+cli_start_grok() {
+  local session=$1
+  local live pane_cwd bin line
+  [[ -n $session ]] || return 1
+  live=$(cli_tmux display-message -p -t "=$session" '#{pane_current_command}' 2>/dev/null || true)
+  live=${live##*/}
+  if [[ $live == grok || $live == grok-* ]]; then
+    return 0
+  fi
+  case $live in
+    ''|zsh|bash|sh|fish|dash|login) ;;
+    *) return 0 ;;
+  esac
+  pane_cwd=$(cli_tmux display-message -p -t "=$session" '#{pane_current_path}' 2>/dev/null || true)
+  bin=$(cli_grok_bin)
+  if [[ -z $pane_cwd || $pane_cwd == '~' || $pane_cwd == "$HOME" || $pane_cwd == "$HOME/" ]]; then
+    line="$bin --resume"
+  else
+    line="$bin -c"
+  fi
+  cli_tmux send-keys -t "=$session" -- "$line" Enter
+}
+
 cli_usage() {
   print -r -- '用法：lanjump [命令]'
   print
@@ -1593,6 +1646,7 @@ cli_usage() {
   print -r -- '  list [机器]       列出 session'
   print -r -- '  last [机器]       显示最近进入的 session'
   print -r -- '  go [机器:]名字    打开最近或指定 session'
+  print -r -- '  new [名字] --grok 当前窗口新建 session 并开 grok（名字可省）'
   print -r -- '  work [机器]       打开工作区'
   print -r -- '  pins [机器]       打开常驻'
   print -r -- '  upgrade           升级到最新版本'
@@ -1607,12 +1661,13 @@ cli_dispatch() {
   local cmd=$1
   shift
   local host session spec ans pinans
-  local -i shell=0 pin=0
+  local -i shell=0 pin=0 want_grok=0
   local -a extra names
   extra=()
   while (( $# )); do
     case $1 in
       --shell) shell=1 ;;
+      --grok) want_grok=1 ;;
       *) extra+=("$1") ;;
     esac
     shift
@@ -1623,6 +1678,12 @@ cli_dispatch() {
     list|ls|last|work|pins)
       if (( ${#extra} )); then
         host=${extra[1]}
+      fi
+      ;;
+    new)
+      host=local
+      if (( ${#extra} )); then
+        session=${extra[1]}
       fi
       ;;
     *)
@@ -1694,6 +1755,19 @@ cli_dispatch() {
       fi
       print -r -- "$session"
       ;;
+    new)
+      if (( ! want_grok )); then
+        print -u2 "用法：lanjump new [名字] --grok"
+        return 1
+      fi
+      if [[ -z $session ]]; then
+        session=$(cli_auto_new_session) || return 1
+      else
+        cli_new_session "$host" "$session" || return 1
+      fi
+      cli_start_grok "$session" || return 1
+      cli_attach_one "$host" "$session" 0
+      ;;
     *)
       return 1
       ;;
@@ -1710,7 +1784,7 @@ if [[ ${1:-} == help || ${1:-} == -h || ${1:-} == --help ]]; then
   exit 0
 fi
 
-if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then
+if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins || ${1:-} == list || ${1:-} == ls || ${1:-} == last || ${1:-} == new ]]; then
   ensure_setup
   detect_lan
   load_hosts
