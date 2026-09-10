@@ -40,6 +40,38 @@ if ! (( ${+functions[cli_dispatch]} )); then
   out=$(/bin/zsh "$MAIN" -h)
   expect_contains help/short-opt '用法：lanjump' "$out"
 
+  for cmd in go list work pins last; do
+    st=0
+    out=$(/bin/zsh "$MAIN" "$cmd" --help) || st=$?
+    if (( st != 0 )); then
+      print -u2 "FAIL $cmd-help/exit got $st want 0"
+      (( fails++ ))
+    fi
+    expect_contains $cmd-help/title '用法：lanjump' "$out"
+    expect_contains $cmd-help/work 'work [机器]' "$out"
+    expect_contains $cmd-help/pins 'pins [机器]' "$out"
+    expect_absent $cmd-help/session "没有 session「--help」" "$out"
+    expect_absent $cmd-help/host "没有保存的机器「--help」" "$out"
+  done
+
+  st=0
+  out=$(/bin/zsh "$MAIN" go -h) || st=$?
+  if (( st != 0 )); then
+    print -u2 "FAIL go-h/exit got $st want 0"
+    (( fails++ ))
+  fi
+  expect_contains go-h/title '用法：lanjump' "$out"
+  expect_absent go-h/session "没有 session「-h」" "$out"
+
+  st=0
+  out=$(/bin/zsh "$MAIN" list -h) || st=$?
+  if (( st != 0 )); then
+    print -u2 "FAIL list-h/exit got $st want 0"
+    (( fails++ ))
+  fi
+  expect_contains list-h/title '用法：lanjump' "$out"
+  expect_absent list-h/host "没有保存的机器「-h」" "$out"
+
   st=0
   err=$(/bin/zsh "$MAIN" nosuch 2>&1) || st=$?
   if (( st == 0 )); then
@@ -64,6 +96,9 @@ log=$tmpdir/log
 trap 'rm -rf "$tmpdir"; restore_tty 2>/dev/null || true' EXIT
 
 TEST_LAST_HOST=local
+CLI_HAS_SESSION=1
+typeset -a CLI_TTY_REPLIES
+CLI_TTY_REPLIES=()
 h_alias=(office)
 h_user=(mac)
 h_hostname=(office.local)
@@ -73,6 +108,10 @@ h_last=('0')
 
 default_cli_host() {
   print -r -- "${TEST_LAST_HOST:-local}"
+}
+
+mark_last() {
+  print -r -- "LAST host=$1" >>"$log"
 }
 
 cli_list_names() {
@@ -104,13 +143,43 @@ cli_open_tabs() {
 
 cli_has_session() {
   print -r -- "HAS host=$1 session=$2" >>"$log"
+  (( CLI_HAS_SESSION ))
+}
+
+cli_new_session() {
+  print -r -- "NEW host=$1 session=$2" >>"$log"
   return 0
+}
+
+cli_tty_read() {
+  local _n=$1
+  local _v=
+  if (( ${#CLI_TTY_REPLIES} )); then
+    _v=${CLI_TTY_REPLIES[1]}
+    shift CLI_TTY_REPLIES
+  else
+    _v=
+  fi
+  printf -v $_n '%s' "$_v"
 }
 
 read_log() {
   [[ -f $log ]] || return
   print -r -- "$(<$log)"
 }
+
+for ans in '' y Y 是; do
+  if ! cli_confirm_create "$ans"; then
+    print -u2 "FAIL confirm-create/yes $(printf %q "$ans")"
+    (( fails++ ))
+  fi
+done
+for ans in n N no yes x; do
+  if cli_confirm_create "$ans"; then
+    print -u2 "FAIL confirm-create/no $(printf %q "$ans") treated as yes"
+    (( fails++ ))
+  fi
+done
 
 : >"$log"
 st=0
@@ -122,6 +191,7 @@ if (( st != 0 )); then
 fi
 expect_contains work-office/list 'LIST host=office flag=--print-workspace' "$hay"
 expect_contains work-office/open 'OPEN host=office names=office-work' "$hay"
+expect_contains work-office/last 'LAST host=office' "$hay"
 expect_absent work-office/not-local-list 'LIST host=local' "$hay"
 expect_absent work-office/not-local-open 'OPEN host=local' "$hay"
 
@@ -135,6 +205,7 @@ if (( st != 0 )); then
 fi
 expect_contains pins-office/list 'LIST host=office flag=--print-pinned' "$hay"
 expect_contains pins-office/open 'OPEN host=office names=office-pin' "$hay"
+expect_contains pins-office/last 'LAST host=office' "$hay"
 expect_absent pins-office/not-local-list 'LIST host=local' "$hay"
 expect_absent pins-office/not-local-open 'OPEN host=local' "$hay"
 
@@ -148,6 +219,7 @@ fi
 expect_contains work-unknown/msg '没有保存的机器「nosuch」。' "$err"
 hay=$(read_log)
 expect_absent work-unknown/no-local-open 'OPEN host=local' "$hay"
+expect_absent work-unknown/no-last 'LAST ' "$hay"
 
 : >"$log"
 st=0
@@ -159,6 +231,7 @@ fi
 expect_contains pins-unknown/msg '没有保存的机器「nosuch」。' "$err"
 hay=$(read_log)
 expect_absent pins-unknown/no-local-open 'OPEN host=local' "$hay"
+expect_absent pins-unknown/no-last 'LAST ' "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
@@ -171,6 +244,7 @@ if (( st != 0 )); then
 fi
 expect_contains work-last-local/list 'LIST host=local flag=--print-workspace' "$hay"
 expect_contains work-last-local/open 'OPEN host=local names=local-work' "$hay"
+expect_contains work-last-local/last 'LAST host=local' "$hay"
 
 TEST_LAST_HOST=office
 : >"$log"
@@ -183,6 +257,7 @@ if (( st != 0 )); then
 fi
 expect_contains work-last-office/list 'LIST host=office flag=--print-workspace' "$hay"
 expect_contains work-last-office/open 'OPEN host=office names=office-work' "$hay"
+expect_contains work-last-office/last 'LAST host=office' "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
@@ -195,7 +270,69 @@ if (( st != 0 )); then
 fi
 expect_contains go-host-session/has 'HAS host=office session=lanjump' "$hay"
 expect_contains go-host-session/open 'OPEN host=office names=lanjump' "$hay"
+expect_contains go-host-session/last 'LAST host=office' "$hay"
 expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
+
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+cli_dispatch go local:lanjump >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-local/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-local/has 'HAS host=local session=lanjump' "$hay"
+expect_contains go-local/open 'OPEN host=local names=lanjump' "$hay"
+expect_contains go-local/last 'LAST host=local' "$hay"
+
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=(y '')
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+out=$(cli_dispatch go dummytest) || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-create-y/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-create-y/prompt '回车或 y=是' "$out"
+expect_contains go-create-y/pin '常驻（y=是，回车=否）' "$out"
+hay=$(read_log)
+expect_contains go-create-y/new 'NEW host=local session=dummytest' "$hay"
+expect_contains go-create-y/open 'OPEN host=local names=dummytest' "$hay"
+expect_contains go-create-y/last 'LAST host=local' "$hay"
+
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=('' '')
+: >"$log"
+st=0
+cli_dispatch go dummytest >/dev/null || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-create-empty/status got $st want 0"
+  (( fails++ ))
+fi
+hay=$(read_log)
+expect_contains go-create-empty/new 'NEW host=local session=dummytest' "$hay"
+expect_contains go-create-empty/open 'OPEN host=local names=dummytest' "$hay"
+expect_contains go-create-empty/last 'LAST host=local' "$hay"
+
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=(n)
+: >"$log"
+st=0
+out=$(cli_dispatch go dummytest) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-create-n/status got 0 want nonzero"
+  (( fails++ ))
+fi
+hay=$(read_log)
+expect_absent go-create-n/no-new 'NEW ' "$hay"
+expect_absent go-create-n/no-open 'OPEN ' "$hay"
+expect_absent go-create-n/no-last 'LAST ' "$hay"
+
+CLI_HAS_SESSION=1
+CLI_TTY_REPLIES=()
 
 if (( fails )); then
   print -u2 "cli-selftest: $fails failed"
