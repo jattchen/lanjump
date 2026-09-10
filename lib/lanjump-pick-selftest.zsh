@@ -9,7 +9,8 @@
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
-# picker_boot_before_first_draw, picker_boot_after_first_draw.
+# picker_boot_before_first_draw, picker_boot_after_first_draw,
+# session_name_invalid.
 
 pick_selftest() {
   local -i fails=0
@@ -1574,6 +1575,23 @@ pick_selftest() {
     [[ -n $TMUX_BIN ]] || return 1
     command "$TMUX_BIN" "$@" </dev/null
   }
+
+  if session_name_invalid ''; then
+    print -u2 "FAIL name/empty auto-name rejected"
+    (( fails++ ))
+  fi
+  if got=$(session_name_invalid web:api); then
+    expect name/colon-msg "名称不能包含冒号或点。" "$got"
+  else
+    print -u2 "FAIL name/colon web:api accepted"
+    (( fails++ ))
+  fi
+  if got=$(session_name_invalid web.api); then
+    expect name/dot-msg "名称不能包含冒号或点。" "$got"
+  else
+    print -u2 "FAIL name/dot web.api accepted"
+    (( fails++ ))
+  fi
 
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
