@@ -2288,6 +2288,35 @@ maybe_restore_sessions() {
   fi
 }
 
+# First paint is settings/filter + load_items + setup_tty + draw.
+# Restore, Ghostty, and tmux key/color setup wait until the list is on screen.
+typeset -a picker_boot_before_first_draw_steps picker_boot_after_first_draw_steps
+picker_boot_before_first_draw_steps=(load_settings load_session_filter load_items setup_tty draw)
+picker_boot_after_first_draw_steps=(maybe_restore_sessions tmux_prepare_color tmux_prepare_keys)
+
+picker_run_named_steps() {
+  local step
+  for step in "$@"; do
+    "$step"
+  done
+}
+
+picker_boot_before_first_draw() {
+  filter_on=0
+  picker_run_named_steps "${picker_boot_before_first_draw_steps[@]}"
+}
+
+picker_boot_after_first_draw() {
+  local saved_stty=${stty_orig:-} before
+  before=${(j:\0:)items_id}
+  picker_run_named_steps "${picker_boot_after_first_draw_steps[@]}"
+  [[ -n $saved_stty ]] && stty_orig=$saved_stty
+  load_items
+  if [[ ${(j:\0:)items_id} != "$before" ]]; then
+    draw
+  fi
+}
+
 bulk_idle_unpinned_names() {
   local -i i
   local -a names
@@ -3339,15 +3368,8 @@ if [[ ${1:-} == --attach ]]; then
   fi
 fi
 
-load_settings
-maybe_restore_sessions
-tmux_prepare_color
-tmux_prepare_keys
-load_session_filter
-filter_on=0
-load_items
-setup_tty
-draw
+picker_boot_before_first_draw
+picker_boot_after_first_draw
 
 while true; do
   if (( preview_defer )); then
