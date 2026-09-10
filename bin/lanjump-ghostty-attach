@@ -1,0 +1,20 @@
+#!/bin/zsh
+# Ghostty surface entry: no arguments so Ghostty can exec this with direct:.
+# Session comes from LANJUMP_ATTACH_SPEC (optional LANJUMP_ATTACH_SHELL=1).
+set -u
+APP="$HOME/Library/Application Support/lanjump"
+MAIN="$APP/lanjump.zsh"
+spec=${LANJUMP_ATTACH_SPEC:-}
+if [[ -z $spec ]]; then
+  print -u2 "lanjump-ghostty-attach: LANJUMP_ATTACH_SPEC is empty"
+  exit 1
+fi
+if [[ ! -f $MAIN ]]; then
+  print -u2 "lanjump is not installed."
+  exit 1
+fi
+if [[ ${LANJUMP_ATTACH_SHELL:-0} == 1 ]]; then
+  exec /bin/zsh "$MAIN" attach --shell "$spec"
+else
+  exec /bin/zsh "$MAIN" attach "$spec"
+fi

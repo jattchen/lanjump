@@ -7,7 +7,7 @@ APP="$HOME/Library/Application Support/lanjump"
 MAIN="$APP/lanjump.zsh"
 INSTALLER="$APP/install.zsh"
 
-if [[ ${1:-} == upgrade || ${1:-} == 升级 ]]; then
+if [[ ${1:-} == upgrade || ${1:-} == update ]]; then
   if [[ ! -f $INSTALLER ]]; then
     print -u2 '找不到安装脚本。请重新安装：zsh install.zsh'
     exit 1

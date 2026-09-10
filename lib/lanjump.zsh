@@ -5,7 +5,7 @@ zmodload zsh/datetime
 
 APP="$HOME/Library/Application Support/lanjump"
 
-if [[ ${1:-} == upgrade || ${1:-} == 升级 ]]; then
+if [[ ${1:-} == upgrade || ${1:-} == update ]]; then
   if [[ ! -f $APP/install.zsh ]]; then
     print -u2 '找不到安装脚本。请重新安装：zsh install.zsh'
     exit 1
@@ -180,6 +180,13 @@ apply_last_cursor() {
   if [[ $last == local ]]; then
     for (( j = 1; j <= n; j++ )); do
       if [[ ${items_kind[$j]} == local ]]; then
+        cursor=$j
+        return
+      fi
+    done
+  elif [[ -n $last && $last != host ]]; then
+    for (( j = 1; j <= n; j++ )); do
+      if [[ ${items_kind[$j]} == host && ${items_alias[$j]} == "$last" ]]; then
         cursor=$j
         return
       fi
@@ -1212,7 +1219,7 @@ connect_item() {
   fi
   [[ -z $mac ]] && mac=$(get_mac "$ip")
   upsert_host "$alias" "$user" "$hostname" "$ip" "$mac"
-  mark_last host
+  mark_last "$alias"
   if ! sync_picker "$target" "$user"; then
     print "无法把 tmux 选择界面同步到对方。"
     print -n "按回车回到列表…"
@@ -1347,13 +1354,255 @@ if [[ ${1:-} == --print-lan ]]; then
   exit 0
 fi
 
-if [[ ${1:-} == attach ]]; then
+find_host_index() {
+  local want=$1 i n=${#h_alias}
+  for (( i = 1; i <= n; i++ )); do
+    if [[ ${h_alias[$i]} == "$want" ]]; then
+      print -r -- $i
+      return 0
+    fi
+  done
+  return 1
+}
+
+default_cli_host() {
+  local last
+  last=$(read_last) || last=local
+  if [[ -z $last || $last == host ]]; then
+    print -r -- local
+    return
+  fi
+  print -r -- "$last"
+}
+
+cli_remote_pick() {
+  local alias=$1
+  shift
+  local idx user hostname ip target
+  idx=$(find_host_index "$alias") || {
+    print -u2 "没有保存的机器「${alias}」。"
+    return 1
+  }
+  user=${h_user[$idx]}
+  hostname=${h_hostname[$idx]}
+  ip=${h_ip[$idx]}
+  target=$(target_for "$hostname" "$ip")
+  if ! setup_access "$user" "$target"; then
+    print -u2 "无法登录 ${user}@${target}。"
+    return 1
+  fi
+  if ! sync_picker "$target" "$user"; then
+    print -u2 "无法把 tmux 选择界面同步到对方。"
+    return 1
+  fi
+  local remote_cmd
+  remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
+  remote_cmd+="; exec /bin/zsh \"\$HOME/.local/bin/lanjump-pick\""
+  local a
+  for a in "$@"; do
+    remote_cmd+=" $(printf %q "$a")"
+  done
+  ssh_tty -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
+    "$remote_cmd"
+}
+
+cli_remote_print() {
+  local alias=$1
+  shift
+  local idx user hostname ip target
+  idx=$(find_host_index "$alias") || {
+    print -u2 "没有保存的机器「${alias}」。"
+    return 1
+  }
+  user=${h_user[$idx]}
+  hostname=${h_hostname[$idx]}
+  ip=${h_ip[$idx]}
+  target=$(target_for "$hostname" "$ip")
+  if ! setup_access "$user" "$target"; then
+    print -u2 "无法登录 ${user}@${target}。"
+    return 1
+  fi
+  if ! sync_picker "$target" "$user"; then
+    print -u2 "无法把 tmux 选择界面同步到对方。"
+    return 1
+  fi
+  local remote_cmd
+  remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
+  remote_cmd+="; exec /bin/zsh \"\$HOME/.local/bin/lanjump-pick\""
+  local a
+  for a in "$@"; do
+    remote_cmd+=" $(printf %q "$a")"
+  done
+  ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
+    "$remote_cmd"
+}
+
+cli_pick() {
+  local picker
   picker=$(picker_path)
   if [[ -z $picker ]]; then
     print -u2 "本机 tmux 选择界面不存在。请重新安装：lanjump upgrade"
-    exit 1
+    return 1
   fi
-  exec /bin/zsh "$picker" --attach "${2:-}"
+  /bin/zsh "$picker" "$@"
+}
+
+cli_pick_exec() {
+  local picker
+  picker=$(picker_path)
+  if [[ -z $picker ]]; then
+    print -u2 "本机 tmux 选择界面不存在。请重新安装：lanjump upgrade"
+    return 1
+  fi
+  exec /bin/zsh "$picker" "$@"
+}
+
+cli_open_tabs() {
+  local host=$1 x
+  shift
+  local -a ns
+  ns=()
+  for x in "$@"; do
+    [[ -n $x ]] && ns+=("$x")
+  done
+  (( ${#ns} )) || {
+    print -u2 "没有可打开的 session。"
+    return 1
+  }
+  local -a args
+  args=(--open-tabs)
+  args+=("${ns[@]}")
+  if [[ $host == local ]]; then
+    cli_pick "${args[@]}"
+  else
+    LANJUMP_ATTACH_HOST=$host cli_pick "${args[@]}"
+  fi
+}
+
+cli_has_session() {
+  local host=$1 session=$2
+  if [[ $host == local ]]; then
+    cli_pick --has-session "$session"
+  else
+    cli_remote_print "$host" --has-session "$session"
+  fi
+}
+
+cli_new_session() {
+  local host=$1 session=$2
+  if [[ $host == local ]]; then
+    cli_pick --new-session "$session"
+  else
+    cli_remote_print "$host" --new-session "$session"
+  fi
+}
+
+cli_list_names() {
+  local host=$1 flag=$2
+  if [[ $host == local ]]; then
+    cli_pick "$flag"
+  else
+    cli_remote_print "$host" "$flag"
+  fi
+}
+
+cli_attach_one() {
+  local host=$1 session=$2 shell=$3
+  local -a args
+  args=(--attach)
+  (( shell )) && args+=(--shell)
+  args+=("$session")
+  if [[ $host == local ]]; then
+    cli_pick_exec "${args[@]}"
+  else
+    cli_remote_pick "$host" "${args[@]}"
+  fi
+}
+
+cli_dispatch() {
+  local cmd=$1
+  shift
+  local host session spec ans pinans
+  local -i shell=0 pin=0
+  local -a extra names
+  extra=()
+  while (( $# )); do
+    case $1 in
+      --shell) shell=1 ;;
+      *) extra+=("$1") ;;
+    esac
+    shift
+  done
+  host=$(default_cli_host)
+  session=
+  if (( ${#extra} )); then
+    spec=${extra[1]}
+    if [[ $spec == *:* ]]; then
+      host=${spec%%:*}
+      session=${spec#*:}
+    else
+      session=$spec
+    fi
+  fi
+  [[ -n $host ]] || host=local
+  case $cmd in
+    attach)
+      if [[ -z $session ]]; then
+        print -u2 "用法：lanjump attach [--shell] <session>"
+        return 1
+      fi
+      cli_attach_one "$host" "$session" $shell
+      ;;
+    go)
+      if [[ -z $session ]]; then
+        session=$(cli_list_names "$host" --print-last) || session=
+      fi
+      if [[ -z $session ]]; then
+        print -u2 "没有最近的 session。"
+        return 1
+      fi
+      if ! cli_has_session "$host" "$session"; then
+        print "没有 session「${session}」。"
+        print -n "要新建并打开吗？（回车=是，其他键=否） "
+        read -r ans </dev/tty || ans=
+        if [[ -n $ans ]]; then
+          return 1
+        fi
+        print -n "常驻（y=是，回车=否）: "
+        read -r pinans </dev/tty || pinans=
+        [[ $pinans == y || $pinans == Y ]] && pin=1
+        cli_new_session "$host" "$session" || return 1
+        if (( pin )); then
+          if [[ $host == local ]]; then
+            cli_pick --pin-session "$session"
+          else
+            cli_remote_print "$host" --pin-session "$session"
+          fi
+        fi
+      fi
+      cli_open_tabs "$host" "$session"
+      ;;
+    work)
+      names=("${(@f)$(cli_list_names "$host" --print-workspace)}")
+      cli_open_tabs "$host" "${names[@]}"
+      ;;
+    pins)
+      names=("${(@f)$(cli_list_names "$host" --print-pinned)}")
+      cli_open_tabs "$host" "${names[@]}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins ]]; then
+  ensure_setup
+  detect_lan
+  load_hosts
+  find_lanjump_keys || true
+  cli_dispatch "$@"
+  exit $?
 fi
 
 ensure_setup
