@@ -15,7 +15,7 @@ fi
 
 pick_needs_tty() {
   case ${1:-} in
-    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--open-tabs|--has-session|--new-session|--pin-session|--snapshot|--install-hooks) return 1 ;;
+    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--snapshot|--install-hooks) return 1 ;;
   esac
   return 0
 }
@@ -43,6 +43,7 @@ typeset -a items_kind items_id items_name items_att items_time items_path items_
 typeset -a all_kind all_id all_name all_att all_time all_path all_summary all_cmd all_activity all_pinned
 typeset -a preview_lines
 typeset -A preview_cache
+typeset -A session_titles
 cursor=1
 # time = all by last activity desc; attached = 占用中 first, idle after, each time-desc.
 sort_mode=time
@@ -61,6 +62,10 @@ stamp_gen=
 did_restore=0
 attach_shell_only=0
 ghostty_close_others=0
+open_target=auto
+open_placement=window
+settings_on=0
+settings_cursor=1
 loading=0
 stty_orig=
 PENDING_KEY=""
@@ -556,7 +561,7 @@ compute_layout() {
   fi
 
   w_name=$(max_dw 4 名称 "${names[@]}")
-  w_summary=$(max_dw 4 摘要 "${summaries[@]}")
+  w_summary=$(max_dw 4 程序 "${summaries[@]}")
   w_path=$(max_dw 4 路径 "${paths[@]}")
 
   local -i gaps=8 needed extra shrink
@@ -656,7 +661,7 @@ _fmt_header() {
   _padw 最近活动 $w_time
   extra+="  $REPLY"
   if (( show_summary )); then
-    _padw 摘要 $w_summary
+    _padw 程序 $w_summary
     extra+="  $REPLY"
   fi
   if (( show_path )); then
@@ -1749,6 +1754,14 @@ attach_named_session() {
     fi
   fi
   maybe_resume_last_command "$name"
+  if [[ $(effective_open_target 1) != current ]]; then
+    restore_tty
+    if open_workspace_tabs "$name"; then
+      trap - EXIT
+      exit 0
+    fi
+    print "改在当前窗口进入。"
+  fi
   tmux_tty attach-session -t "=$name"
   snapshot_live_sessions
   attach_shell_only=0
@@ -1873,6 +1886,126 @@ ensure_restore_token() {
   write_restore_stamp "$boot" "$gen"
 }
 
+settings_file() {
+  REPLY="$HOME/Library/Application Support/lanjump/settings"
+}
+
+load_settings() {
+  local file line key val
+  open_target=auto
+  open_placement=window
+  settings_file
+  file=$REPLY
+  [[ -f $file ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -z $line || $line == '#'* ]] && continue
+    key=${line%% *}
+    if [[ $line == *' '* ]]; then
+      val=${line#* }
+    else
+      val=
+    fi
+    case $key in
+      open_target)
+        case $val in
+          auto|ghostty|terminal|current) open_target=$val ;;
+        esac
+        ;;
+      open_placement)
+        case $val in
+          window|tab) open_placement=$val ;;
+        esac
+        ;;
+    esac
+  done <"$file"
+}
+
+save_settings() {
+  local file dir
+  settings_file
+  file=$REPLY
+  dir=${file:h}
+  mkdir -p "$dir"
+  print -r -- "open_target ${open_target}" >"$file"
+  print -r -- "open_placement ${open_placement}" >>"$file"
+}
+
+settings_value_label() {
+  case $1 in
+    target)
+      case $open_target in
+        ghostty) print -r -- Ghostty ;;
+        terminal) print -r -- 系统终端 ;;
+        current) print -r -- 当前窗口 ;;
+        *) print -r -- '自动（Ghostty 优先）' ;;
+      esac
+      ;;
+    placement)
+      case $open_placement in
+        tab) print -r -- 已有窗口加标签 ;;
+        *) print -r -- 新开窗口 ;;
+      esac
+      ;;
+  esac
+}
+
+cycle_setting() {
+  case $settings_cursor in
+    1)
+      case $open_target in
+        auto) open_target=ghostty ;;
+        ghostty) open_target=terminal ;;
+        terminal) open_target=current ;;
+        *) open_target=auto ;;
+      esac
+      ;;
+    2)
+      if [[ $open_placement == window ]]; then
+        open_placement=tab
+      else
+        open_placement=window
+      fi
+      ;;
+  esac
+  save_settings
+}
+
+effective_open_target() {
+  local n=${1:-1}
+  local want=$open_target
+  if [[ $want == current ]] && (( n > 1 )); then
+    want=auto
+  fi
+  case $want in
+    current)
+      print -r -- current
+      ;;
+    ghostty)
+      if ghostty_restore_available; then
+        print -r -- ghostty
+      else
+        print -r -- current
+      fi
+      ;;
+    terminal)
+      if terminal_restore_available; then
+        print -r -- terminal
+      else
+        print -r -- current
+      fi
+      ;;
+    *)
+      if ghostty_restore_available; then
+        print -r -- ghostty
+      elif (( n > 1 )) && terminal_restore_available; then
+        print -r -- terminal
+      else
+        print -r -- current
+      fi
+      ;;
+  esac
+}
+
 ghostty_restore_available() {
   local_keyboard || return 1
   [[ -d ${LANJUMP_GHOSTTY_APP:-/Applications/Ghostty.app} ]]
@@ -1956,7 +2089,19 @@ ghostty_osascript_for_sessions() {
     print -r -- '  end try'
   fi
   ghostty_cfg_lines "$first"
-  print -r -- '  set win to new window with configuration cfg'
+  if [[ $open_placement == tab ]] && (( ! ghostty_close_others )); then
+    print -r -- '  set win to missing value'
+    print -r -- '  try'
+    print -r -- '    if (count of windows) > 0 then set win to front window'
+    print -r -- '  end try'
+    print -r -- '  if win is missing value then'
+    print -r -- '    set win to new window with configuration cfg'
+    print -r -- '  else'
+    print -r -- '    new tab in win with configuration cfg'
+    print -r -- '  end if'
+  else
+    print -r -- '  set win to new window with configuration cfg'
+  fi
   for n in "$@"; do
     ghostty_cfg_lines "$n"
     print -r -- '  new tab in win with configuration cfg'
@@ -2073,14 +2218,35 @@ open_terminal_session_tabs() {
 
 open_workspace_tabs() {
   (( $# )) || return 0
+  case $open_target in
+    terminal)
+      if terminal_restore_available; then
+        open_terminal_session_tabs "$@" || {
+          print -u2 "无法打开终端标签。"
+          return 1
+        }
+        return 0
+      fi
+      print -u2 "没有可用的本机终端来打开窗口。"
+      return 1
+      ;;
+  esac
   if ghostty_restore_available; then
-    open_ghostty_session_tabs "$@" || print -u2 "无法打开 Ghostty 标签。"
-  elif terminal_restore_available; then
-    open_terminal_session_tabs "$@" || print -u2 "无法打开终端标签。"
-  else
-    print -u2 "没有可用的本机终端来打开窗口。"
-    return 1
+    open_ghostty_session_tabs "$@" || {
+      print -u2 "无法打开 Ghostty 标签。"
+      return 1
+    }
+    return 0
   fi
+  if terminal_restore_available; then
+    open_terminal_session_tabs "$@" || {
+      print -u2 "无法打开终端标签。"
+      return 1
+    }
+    return 0
+  fi
+  print -u2 "没有可用的本机终端来打开窗口。"
+  return 1
 }
 
 maybe_restore_sessions() {
@@ -2200,6 +2366,7 @@ load_items() {
   items_cmd=()
   items_activity=()
   items_pinned=()  preview_cache=()
+  session_titles=()
   raw=()
 
   if [[ $HAS_TMUX -eq 1 ]] && tmuxx list-sessions >/dev/null 2>&1; then
@@ -2224,6 +2391,7 @@ load_items() {
       items_time+=("$when")
       items_path+=("$(short_path "${f[5]}")")
       items_summary+=("$(useful_summary "$title" "$cmd" "$wname")")
+      session_titles[${f[2]}]=$title
       items_cmd+=("$cmd")
       items_activity+=("${f[1]}")
       items_pinned+=("$pin")    done
@@ -2282,10 +2450,34 @@ load_items() {
   loading=0
 }
 
+preview_line_is_chrome() {
+  local line=$1 stripped rest
+  line="${line%"${line##*[![:space:]]}"}"
+  stripped=${line//[[:space:]]/}
+  [[ -z $stripped ]] && return 0
+  [[ $stripped == █## ]] && return 0
+  rest=$stripped
+  rest=${rest//[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬▶▷▸•·]/}
+  rest=${rest//[[:punct:]]/}
+  [[ -z $rest ]] && return 0
+  [[ $stripped == '>' || $stripped == '❯' || $stripped == '%' || $stripped == '$' || $stripped == '#' ]] && return 0
+  [[ $stripped == (#i)grok([0-9.-]#) ]] && return 0
+  return 1
+}
+
+preview_useful_title() {
+  local title=$1 name=$2 cmd=$3 short
+  [[ -n $title ]] || return 1
+  short=$(short_command_name "$cmd")
+  [[ $title != "$name" && $title != "$cmd" && $title != "$short" ]] || return 1
+  print -r -- "$title"
+}
+
 session_preview_lines() {
   local name=$1 cmd=$3
-  local -i max_lines=$2 start grok=0 saw_blank=0
-  local cap line stripped
+  local title=${4:-${session_titles[$name]:-}}
+  local -i max_lines=$2 start grok=0 saw_blank=0 room
+  local cap line stripped title_line
   local -a kept raw_lines
   preview_lines=()
   (( max_lines > preview_max_lines )) && max_lines=$preview_max_lines
@@ -2312,7 +2504,7 @@ session_preview_lines() {
       saw_blank=1
       continue
     fi
-    if [[ $stripped == █## ]]; then
+    if preview_line_is_chrome "$line"; then
       continue
     fi
     saw_blank=0
@@ -2324,16 +2516,21 @@ session_preview_lines() {
   while (( ${#kept} )) && [[ -z "${kept[-1]}" ]]; do
     kept=("${(@)kept[1,-2]}")
   done
-  if (( ${#kept} )); then
-    stripped=${kept[-1]//[[:space:]]/}
-    if [[ $stripped != *[[:alnum:]]* ]]; then
-      kept=("${(@)kept[1,-2]}")
-    fi
-  fi
-  (( ${#kept} == 0 )) && return
-  if (( ${#kept} > max_lines )); then
-    start=$(( ${#kept} - max_lines + 1 ))
+  (( ${#kept} == 0 )) && {
+    title_line=$(preview_useful_title "$title" "$name" "$cmd") || return
+    preview_lines=("$title_line")
+    return
+  }
+  title_line=$(preview_useful_title "$title" "$name" "$cmd") || title_line=
+  room=$max_lines
+  [[ -n $title_line ]] && (( room-- ))
+  (( room < 1 )) && room=1
+  if (( ${#kept} > room )); then
+    start=$(( ${#kept} - room + 1 ))
     kept=("${(@)kept[start,-1]}")
+  fi
+  if [[ -n $title_line ]]; then
+    kept=("$title_line" "${kept[@]}")
   fi
   preview_lines=("${kept[@]}")
 }
@@ -2441,7 +2638,7 @@ draw_help() {
   else
     preview_key='v 预览'
   fi
-  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "p 常驻" "X 删空闲" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "$preview_key" "/ 包含" "! 排除" "q 退出")
+  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "p 常驻" "X 删空闲" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "$preview_key" "/ 包含" "! 排除" ", 设置" "q 退出")
   buf=""
   for piece in "${keys[@]}"; do
     if [[ -z $buf ]]; then
@@ -2583,6 +2780,53 @@ draw() {
       draw_emit "  ${c_dim}${REPLY}${c_reset}" || break
     done
   fi
+  if (( settings_on )); then
+    draw_settings_overlay
+  fi
+}
+
+draw_settings_overlay() {
+  local -i cols rows w h r c i
+  local -a lines
+  local line hl
+  cols=$(term_cols)
+  rows=$(term_lines)
+  lines=(
+    "设置"
+    ""
+    "  打开到    $(settings_value_label target)"
+    "  窗口      $(settings_value_label placement)"
+    ""
+    "  j/k 选择  Enter 切换  q 关闭"
+  )
+  w=44
+  h=$(( ${#lines} + 2 ))
+  (( w > cols - 2 )) && w=$(( cols - 2 ))
+  (( w < 16 )) && w=16
+  r=$(( (rows - h) / 2 + 1 ))
+  c=$(( (cols - w) / 2 + 1 ))
+  (( r < 1 )) && r=1
+  (( c < 1 )) && c=1
+  printf '\e[%d;%dH┌' $r $c
+  printf '─%.0s' {1..$(( w - 2 ))}
+  printf '┐'
+  for (( i = 1; i <= ${#lines}; i++ )); do
+    printf '\e[%d;%dH│' $(( r + i )) $c
+    line=${lines[$i]}
+    _padw "$line" $(( w - 2 ))
+    hl=0
+    if (( i == 3 && settings_cursor == 1 )) || (( i == 4 && settings_cursor == 2 )); then
+      hl=1
+    fi
+    if (( hl )); then
+      printf '%s%s%s│' "$c_rev" "$REPLY" "$c_reset"
+    else
+      printf '%s│' "$REPLY"
+    fi
+  done
+  printf '\e[%d;%dH└' $(( r + h - 1 )) $c
+  printf '─%.0s' {1..$(( w - 2 ))}
+  printf '┘'
 }
 
 # True if another digit could still name a list index.
@@ -2686,6 +2930,7 @@ read_key() {
     f|F) REPLY=f ;;
     /) REPLY=/ ;;
     !) REPLY=! ;;
+    ,) REPLY=settings ;;
     g) REPLY=top ;;
     G) REPLY=bottom ;;
     [0-9]) REPLY="num$k" ;;
@@ -2753,7 +2998,7 @@ prompt_new() {
       add_pin_record "$name" "$PWD" ""
       tmux_set_pinned "$name" 1
     fi
-    tmux_tty attach-session -t "=$name"
+    attach_named_session "$name" 0
   else
     if [[ -z $name ]]; then
       created=$(tmuxx new-session -d -P -F '#{session_name}' 2>/dev/null) || created=
@@ -2782,7 +3027,7 @@ prompt_new() {
       tmux_set_pinned "$created" 1
     fi
     mark_snapshot_occupied "$created"
-    tmux_tty attach-session -t "=$created"
+    attach_named_session "$created" 0
   fi
   setup_tty
   load_items
@@ -2940,6 +3185,17 @@ print_last_name() {
   print -r -- "${snap_names[-1]}"
 }
 
+print_session_list() {
+  local line
+  local -a raw
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  raw=("${(@f)$(tmuxx list-sessions -F $'#{session_name}\t#{?session_attached,占用中,空闲}\t#{pane_current_command}\t#{pane_current_path}' 2>/dev/null)}")
+  (( ${#raw} )) || return 0
+  for line in "${raw[@]}"; do
+    [[ -n $line ]] && print -r -- "$line"
+  done
+}
+
 if [[ ${1:-} == --snapshot ]]; then
   run_session_snapshot
   exit 0
@@ -2959,6 +3215,10 @@ if [[ ${1:-} == --print-pinned ]]; then
 fi
 if [[ ${1:-} == --print-last ]]; then
   print_last_name || exit 1
+  exit 0
+fi
+if [[ ${1:-} == --print-sessions ]]; then
+  print_session_list
   exit 0
 fi
 
@@ -3017,12 +3277,30 @@ if [[ ${1:-} == --open-tabs ]]; then
     esac
     shift
   done
+  load_settings
   load_pinned_sessions
   load_session_snapshot
   if (( ! attach_shell_only )); then
     for n in "${names[@]}"; do
       maybe_resume_last_command "$n"
     done
+  fi
+  if [[ $(effective_open_target ${#names}) == current ]]; then
+    name=${names[1]:-}
+    if [[ -z $name ]]; then
+      print -u2 "没有可打开的 session。"
+      exit 1
+    fi
+    mark_snapshot_occupied "$name"
+    remember_last_session "$name"
+    tmux_prepare_color
+    tmux_prepare_keys
+    keys=
+    if local_keyboard && keys=$(keys_bin); then
+      exec "$keys" "$TMUX_BIN" attach-session -t "=$name"
+    else
+      exec "$TMUX_BIN" attach-session -t "=$name"
+    fi
   fi
   open_workspace_tabs "${names[@]}"
   exit $?
@@ -3061,6 +3339,7 @@ if [[ ${1:-} == --attach ]]; then
   fi
 fi
 
+load_settings
 maybe_restore_sessions
 tmux_prepare_color
 tmux_prepare_keys
@@ -3079,6 +3358,31 @@ while true; do
     fi
   else
     read_key || continue
+  fi
+  if (( settings_on )); then
+    preview_defer=0
+    case $REPLY in
+      up)
+        (( settings_cursor-- ))
+        (( settings_cursor < 1 )) && settings_cursor=2
+        draw
+        ;;
+      down)
+        (( settings_cursor++ ))
+        (( settings_cursor > 2 )) && settings_cursor=1
+        draw
+        ;;
+      enter)
+        cycle_setting
+        draw
+        ;;
+      q|esc|settings)
+        settings_on=0
+        save_settings
+        draw
+        ;;
+    esac
+    continue
   fi
   if [[ $REPLY != up && $REPLY != down ]]; then
     preview_defer=0
@@ -3145,6 +3449,12 @@ while true; do
     v)
       preview_on=$(( 1 - preview_on ))
       preview_defer=0
+      draw
+      ;;
+    settings)
+      settings_on=1
+      settings_cursor=1
+      load_settings
       draw
       ;;
     f)

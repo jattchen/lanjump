@@ -1519,6 +1519,23 @@ cli_attach_one() {
   fi
 }
 
+cli_usage() {
+  print -r -- '用法：lanjump [命令]'
+  print
+  print -r -- '  （无命令）        打开主机列表，再选 tmux session'
+  print -r -- '  help              显示本说明'
+  print -r -- '  list [机器]       列出 session'
+  print -r -- '  last [机器]       显示最近进入的 session'
+  print -r -- '  go [机器:]名字    打开最近或指定 session'
+  print -r -- '  work [机器]       打开工作区'
+  print -r -- '  pins [机器]       打开常驻'
+  print -r -- '  upgrade           升级到最新版本'
+  print -r -- '  update            同 upgrade'
+  print
+  print -r -- '机器省略时用上次进入的那台。'
+  print -r -- '打开方式可在 tmux 列表按 , 设置（Ghostty / 系统终端 / 当前窗口）。'
+}
+
 cli_dispatch() {
   local cmd=$1
   shift
@@ -1535,15 +1552,24 @@ cli_dispatch() {
   done
   host=$(default_cli_host)
   session=
-  if (( ${#extra} )); then
-    spec=${extra[1]}
-    if [[ $spec == *:* ]]; then
-      host=${spec%%:*}
-      session=${spec#*:}
-    else
-      session=$spec
-    fi
-  fi
+  case $cmd in
+    list|ls|last)
+      if (( ${#extra} )); then
+        host=${extra[1]}
+      fi
+      ;;
+    *)
+      if (( ${#extra} )); then
+        spec=${extra[1]}
+        if [[ $spec == *:* ]]; then
+          host=${spec%%:*}
+          session=${spec#*:}
+        else
+          session=$spec
+        fi
+      fi
+      ;;
+  esac
   [[ -n $host ]] || host=local
   case $cmd in
     attach)
@@ -1590,19 +1616,41 @@ cli_dispatch() {
       names=("${(@f)$(cli_list_names "$host" --print-pinned)}")
       cli_open_tabs "$host" "${names[@]}"
       ;;
+    list|ls)
+      cli_list_names "$host" --print-sessions
+      ;;
+    last)
+      session=$(cli_list_names "$host" --print-last) || session=
+      if [[ -z $session ]]; then
+        print -u2 "没有最近的 session。"
+        return 1
+      fi
+      print -r -- "$session"
+      ;;
     *)
       return 1
       ;;
   esac
 }
 
-if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins ]]; then
+if [[ ${1:-} == help || ${1:-} == -h || ${1:-} == --help ]]; then
+  cli_usage
+  exit 0
+fi
+
+if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then
   ensure_setup
   detect_lan
   load_hosts
   find_lanjump_keys || true
   cli_dispatch "$@"
   exit $?
+fi
+
+if [[ -n ${1:-} ]]; then
+  print -u2 "未知命令：${1}"
+  cli_usage >&2
+  exit 1
 fi
 
 ensure_setup
