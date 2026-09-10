@@ -12,7 +12,8 @@
 # picker_boot_before_first_draw, picker_boot_after_first_draw,
 # preview_is_grok, preview_line_is_tool, preview_line_is_model,
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
-# session_name_invalid.
+# session_name_invalid, restore_csi_key, restore_read_key, restore_tty,
+# resume_prompt_choice, attach_command_for, new_session_flag_invalid.
 
 pick_selftest() {
   local -i fails=0
@@ -1393,7 +1394,30 @@ pick_selftest() {
   pinned_cwd[inferme]=$HOME
   expect resolve/named-project "$HOME/Documents/projects/inferme" "$(resolve_session_cwd inferme "$HOME")"
   expect resolve/keep-explicit /proj/keep "$(resolve_session_cwd nosuch /proj/keep)"
-  expect enter/prompt $'上次在跑 grok。\nEnter  续上    s  只要 shell' "$(enter_resume_prompt_text grok-1.0.24-mac)"
+  expect enter/prompt $'上次在跑 grok。\nEnter/y  续上    s  只要 shell    q  取消' "$(enter_resume_prompt_text grok-1.0.24-mac)"
+
+  LANJUMP_ATTACH_BIN=/Users/mac/.local/bin/lanjump
+  attach_shell_only=0
+  got=$(attach_command_for 'web api')
+  if [[ $got != *"$(printf %q 'web api')"* ]]; then
+    print -u2 "FAIL attach/quote-space missing quoted web api got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got == *'attach web api'* ]]; then
+    print -u2 "FAIL attach/quote-space has unquoted attach web api got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  attach_shell_only=1
+  got=$(attach_command_for 'web api')
+  if [[ $got != *"attach --shell $(printf %q 'web api')"* ]]; then
+    print -u2 "FAIL attach/quote-shell missing quoted --shell web api got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got == *'attach --shell web api'* ]]; then
+    print -u2 "FAIL attach/quote-shell has unquoted attach --shell web api got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  attach_shell_only=0
 
   snap_names=(keep drop)
   snap_cwd=()
@@ -1870,6 +1894,118 @@ pick_selftest() {
     expect name/dot-msg "名称不能包含冒号或点。" "$got"
   else
     print -u2 "FAIL name/dot web.api accepted"
+    (( fails++ ))
+  fi
+
+  if got=$(new_session_flag_invalid web.api); then
+    expect name/cli-dot "名称不能包含冒号或点。" "$got"
+  else
+    print -u2 "FAIL name/cli-dot web.api accepted"
+    (( fails++ ))
+  fi
+  if got=$(new_session_flag_invalid web:api); then
+    expect name/cli-colon "名称不能包含冒号或点。" "$got"
+  else
+    print -u2 "FAIL name/cli-colon web:api accepted"
+    (( fails++ ))
+  fi
+  if got=$(new_session_flag_invalid ''); then
+    expect name/cli-empty "用法：lanjump go <session>" "$got"
+  else
+    print -u2 "FAIL name/cli-empty accepted"
+    (( fails++ ))
+  fi
+  if new_session_flag_invalid web-api; then
+    print -u2 "FAIL name/cli-ok web-api rejected"
+    (( fails++ ))
+  fi
+  local pick_bin st
+  pick_bin=${${(%):-%x}:A:h}/lanjump-pick.zsh
+  st=0
+  err=$(/bin/zsh "$pick_bin" --new-session 'web.api' 2>&1) || st=$?
+  if (( st == 0 )); then
+    print -u2 "FAIL name/cli-flag-dot-exit got 0 want nonzero"
+    (( fails++ ))
+  fi
+  expect name/cli-flag-dot "名称不能包含冒号或点。" "$err"
+  st=0
+  err=$(/bin/zsh "$pick_bin" --new-session 'web:api' 2>&1) || st=$?
+  if (( st == 0 )); then
+    print -u2 "FAIL name/cli-flag-colon-exit got 0 want nonzero"
+    (( fails++ ))
+  fi
+  expect name/cli-flag-colon "名称不能包含冒号或点。" "$err"
+
+  restore_csi_key A
+  expect restore/csi-up up "$REPLY"
+  restore_csi_key B
+  expect restore/csi-down down "$REPLY"
+  restore_csi_key C
+  expect restore/csi-right other "$REPLY"
+  restore_csi_key D
+  expect restore/csi-left other "$REPLY"
+  restore_csi_key 6
+  expect restore/csi-pgdn other "$REPLY"
+  if [[ ${functions[restore_read_key]} != *restore_csi_key* ]]; then
+    print -u2 "FAIL restore/read-key missing restore_csi_key got=$(printf %q "${functions[restore_read_key]}")"
+    (( fails++ ))
+  fi
+
+  if [[ ${functions[restore_tty]} != *1000l* || ${functions[restore_tty]} != *1006l* ]]; then
+    print -u2 "FAIL restore/tty-mouse missing 1000l/1006l got=$(printf %q "${functions[restore_tty]}")"
+    (( fails++ ))
+  fi
+
+  attach_shell_only=1
+  if resume_prompt_choice y; then
+    expect resume/choice-y 0 "$attach_shell_only"
+  else
+    print -u2 "FAIL resume/choice-y cancelled"
+    (( fails++ ))
+  fi
+  attach_shell_only=1
+  if resume_prompt_choice Y; then
+    expect resume/choice-Y 0 "$attach_shell_only"
+  else
+    print -u2 "FAIL resume/choice-Y cancelled"
+    (( fails++ ))
+  fi
+  attach_shell_only=1
+  if resume_prompt_choice ''; then
+    expect resume/choice-empty 0 "$attach_shell_only"
+  else
+    print -u2 "FAIL resume/choice-empty cancelled"
+    (( fails++ ))
+  fi
+  attach_shell_only=0
+  if resume_prompt_choice s; then
+    expect resume/choice-s 1 "$attach_shell_only"
+  else
+    print -u2 "FAIL resume/choice-s cancelled"
+    (( fails++ ))
+  fi
+  attach_shell_only=0
+  if resume_prompt_choice S; then
+    expect resume/choice-S 1 "$attach_shell_only"
+  else
+    print -u2 "FAIL resume/choice-S cancelled"
+    (( fails++ ))
+  fi
+  attach_shell_only=0
+  if resume_prompt_choice q; then
+    print -u2 "FAIL resume/choice-q should cancel"
+    (( fails++ ))
+  fi
+  if resume_prompt_choice Q; then
+    print -u2 "FAIL resume/choice-Q should cancel"
+    (( fails++ ))
+  fi
+  if resume_prompt_choice n; then
+    print -u2 "FAIL resume/choice-n should cancel"
+    (( fails++ ))
+  fi
+  if [[ ${functions[attach_named_session]} != *resume_prompt_choice* ]]; then
+    print -u2 "FAIL resume/attach missing resume_prompt_choice got=$(printf %q "${functions[attach_named_session]}")"
     (( fails++ ))
   fi
 

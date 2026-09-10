@@ -255,7 +255,7 @@ tmux_prepare_color() {
 }
 
 restore_tty() {
-  print -n '\e[?25h'
+  print -n $'\e[?25h\e[?1000l\e[?1006l'
   [[ -n ${stty_orig:-} ]] && stty "$stty_orig" 2>/dev/null || stty sane 2>/dev/null
 }
 
@@ -1600,6 +1600,17 @@ draw_restore_pick() {
   done
 }
 
+# CSI third byte after ESC [. Left/right and PageDown-like leftovers
+# are ignored; only a true Esc aborts the restore overlay.
+restore_csi_key() {
+  case ${1:-} in
+    A) REPLY=up ;;
+    B) REPLY=down ;;
+    C|D) REPLY=other ;;
+    *) REPLY=other ;;
+  esac
+}
+
 restore_read_key() {
   local k k2 k3 c buf
   IFS= read -rsk1 k || return 1
@@ -1623,11 +1634,12 @@ restore_read_key() {
         REPLY=other
         return 0
       fi
-      case $k3 in
-        A) REPLY=up ;;
-        B) REPLY=down ;;
-        *) REPLY=esc ;;
-      esac
+      restore_csi_key "$k3"
+      if [[ $k3 == [0-9] ]]; then
+        while IFS= read -rsk1 -t 0.2 c; do
+          [[ $c == [A-Za-z~] ]] && break
+        done
+      fi
       return 0
     fi
     REPLY=esc
@@ -1827,11 +1839,7 @@ attach_named_session() {
       enter_resume_prompt_text "$last"
       print -n "> "
       read -r ans || ans=
-      case $ans in
-        '') attach_shell_only=0 ;;
-        s|S) attach_shell_only=1 ;;
-        *) return 0 ;;
-      esac
+      resume_prompt_choice "$ans" || return 0
     else
       restore_tty
       print
@@ -2121,9 +2129,9 @@ attach_command_for() {
   local name=$1 spec
   spec=$(attach_spec_for "$name")
   if (( attach_shell_only )); then
-    print -r -- "$(ghostty_attach_bin) attach --shell $spec"
+    print -r -- "$(ghostty_attach_bin) attach --shell ${(q)spec}"
   else
-    print -r -- "$(ghostty_attach_bin) attach $spec"
+    print -r -- "$(ghostty_attach_bin) attach ${(q)spec}"
   fi
 }
 
@@ -2134,11 +2142,21 @@ workspace_restore_prompt_text() {
   print -r -- "回车  先不打开"
 }
 
+resume_prompt_choice() {
+  case ${1:-} in
+    ''|y|Y) attach_shell_only=0 ;;
+    s|S) attach_shell_only=1 ;;
+    q|Q) return 1 ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
 enter_resume_prompt_text() {
   local short
   short=$(short_command_name "$1")
   print -r -- "上次在跑 ${short}。"
-  print -r -- "Enter  续上    s  只要 shell"
+  print -r -- "Enter/y  续上    s  只要 shell    q  取消"
 }
 
 ghostty_restore_prompt_text() {
@@ -3448,6 +3466,16 @@ session_name_invalid() {
   return 0
 }
 
+# CLI --new-session: empty is invalid here (unlike TUI n auto-name).
+new_session_flag_invalid() {
+  local name=${1:-}
+  if [[ -z $name ]]; then
+    print -r -- "用法：lanjump go <session>"
+    return 0
+  fi
+  session_name_invalid "$name"
+}
+
 prompt_new() {
   [[ $HAS_TMUX -eq 1 ]] || return
   restore_tty
@@ -3723,8 +3751,8 @@ fi
 
 if [[ ${1:-} == --new-session ]]; then
   name=${2:-}
-  if [[ -z $name ]]; then
-    print -u2 "用法：lanjump go <session>"
+  if msg=$(new_session_flag_invalid "$name"); then
+    print -u2 "$msg"
     exit 1
   fi
   if [[ $HAS_TMUX -ne 1 ]]; then
