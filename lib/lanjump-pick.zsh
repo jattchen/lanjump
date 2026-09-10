@@ -3441,6 +3441,13 @@ activate() {
   esac
 }
 
+# Colon/dot collide with CLI host:session. Empty is allowed (new auto-name).
+session_name_invalid() {
+  [[ -n ${1:-} && ( $1 == *:* || $1 == *.* ) ]] || return 1
+  print -r -- "名称不能包含冒号或点。"
+  return 0
+}
+
 prompt_new() {
   [[ $HAS_TMUX -eq 1 ]] || return
   restore_tty
@@ -3451,6 +3458,14 @@ prompt_new() {
   read -r name
   name=${name##[[:space:]]#}
   name=${name%%[[:space:]]#}
+  if session_name_invalid "$name"; then
+    print -n "按回车继续…"
+    read -r
+    setup_tty
+    load_items
+    draw
+    return
+  fi
   print -n "常驻（y=是，回车=否）: "
   read -r pinans || pinans=
   if [[ $pinans == y || $pinans == Y ]]; then
@@ -3577,8 +3592,7 @@ prompt_rename() {
     draw
     return
   fi
-  if [[ $name == *:* || $name == *.* ]]; then
-    print "名称不能包含冒号或点。"
+  if session_name_invalid "$name"; then
     print -n "按回车继续…"
     read -r
     setup_tty

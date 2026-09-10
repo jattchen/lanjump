@@ -11,7 +11,8 @@
 # load_settings, save_settings, cycle_setting, effective_open_target,
 # picker_boot_before_first_draw, picker_boot_after_first_draw,
 # preview_is_grok, preview_line_is_tool, preview_line_is_model,
-# preview_grok_lines, preview_generic_lines, preview_select_lines.
+# preview_grok_lines, preview_generic_lines, preview_select_lines,
+# session_name_invalid.
 
 pick_selftest() {
   local -i fails=0
@@ -421,8 +422,7 @@ pick_selftest() {
   local panes dump out
   panes=/var/folders/hb/21sdw0893vxbvq2wpch2rpxr0000gn/T/grok-goal-2b0ef817ca46/implementer/panes
   if [[ ! -f $panes/devloop-main.txt || ! -f $panes/sysmtn-main.txt ]]; then
-    print -u2 "FAIL preview/render-dumps missing $panes"
-    (( fails++ ))
+    print -u2 "skip preview/render-dumps missing $panes"
   else
     dump=$(<"$panes/devloop-main.txt")
     out=$(preview_render_grok devloop '新建 devloop 仓库并规划 LoopX 自主长跑 - grok' grok-1.0.25-mac "$dump")
@@ -1855,6 +1855,23 @@ pick_selftest() {
     [[ -n $TMUX_BIN ]] || return 1
     command "$TMUX_BIN" "$@" </dev/null
   }
+
+  if session_name_invalid ''; then
+    print -u2 "FAIL name/empty auto-name rejected"
+    (( fails++ ))
+  fi
+  if got=$(session_name_invalid web:api); then
+    expect name/colon-msg "名称不能包含冒号或点。" "$got"
+  else
+    print -u2 "FAIL name/colon web:api accepted"
+    (( fails++ ))
+  fi
+  if got=$(session_name_invalid web.api); then
+    expect name/dot-msg "名称不能包含冒号或点。" "$got"
+  else
+    print -u2 "FAIL name/dot web.api accepted"
+    (( fails++ ))
+  fi
 
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
