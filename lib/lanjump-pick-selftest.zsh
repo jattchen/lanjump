@@ -1,5 +1,5 @@
 # Sourced by lanjump-pick.zsh --pick-selftest.
-# Expects dw, fit_right, fit_left, padw, compute_layout, fmt_session_row, draw,
+# Expects dw, fit_right, fit_left, fit_head_tail, padw, compute_layout, fmt_session_row, draw,
 # sort_session_items, toggle_sort_mode, filter_session_items,
 # toggle_session_filter, save_session_filter, load_session_filter,
 # bulk_idle_unpinned_names, delete_idle_unpinned_sessions,
@@ -10,6 +10,8 @@
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
 # picker_boot_before_first_draw, picker_boot_after_first_draw,
+# preview_is_grok, preview_line_is_tool, preview_line_is_model,
+# preview_grok_lines, preview_generic_lines, preview_select_lines,
 # session_name_invalid.
 
 pick_selftest() {
@@ -38,6 +40,16 @@ pick_selftest() {
   expect fit_right/cjk4 中… "$(fit_right 中文测试 4)"
   expect fit_left/path '…ts/projects/lanjump' "$(fit_left /Users/mac/Documents/projects/lanjump 20)"
   expect fit_left/home '…cts/lanjump' "$(fit_left ~/Documents/projects/lanjump 12)"
+  # /Users/mac/Documents/projects/lanjump is 37 cols. max 20 → keep 19, head 9, tail 10.
+  expect fit_head_tail/short hello "$(fit_head_tail hello 10)"
+  expect fit_head_tail/one … "$(fit_head_tail hello 1)"
+  expect fit_head_tail/two '…o' "$(fit_head_tail hello 2)"
+  expect fit_head_tail/three 'h…o' "$(fit_head_tail hello 3)"
+  expect fit_head_tail/ascii 'h…lo' "$(fit_head_tail hello 4)"
+  expect fit_head_tail/path '/Users/ma…ts/lanjump' "$(fit_head_tail /Users/mac/Documents/projects/lanjump 20)"
+  expect fit_head_tail/preview36 '/Users/mac/Docume…s/projects/lanjump' "$(fit_head_tail /Users/mac/Documents/projects/lanjump 36)"
+  expect fit_head_tail/cjk5 中…试 "$(fit_head_tail 中文测试 5)"
+  expect fit_head_tail/cjk7 中文…试 "$(fit_head_tail 中文测试 7)"
   expect padw/ascii 'ab   ' "$(padw ab 5)"
   expect padw/cjk '中文  ' "$(padw 中文 6)"
   expect padw/trunc hel… "$(padw hello 4)"
@@ -129,7 +141,7 @@ pick_selftest() {
   mock_pane=$'keep\n\n\n   \n█\n████\nreal █ line\n\nend'
   : > "$mock_log"
   session_preview_lines sh-sess 10 zsh
-  expect preview/blank-collapse $'keep\n\nreal █ line\n\nend' "${(F)preview_lines}"
+  expect preview/blank-collapse $'keep\nreal █ line\nend' "${(F)preview_lines}"
 
   mock_pane=$'hello\n────────'
   : > "$mock_log"
@@ -139,11 +151,11 @@ pick_selftest() {
   mock_pane=$(print -l line-{1..20})
   : > "$mock_log"
   session_preview_lines sh-sess 30 zsh
-  if (( ${#preview_lines} != 10 )); then
-    print -u2 "FAIL preview/cap got ${#preview_lines} want 10"
+  if (( ${#preview_lines} != 3 )); then
+    print -u2 "FAIL preview/cap got ${#preview_lines} want 3"
     (( fails++ ))
   fi
-  expect preview/cap-tail $'line-11\nline-12\nline-13\nline-14\nline-15\nline-16\nline-17\nline-18\nline-19\nline-20' "${(F)preview_lines}"
+  expect preview/cap-tail $'line-18\nline-19\nline-20' "${(F)preview_lines}"
 
   mock_pane=$'a\nb'
   : > "$mock_log"
@@ -153,12 +165,12 @@ pick_selftest() {
     print -u2 "FAIL preview/grok-once got ${tmux_n} captures want 1"
     (( fails++ ))
   fi
-  if [[ ${tmux_argv[(ie)-a]} -gt ${#tmux_argv} ]]; then
-    print -u2 "FAIL preview/grok-alt missing -a in ${(j: :)tmux_argv}"
+  if [[ ${tmux_argv[(ie)-J]} -gt ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/grok-J missing -J in ${(j: :)tmux_argv}"
     (( fails++ ))
   fi
-  if [[ ${tmux_argv[(ie)-J]} -le ${#tmux_argv} ]]; then
-    print -u2 "FAIL preview/grok-no-J got ${(j: :)tmux_argv}"
+  if [[ ${tmux_argv[(ie)-a]} -le ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/grok-no-alt got ${(j: :)tmux_argv}"
     (( fails++ ))
   fi
   if [[ ${tmux_argv[(ie)-S]} -le ${#tmux_argv} ]]; then
@@ -230,14 +242,282 @@ pick_selftest() {
   mock_pane=$'zsh\n% ls\nlanjump-pick.zsh\nREADME.md\n% '
   : > "$mock_log"
   session_preview_lines sh-sess 6 zsh
-  expect preview/shell-keep $'zsh\n% ls\nlanjump-pick.zsh\nREADME.md' "${(F)preview_lines}"
+  expect preview/shell-keep $'% ls\nlanjump-pick.zsh\nREADME.md' "${(F)preview_lines}"
 
   mock_pane=$'Grok 4.6\n────────\n可以丢掉状态条\n────────\n>'
   : > "$mock_log"
   session_titles[grok-sess]='怎么改预览 - grok'
   session_preview_lines grok-sess 6 grok
-  expect preview/title $'怎么改预览 - grok\n可以丢掉状态条' "${(F)preview_lines}"
+  expect preview/title-heading '怎么改预览' "$preview_heading"
+  expect preview/title '可以丢掉状态条' "${(F)preview_lines}"
   session_titles=()
+
+  expect preview/useful-title '怎么改预览' "$(preview_useful_title '怎么改预览 - grok' grok-sess grok)"
+  expect preview/useful-title-name '' "$(preview_useful_title grok-sess grok-sess grok)"
+  expect preview/useful-title-cmd '' "$(preview_useful_title grok grok-sess grok)"
+  expect preview/useful-title-tomax '' "$(preview_useful_title ToMax grok-sess grok)"
+  expect preview/useful-title-grokver '' "$(preview_useful_title 'Grok 4.6' grok-sess grok)"
+  expect preview/useful-title-grokstar '' "$(preview_useful_title grok-1.0.13-mac grok-sess zsh)"
+  preview_line_is_chrome ToMax
+  expect preview/chrome-tomax 0 "$?"
+  preview_line_is_chrome 'Grok 4.6'
+  expect preview/chrome-grokver 0 "$?"
+  preview_line_is_chrome '怎么改 tmux 预览'
+  expect preview/chrome-body 1 "$?"
+  expect preview/heading-from-pane '怎么改 tmux 预览' "$(preview_conversation_heading ToMax $'────────' '怎么改 tmux 预览' '可以先丢掉状态条' '>')"
+  expect preview/heading-skip-prompt '怎么改 tmux 预览' "$(preview_conversation_heading '% ls' '怎么改 tmux 预览' 'body')"
+
+  mock_pane=$'Grok 4.6\n────────\n可以丢掉状态条\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]=grok-sess
+  session_preview_lines grok-sess 6 grok
+  expect preview/title-skip '可以丢掉状态条' "${(F)preview_lines}"
+  session_titles=()
+
+  mock_pane=$'Grok 4.6\n────────\nkeep-1\nkeep-2\nkeep-3\nkeep-4\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]='怎么改预览 - grok'
+  session_preview_lines grok-sess 3 grok
+  expect preview/title-last $'keep-2\nkeep-3\nkeep-4' "${(F)preview_lines}"
+  session_titles=()
+
+  mock_pane=$'ToMax\n────────\n怎么改 tmux 预览\n可以先丢掉状态条\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]=ToMax
+  session_preview_lines grok-sess 6 grok
+  expect preview/tomax-heading $'怎么改 tmux 预览\n可以先丢掉状态条' "${(F)preview_lines}"
+  if [[ ${(F)preview_lines} == ToMax* || ${(F)preview_lines} == *$'ToMax\n'* ]]; then
+    print -u2 "FAIL preview/tomax-not-title got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  if [[ ${(F)preview_lines} != *$'\n'* ]]; then
+    print -u2 "FAIL preview/tomax-missing-body got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  session_titles=()
+
+  mock_pane=$'Grok 4.6\n────────\n怎么改 tmux 预览\nkeep-1\nkeep-2\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]='Grok 4.6'
+  session_preview_lines grok-sess 6 grok
+  expect preview/shape-two-part $'怎么改 tmux 预览\nkeep-1\nkeep-2' "${(F)preview_lines}"
+  session_titles=()
+
+  mock_pane=$'Grok 4.6\n────────\n怎么改预览 - grok\n可以丢掉状态条\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]='怎么改预览 - grok'
+  session_preview_lines grok-sess 6 grok
+  expect preview/shape-real-title $'怎么改预览 - grok\n可以丢掉状态条' "${(F)preview_lines}"
+  session_titles=()
+
+  tmuxx() {
+    print -r -- "${(j: :)@}" >> "$mock_log"
+    if [[ ${argv[(ie)-a]} -le ${#argv} ]]; then
+      print -r -- $'ToMax\n────────\n>\n█'
+    else
+      print -r -- $'怎么改 tmux 预览\n最后有用的输出'
+    fi
+  }
+  : > "$mock_log"
+  session_titles[grok-sess]=ToMax
+  session_preview_lines grok-sess 6 grok
+  expect preview/grok-retry-body $'怎么改 tmux 预览\n最后有用的输出' "${(F)preview_lines}"
+  session_titles=()
+  tmuxx() {
+    print -r -- "${(j: :)@}" >> "$mock_log"
+    print -r -- "$mock_pane"
+  }
+
+  preview_is_grok grok-1.0.13-mac
+  expect preview/is-grok 0 "$?"
+  preview_is_grok zsh
+  expect preview/is-grok-sh 1 "$?"
+  preview_line_is_tool 'Calling github__issue_read'
+  expect preview/tool-calling 0 "$?"
+  preview_line_is_tool '{"name":"github__issue_read"}'
+  expect preview/tool-json 0 "$?"
+  preview_line_is_tool '预览要有标题吗'
+  expect preview/tool-question 1 "$?"
+  preview_line_is_model 'Grok 4.6'
+  expect preview/model-ver 0 "$?"
+  preview_line_is_model '要，还要最后几行'
+  expect preview/model-answer 1 "$?"
+
+  expect preview/grok-qa-fn $'预览要有标题吗\n要，还要最后几行' "$(preview_grok_lines 3 ToMax 'Grok 4.6' $'────────' '预览要有标题吗' 'Calling github__issue_read' '{"name":"github__issue_read"}' '要，还要最后几行' '>')"
+  expect preview/generic-ls-fn $'% ls\nlanjump-pick.zsh\nREADME.md' "$(preview_generic_lines 3 zsh '% ls' 'lanjump-pick.zsh' 'README.md' '%')"
+  expect preview/select-grok $'预览要有标题吗\n要，还要最后几行' "$(preview_select_lines grok 3 ToMax 'Grok 4.6' '预览要有标题吗' 'Calling github__issue_read' '要，还要最后几行')"
+  expect preview/select-zsh $'% ls\nlanjump-pick.zsh\nREADME.md' "$(preview_select_lines zsh 3 zsh '% ls' 'lanjump-pick.zsh' 'README.md' '%')"
+
+  mock_pane=$'ToMax\nGrok 4.6\n────────────────\n预览要有标题吗\nCalling github__issue_read\n{"name":"github__issue_read"}\n要，还要最后几行\n────────────────\n>\n█'
+  : > "$mock_log"
+  session_titles[grok-sess]=ToMax
+  session_preview_lines grok-sess 6 grok
+  expect preview/grok-qa $'预览要有标题吗\n要，还要最后几行' "${(F)preview_lines}"
+  if [[ ${(F)preview_lines} == *'Grok 4.6'* ]]; then
+    print -u2 "FAIL preview/grok-qa-no-model got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  if [[ ${(F)preview_lines} == *Calling* || ${(F)preview_lines} == *github__issue_read* ]]; then
+    print -u2 "FAIL preview/grok-qa-no-tool got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  if [[ ${(F)preview_lines} == *ToMax* ]]; then
+    print -u2 "FAIL preview/grok-qa-no-tomax got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  session_titles=()
+
+  mock_pane=$'zsh\n% ls\nlanjump-pick.zsh\nREADME.md\n% '
+  : > "$mock_log"
+  session_preview_lines sh-sess 6 zsh
+  expect preview/generic-ls $'% ls\nlanjump-pick.zsh\nREADME.md' "${(F)preview_lines}"
+  if [[ ${(F)preview_lines} == $'% '* && ${(F)preview_lines} != *lanjump-pick.zsh* ]]; then
+    print -u2 "FAIL preview/generic-not-only-prompt got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+
+  local footer_responding footer_modelbox footer_shortcuts footer_thought footer_run footer_read footer_spin footer_box
+  footer_responding='⠹ - Responding - Write LoopX coordinator Goal for remaini… - grok'
+  footer_modelbox='╰────────────────…Grok 4.6 (xhigh) · always-approve ─╯'
+  footer_shortcuts=$'Ctrl+\\:dashboard  │  Ctrl+[/]:prev…│  Space:prompt  │  Ctrl+.:shortcuts'
+  footer_thought='◆ Thought for 22.6s'
+  footer_run='◆ Run Consume LoopX turn-start quota packet once'
+  footer_read='◈ Read 2 files'
+  footer_spin='⠴ Save full Grok...'
+  footer_box='│ ❯'
+  preview_line_is_chrome "$footer_responding"
+  expect preview/footer-responding 0 "$?"
+  preview_line_is_chrome "$footer_modelbox"
+  expect preview/footer-modelbox 0 "$?"
+  preview_line_is_chrome "$footer_shortcuts"
+  expect preview/footer-shortcuts 0 "$?"
+  preview_line_is_tool "$footer_run"
+  expect preview/tool-run 0 "$?"
+  preview_line_is_tool "$footer_read"
+  expect preview/tool-read 0 "$?"
+  preview_line_is_tool "$footer_thought"
+  expect preview/tool-thought 0 "$?"
+  expect preview/footer-only '' "$(preview_grok_lines 3 "$footer_responding" "$footer_modelbox" "$footer_shortcuts")"
+  expect preview/live-footer-dump $'预览要有标题吗\n要，还要最后几行' "$(preview_grok_lines 3 "$footer_responding" "$footer_modelbox" "$footer_shortcuts" "$footer_thought" "$footer_run" "$footer_read" "$footer_spin" "$footer_box" '❯ 预览要有标题吗' '要，还要最后几行')"
+  expect preview/live-footer-mention $'你贴的这段预览还是 Grok 底栏：Responding、Grok 4.6 (xhigh)、快捷键，不是问题和回复。' "$(preview_grok_lines 1 "$footer_responding" "$footer_modelbox" "$footer_shortcuts" '你贴的这段预览还是 Grok 底栏：Responding、Grok 4.6 (xhigh)、快捷键，不是问题和回复。')"
+
+  mock_pane="${footer_thought}"$'\n'"${footer_run}"$'\n'"${footer_read}"$'\n''❯ 预览要有标题吗'$'\n''要，还要最后几行'$'\n'"${footer_responding}"$'\n'"${footer_modelbox}"$'\n'"${footer_shortcuts}"$'\n'"${footer_spin}"$'\n'"${footer_box}"
+  : > "$mock_log"
+  session_titles[grok-sess]=ToMax
+  session_preview_lines grok-sess 6 grok
+  expect preview/live-footer-session $'预览要有标题吗\n要，还要最后几行' "${(F)preview_lines}"
+  session_titles=()
+
+  preview_line_is_status 'Worked for 4m11s'
+  expect preview/status-worked 0 "$?"
+  preview_line_is_status 'Worked for 1m29s'
+  expect preview/status-worked-short 0 "$?"
+  preview_line_is_status $'⠹ - Waiting for response… - 手机 Shadowrocket 分流兼进家里内网 - grok'
+  expect preview/status-waiting 0 "$?"
+  preview_line_is_chrome '▼'
+  expect preview/chrome-arrow 0 "$?"
+  expect preview/clean-title-suffix '新建 devloop 仓库并规划 LoopX 自主长跑' "$(preview_clean_title '新建 devloop 仓库并规划 LoopX 自主长跑 - grok')"
+  expect preview/clean-title-waiting '手机 Shadowrocket 分流兼进家里内网' "$(preview_clean_title $'⠹ - Waiting for response… - 手机 Shadowrocket 分流兼进家里内网 - grok')"
+
+  local panes dump out
+  panes=/var/folders/hb/21sdw0893vxbvq2wpch2rpxr0000gn/T/grok-goal-2b0ef817ca46/implementer/panes
+  if [[ ! -f $panes/devloop-main.txt || ! -f $panes/sysmtn-main.txt ]]; then
+    print -u2 "skip preview/render-dumps missing $panes"
+  else
+    dump=$(<"$panes/devloop-main.txt")
+    out=$(preview_render_grok devloop '新建 devloop 仓库并规划 LoopX 自主长跑 - grok' grok-1.0.25-mac "$dump")
+    local scratch=/var/folders/hb/21sdw0893vxbvq2wpch2rpxr0000gn/T/grok-goal-2b0ef817ca46/implementer/preview-render-devloop-sysmtn.txt
+    {
+      print -r -- '=== devloop ==='
+      print -r -- "$out"
+    } > "$scratch"
+    if [[ $out != *'标题：新建 devloop 仓库并规划 LoopX 自主长跑'* ]]; then
+      print -u2 "FAIL preview/render-devloop-title got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out != *开分支改* ]]; then
+      print -u2 "FAIL preview/render-devloop-ask got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'Worked for'* ]]; then
+      print -u2 "FAIL preview/render-devloop-worked got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'grok-1.0.25-mac'* ]]; then
+      print -u2 "FAIL preview/render-devloop-ver got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'~/Documents/projects'* ]]; then
+      print -u2 "FAIL preview/render-devloop-path got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    dump=$(<"$panes/sysmtn-main.txt")
+    out=$(preview_render_grok sysmtn $'⠹ - Waiting for response… - 手机 Shadowrocket 分流兼进家里内网 - grok' grok-1.0.25-mac "$dump")
+    {
+      print -r -- ''
+      print -r -- '=== sysmtn ==='
+      print -r -- "$out"
+    } >> "$scratch"
+    if [[ $out != *'标题：手机 Shadowrocket 分流兼进家里内网'* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-title got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out != *你改哪了* && $out != *Shadowrocket* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-body got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'Waiting for response'* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-waiting got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'11:18 PM'* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-clock got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'grok-1.0.25-mac'* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-ver got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+  fi
+
+  HAS_TMUX=1
+  host_short=testhost
+  preview_on=1
+  preview_defer=0
+  preview_cache=()
+  COLUMNS=40
+  LINES=24
+  cursor=1
+  items_kind=(session)
+  items_id=(grok-sess)
+  items_name=(grok-sess)
+  items_att=(0)
+  items_time=('09-04 12:00')
+  items_path=('~/p')
+  items_summary=('sum')
+  items_cmd=(grok)
+  items_activity=('')
+  items_pinned=('0')
+  mock_pane='/Users/mac/Documents/projects/lanjump'
+  : > "$mock_log"
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain == *'/Users/mac/Docume…s/projects/lanjump'* ]]; then
+    got=1
+  else
+    got=0
+  fi
+  expect draw/preview-head-tail 1 "$got"
+  if [[ $plain == *'/Users/mac/Documents/projects/lanju…'* ]]; then
+    print -u2 "FAIL draw/preview-only-head clipped with fit_right"
+    (( fails++ ))
+  fi
+  if [[ $plain == *'…sers/mac/Documents/projects/lanjump'* ]]; then
+    print -u2 "FAIL draw/preview-only-tail clipped with fit_left"
+    (( fails++ ))
+  fi
+  COLUMNS=120
+  LINES=40
 
   rm -f "$mock_log"
   unfunction tmuxx
