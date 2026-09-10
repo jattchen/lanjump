@@ -7,7 +7,8 @@
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
-# workspace_restore_prompt_text, short_command_name, useful_summary.
+# workspace_restore_prompt_text, short_command_name, useful_summary,
+# load_settings, save_settings, cycle_setting, effective_open_target.
 
 pick_selftest() {
   local -i fails=0
@@ -76,6 +77,15 @@ pick_selftest() {
   LINES=40
 
   compute_layout 110
+  _fmt_header
+  if [[ $REPLY != *程序* ]]; then
+    print -u2 "FAIL header/program missing 程序 got=$(printf %q "$REPLY")"
+    (( fails++ ))
+  fi
+  if [[ $REPLY == *摘要* ]]; then
+    print -u2 "FAIL header/program still 摘要 got=$(printf %q "$REPLY")"
+    (( fails++ ))
+  fi
   t0=$EPOCHREALTIME
   for (( n = 0; n < 20; n++ )); do
     for i in {1..8}; do
@@ -203,6 +213,29 @@ pick_selftest() {
     (( fails++ ))
   fi
   expect preview/empty-alt-tail $'alt dialogue\nalt input' "${(F)preview_lines}"
+
+  tmuxx() {
+    print -r -- "${(j: :)@}" >> "$mock_log"
+    print -r -- "$mock_pane"
+  }
+  session_titles=()
+
+  mock_pane=$'Grok 4.6\n────────────────\n怎么改 tmux 预览\n可以先丢掉状态条\n────────────────\n>\n█'
+  : > "$mock_log"
+  session_preview_lines grok-sess 6 grok
+  expect preview/drop-chrome $'怎么改 tmux 预览\n可以先丢掉状态条' "${(F)preview_lines}"
+
+  mock_pane=$'zsh\n% ls\nlanjump-pick.zsh\nREADME.md\n% '
+  : > "$mock_log"
+  session_preview_lines sh-sess 6 zsh
+  expect preview/shell-keep $'zsh\n% ls\nlanjump-pick.zsh\nREADME.md' "${(F)preview_lines}"
+
+  mock_pane=$'Grok 4.6\n────────\n可以丢掉状态条\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]='怎么改预览 - grok'
+  session_preview_lines grok-sess 6 grok
+  expect preview/title $'怎么改预览 - grok\n可以丢掉状态条' "${(F)preview_lines}"
+  session_titles=()
 
   rm -f "$mock_log"
   unfunction tmuxx
@@ -535,6 +568,10 @@ pick_selftest() {
   plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
   if [[ $plain != *'o 常驻'* ]]; then
     print -u2 "FAIL help/pinned missing o 常驻"
+    (( fails++ ))
+  fi
+  if [[ $plain != *', 设置'* ]]; then
+    print -u2 "FAIL help/settings missing , 设置"
     (( fails++ ))
   fi
 
@@ -1363,6 +1400,83 @@ pick_selftest() {
     (( fails++ ))
   fi
   attach_shell_only=0
+
+  open_target=auto
+  open_placement=window
+  save_settings
+  open_target=current
+  open_placement=tab
+  load_settings
+  expect settings/default-target auto "$open_target"
+  expect settings/default-placement window "$open_placement"
+
+  open_target=current
+  open_placement=tab
+  save_settings
+  open_target=auto
+  open_placement=window
+  load_settings
+  expect settings/roundtrip-target current "$open_target"
+  expect settings/roundtrip-placement tab "$open_placement"
+
+  print -r -- $'open_target nope\nopen_placement sideways\n' >"$HOME/Library/Application Support/lanjump/settings"
+  load_settings
+  expect settings/bad-target auto "$open_target"
+  expect settings/bad-placement window "$open_placement"
+
+  expect settings/label-auto '自动（Ghostty 优先）' "$(settings_value_label target)"
+  open_target=current
+  expect settings/label-current 当前窗口 "$(settings_value_label target)"
+  open_placement=tab
+  expect settings/label-tab 已有窗口加标签 "$(settings_value_label placement)"
+
+  settings_cursor=1
+  open_target=auto
+  cycle_setting
+  expect settings/cycle-target ghostty "$open_target"
+  settings_cursor=2
+  open_placement=window
+  cycle_setting
+  expect settings/cycle-placement tab "$open_placement"
+
+  open_target=auto
+  unset SSH_CONNECTION SSH_CLIENT SSH_TTY
+  LANJUMP_GHOSTTY_APP="$testhome/Ghostty.app"
+  mkdir -p "$LANJUMP_GHOSTTY_APP"
+  expect open/auto-ghostty ghostty "$(effective_open_target 1)"
+  open_target=current
+  expect open/force-current current "$(effective_open_target 1)"
+  open_target=ghostty
+  LANJUMP_GHOSTTY_APP="$testhome/missing-Ghostty.app"
+  expect open/ghostty-missing current "$(effective_open_target 1)"
+  open_target=auto
+  expect open/auto-one-no-ghostty current "$(effective_open_target 1)"
+
+  open_placement=tab
+  ghostty_close_others=0
+  LANJUMP_ATTACH_BIN=/Users/mac/.local/bin/lanjump
+  script=$(ghostty_osascript_for_sessions lanjump)
+  if [[ $script != *'if (count of windows) > 0 then set win to front window'* ]]; then
+    print -u2 "FAIL ghostty/tab-existing missing front window got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'new tab in win with configuration cfg'* ]]; then
+    print -u2 "FAIL ghostty/tab-existing missing new tab got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  print -r -- "$script" >"$testhome/ghostty-tab.applescript"
+  if ! /usr/bin/osacompile -o "$testhome/ghostty-tab.scpt" "$testhome/ghostty-tab.applescript" 2>"$testhome/osacompile-tab.err"; then
+    print -u2 "FAIL ghostty/tab-compile $(<"$testhome/osacompile-tab.err") got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  ghostty_close_others=1
+  script=$(ghostty_osascript_for_sessions lanjump)
+  if [[ $script != *'new window with configuration cfg'* ]]; then
+    print -u2 "FAIL ghostty/tab-fresh missing new window got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  ghostty_close_others=0
+  open_placement=window
 
   tmuxx() {
     case $1 in
