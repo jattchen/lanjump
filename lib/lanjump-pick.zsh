@@ -2562,6 +2562,27 @@ load_items() {
   loading=0
 }
 
+preview_is_product_title() {
+  local s=$1 stripped
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  [[ -n $s ]] || return 1
+  stripped=${s//[[:space:]]/}
+  [[ $stripped == (#i)(tomax|grok) ]] && return 0
+  [[ $stripped == (#i)(tomax|grok)[-0-9.]* ]] && return 0
+  return 1
+}
+
+preview_line_is_prompt() {
+  local line=$1
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -n $line ]] || return 1
+  [[ $line == ('%'|'$'|'>'|'#'|'❯') ]] && return 0
+  [[ $line == ('% '|'$ '|'> '|'# '|$'❯ ')* ]] && return 0
+  return 1
+}
+
 preview_line_is_chrome() {
   local line=$1 stripped rest
   line="${line%"${line##*[![:space:]]}"}"
@@ -2573,41 +2594,38 @@ preview_line_is_chrome() {
   rest=${rest//[[:punct:]]/}
   [[ -z $rest ]] && return 0
   [[ $stripped == '>' || $stripped == '❯' || $stripped == '%' || $stripped == '$' || $stripped == '#' ]] && return 0
-  [[ $stripped == (#i)grok([0-9.-]#) ]] && return 0
+  preview_is_product_title "$line" && return 0
   return 1
 }
 
 preview_useful_title() {
-  local title=$1 name=$2 cmd=$3 short
+  local title=$1 name=$2 cmd=$3 wname=${4:-} short
+  title="${title#"${title%%[![:space:]]*}"}"
+  title="${title%"${title##*[![:space:]]}"}"
   [[ -n $title ]] || return 1
   short=$(short_command_name "$cmd")
   [[ $title != "$name" && $title != "$cmd" && $title != "$short" ]] || return 1
+  [[ -n $wname && $title == "$wname" ]] && preview_is_product_title "$wname" && return 1
+  preview_is_product_title "$title" && return 1
   print -r -- "$title"
 }
 
-session_preview_lines() {
-  local name=$1 cmd=$3
-  local title=${4:-${session_titles[$name]:-}}
-  local -i max_lines=$2 start grok=0 saw_blank=0 room
-  local cap line stripped title_line
-  local -a kept raw_lines
-  preview_lines=()
-  (( max_lines > preview_max_lines )) && max_lines=$preview_max_lines
-  (( max_lines < 1 )) && return
-  [[ $cmd == (#i)*grok* ]] && grok=1
+preview_conversation_heading() {
+  local line
+  for line in "$@"; do
+    preview_line_is_chrome "$line" && continue
+    preview_line_is_prompt "$line" && continue
+    print -r -- "$line"
+    return 0
+  done
+  return 1
+}
 
-  if (( grok )); then
-    cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
-  else
-    cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
-    if [[ -z ${cap//[$' \t\n']/} ]]; then
-      cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
-    fi
-  fi
-
-  raw_lines=("${(@f)cap}")
+preview_keep_useful_from_cap() {
+  local cap=$1 line stripped
+  local -i saw_blank=0
   kept=()
-  for line in "${raw_lines[@]}"; do
+  for line in "${(@f)cap}"; do
     line="${line%"${line##*[![:space:]]}"}"
     stripped=${line//[[:space:]]/}
     if [[ -z $stripped ]]; then
@@ -2628,12 +2646,53 @@ session_preview_lines() {
   while (( ${#kept} )) && [[ -z "${kept[-1]}" ]]; do
     kept=("${(@)kept[1,-2]}")
   done
+}
+
+session_preview_lines() {
+  local name=$1 cmd=$3
+  local title=${4:-${session_titles[$name]:-}}
+  local -i max_lines=$2 start grok=0 room
+  local cap title_line heading
+  local -a kept
+  preview_lines=()
+  (( max_lines > preview_max_lines )) && max_lines=$preview_max_lines
+  (( max_lines < 1 )) && return
+  [[ $cmd == (#i)*grok* ]] && grok=1
+
+  if (( grok )); then
+    cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
+    preview_keep_useful_from_cap "$cap"
+    if (( ${#kept} == 0 )); then
+      cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
+      preview_keep_useful_from_cap "$cap"
+    fi
+  else
+    cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
+    preview_keep_useful_from_cap "$cap"
+    if (( ${#kept} == 0 )); then
+      cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
+      preview_keep_useful_from_cap "$cap"
+    fi
+  fi
+
+  title_line=$(preview_useful_title "$title" "$name" "$cmd") || title_line=
+  if [[ -z $title_line ]] && preview_is_product_title "$title"; then
+    heading=$(preview_conversation_heading "${kept[@]}") || heading=
+    title_line=$heading
+  fi
+  if [[ -n $title_line && ${#kept} -gt 0 && ${kept[1]} == "$title_line" ]]; then
+    if (( ${#kept} == 1 )); then
+      kept=()
+    else
+      kept=("${(@)kept[2,-1]}")
+    fi
+  fi
+
   (( ${#kept} == 0 )) && {
-    title_line=$(preview_useful_title "$title" "$name" "$cmd") || return
+    [[ -n $title_line ]] || return
     preview_lines=("$title_line")
     return
   }
-  title_line=$(preview_useful_title "$title" "$name" "$cmd") || title_line=
   room=$max_lines
   [[ -n $title_line ]] && (( room-- ))
   (( room < 1 )) && room=1

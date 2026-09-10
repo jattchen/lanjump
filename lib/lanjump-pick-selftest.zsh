@@ -251,6 +251,17 @@ pick_selftest() {
   expect preview/useful-title '怎么改预览 - grok' "$(preview_useful_title '怎么改预览 - grok' grok-sess grok)"
   expect preview/useful-title-name '' "$(preview_useful_title grok-sess grok-sess grok)"
   expect preview/useful-title-cmd '' "$(preview_useful_title grok grok-sess grok)"
+  expect preview/useful-title-tomax '' "$(preview_useful_title ToMax grok-sess grok)"
+  expect preview/useful-title-grokver '' "$(preview_useful_title 'Grok 4.6' grok-sess grok)"
+  expect preview/useful-title-grokstar '' "$(preview_useful_title grok-1.0.13-mac grok-sess zsh)"
+  preview_line_is_chrome ToMax
+  expect preview/chrome-tomax 0 "$?"
+  preview_line_is_chrome 'Grok 4.6'
+  expect preview/chrome-grokver 0 "$?"
+  preview_line_is_chrome '怎么改 tmux 预览'
+  expect preview/chrome-body 1 "$?"
+  expect preview/heading-from-pane '怎么改 tmux 预览' "$(preview_conversation_heading ToMax $'────────' '怎么改 tmux 预览' '可以先丢掉状态条' '>')"
+  expect preview/heading-skip-prompt '怎么改 tmux 预览' "$(preview_conversation_heading '% ls' '怎么改 tmux 预览' 'body')"
 
   mock_pane=$'Grok 4.6\n────────\n可以丢掉状态条\n────────\n>'
   : > "$mock_log"
@@ -265,6 +276,53 @@ pick_selftest() {
   session_preview_lines grok-sess 3 grok
   expect preview/title-last $'怎么改预览 - grok\nkeep-3\nkeep-4' "${(F)preview_lines}"
   session_titles=()
+
+  mock_pane=$'ToMax\n────────\n怎么改 tmux 预览\n可以先丢掉状态条\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]=ToMax
+  session_preview_lines grok-sess 6 grok
+  expect preview/tomax-heading $'怎么改 tmux 预览\n可以先丢掉状态条' "${(F)preview_lines}"
+  if [[ ${(F)preview_lines} == ToMax* || ${(F)preview_lines} == *$'ToMax\n'* ]]; then
+    print -u2 "FAIL preview/tomax-not-title got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  if [[ ${(F)preview_lines} != *$'\n'* ]]; then
+    print -u2 "FAIL preview/tomax-missing-body got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  session_titles=()
+
+  mock_pane=$'Grok 4.6\n────────\n怎么改 tmux 预览\nkeep-1\nkeep-2\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]='Grok 4.6'
+  session_preview_lines grok-sess 6 grok
+  expect preview/shape-two-part $'怎么改 tmux 预览\nkeep-1\nkeep-2' "${(F)preview_lines}"
+  session_titles=()
+
+  mock_pane=$'Grok 4.6\n────────\n怎么改预览 - grok\n可以丢掉状态条\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]='怎么改预览 - grok'
+  session_preview_lines grok-sess 6 grok
+  expect preview/shape-real-title $'怎么改预览 - grok\n可以丢掉状态条' "${(F)preview_lines}"
+  session_titles=()
+
+  tmuxx() {
+    print -r -- "${(j: :)@}" >> "$mock_log"
+    if [[ ${argv[(ie)-a]} -le ${#argv} ]]; then
+      print -r -- $'ToMax\n────────\n>\n█'
+    else
+      print -r -- $'怎么改 tmux 预览\n最后有用的输出'
+    fi
+  }
+  : > "$mock_log"
+  session_titles[grok-sess]=ToMax
+  session_preview_lines grok-sess 6 grok
+  expect preview/grok-retry-body $'怎么改 tmux 预览\n最后有用的输出' "${(F)preview_lines}"
+  session_titles=()
+  tmuxx() {
+    print -r -- "${(j: :)@}" >> "$mock_log"
+    print -r -- "$mock_pane"
+  }
 
   HAS_TMUX=1
   host_short=testhost
