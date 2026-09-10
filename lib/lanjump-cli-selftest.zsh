@@ -124,7 +124,7 @@ cli_tmux() {
       if [[ $* == *pane_current_command* ]]; then
         print -r -- zsh
       elif [[ $* == *pane_current_path* ]]; then
-        print -r -- /tmp/typed-cwd
+        print -r -- "${TEST_PANE_CWD:-/tmp/typed-cwd}"
       fi
       ;;
     new-session)
@@ -239,6 +239,7 @@ expect_contains new-foo-grok/grok 'TMUX send-keys' "$hay"
 expect_contains new-foo-grok/pane-target '-t =foo:.' "$hay"
 expect_absent new-foo-grok/no-bare-pane '-t =foo ' "$hay"
 expect_contains new-foo-grok/grok-bin 'grok -c' "$hay"
+expect_absent new-foo-grok/no-resume '--resume' "$hay"
 expect_contains new-foo-grok/attach 'PICK_EXEC --attach foo' "$hay"
 expect_absent new-foo-grok/no-open-tabs 'OPEN ' "$hay"
 expect_absent new-foo-grok/no-ghostty '--open-tabs' "$hay"
@@ -260,15 +261,30 @@ expect_absent new-auto-grok/no-open-tabs 'OPEN ' "$hay"
 
 : >"$log"
 st=0
-err=$(cli_dispatch new foo 2>&1) || st=$?
-if (( st == 0 )); then
-  print -u2 "FAIL new-without-grok/status got 0 want nonzero"
+cli_dispatch new foo >/dev/null || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL new-without-grok/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains new-without-grok/usage '用法：lanjump new' "$err"
 hay=$(read_log)
-expect_absent new-without-grok/no-create 'PICK --new-session' "$hay"
-expect_absent new-without-grok/no-attach 'PICK_EXEC' "$hay"
+expect_contains new-without-grok/create 'PICK --new-session foo' "$hay"
+expect_contains new-without-grok/attach 'PICK_EXEC --attach foo' "$hay"
+expect_absent new-without-grok/no-grok 'TMUX send-keys' "$hay"
+
+TEST_PANE_CWD=$HOME
+: >"$log"
+st=0
+cli_dispatch new demo --grok >/dev/null || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL new-home-grok/status got $st want 0"
+  (( fails++ ))
+fi
+hay=$(read_log)
+expect_contains new-home-grok/send 'TMUX send-keys' "$hay"
+expect_contains new-home-grok/fresh '-- grok Enter' "$hay"
+expect_absent new-home-grok/no-resume '--resume' "$hay"
+expect_absent new-home-grok/no-continue 'grok -c' "$hay"
+TEST_PANE_CWD=
 
 if (( fails )); then
   print -u2 "cli-selftest: $fails failed"

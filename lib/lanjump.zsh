@@ -1632,10 +1632,12 @@ cli_start_grok() {
   esac
   pane_cwd=$(cli_tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
   bin=$(cli_grok_bin)
-  if [[ -z $pane_cwd || $pane_cwd == '~' || $pane_cwd == "$HOME" || $pane_cwd == "$HOME/" ]]; then
-    line="$bin --resume"
-  else
+  # New session: never --resume (that reopens some other conversation).
+  # Matching project dir → grok -c; otherwise a fresh grok in the pane cwd.
+  if [[ -n $pane_cwd && $pane_cwd != '~' && $pane_cwd != "$HOME" && $pane_cwd != "$HOME/" ]]; then
     line="$bin -c"
+  else
+    line="$bin"
   fi
   cli_tmux send-keys -t "$target" -- "$line" Enter
 }
@@ -1648,7 +1650,7 @@ cli_usage() {
   print -r -- '  list [机器]       列出 session'
   print -r -- '  last [机器]       显示最近进入的 session'
   print -r -- '  go [机器:]名字    打开最近或指定 session'
-  print -r -- '  new [名字] --grok 当前窗口新建 session 并开 grok（名字可省）'
+  print -r -- '  new [名字] [--grok] 当前窗口新建 session；加 --grok 再开 grok'
   print -r -- '  work [机器]       打开工作区'
   print -r -- '  pins [机器]       打开常驻'
   print -r -- '  upgrade           升级到最新版本'
@@ -1758,16 +1760,14 @@ cli_dispatch() {
       print -r -- "$session"
       ;;
     new)
-      if (( ! want_grok )); then
-        print -u2 "用法：lanjump new [名字] --grok"
-        return 1
-      fi
       if [[ -z $session ]]; then
         session=$(cli_auto_new_session) || return 1
       else
         cli_new_session "$host" "$session" || return 1
       fi
-      cli_start_grok "$session" || return 1
+      if (( want_grok )); then
+        cli_start_grok "$session" || return 1
+      fi
       cli_attach_one "$host" "$session" 0
       ;;
     *)
