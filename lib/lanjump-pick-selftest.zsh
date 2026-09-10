@@ -1,5 +1,5 @@
 # Sourced by lanjump-pick.zsh --pick-selftest.
-# Expects dw, fit_right, fit_left, padw, compute_layout, fmt_session_row, draw,
+# Expects dw, fit_right, fit_left, fit_head_tail, padw, compute_layout, fmt_session_row, draw,
 # sort_session_items, toggle_sort_mode, filter_session_items,
 # toggle_session_filter, save_session_filter, load_session_filter,
 # bulk_idle_unpinned_names, delete_idle_unpinned_sessions,
@@ -37,6 +37,16 @@ pick_selftest() {
   expect fit_right/cjk4 中… "$(fit_right 中文测试 4)"
   expect fit_left/path '…ts/projects/lanjump' "$(fit_left /Users/mac/Documents/projects/lanjump 20)"
   expect fit_left/home '…cts/lanjump' "$(fit_left ~/Documents/projects/lanjump 12)"
+  # /Users/mac/Documents/projects/lanjump is 37 cols. max 20 → keep 19, head 9, tail 10.
+  expect fit_head_tail/short hello "$(fit_head_tail hello 10)"
+  expect fit_head_tail/one … "$(fit_head_tail hello 1)"
+  expect fit_head_tail/two '…o' "$(fit_head_tail hello 2)"
+  expect fit_head_tail/three 'h…o' "$(fit_head_tail hello 3)"
+  expect fit_head_tail/ascii 'h…lo' "$(fit_head_tail hello 4)"
+  expect fit_head_tail/path '/Users/ma…ts/lanjump' "$(fit_head_tail /Users/mac/Documents/projects/lanjump 20)"
+  expect fit_head_tail/preview36 '/Users/mac/Docume…s/projects/lanjump' "$(fit_head_tail /Users/mac/Documents/projects/lanjump 36)"
+  expect fit_head_tail/cjk5 中…试 "$(fit_head_tail 中文测试 5)"
+  expect fit_head_tail/cjk7 中文…试 "$(fit_head_tail 中文测试 7)"
   expect padw/ascii 'ab   ' "$(padw ab 5)"
   expect padw/cjk '中文  ' "$(padw 中文 6)"
   expect padw/trunc hel… "$(padw hello 4)"
@@ -237,6 +247,63 @@ pick_selftest() {
   session_preview_lines grok-sess 6 grok
   expect preview/title $'怎么改预览 - grok\n可以丢掉状态条' "${(F)preview_lines}"
   session_titles=()
+
+  expect preview/useful-title '怎么改预览 - grok' "$(preview_useful_title '怎么改预览 - grok' grok-sess grok)"
+  expect preview/useful-title-name '' "$(preview_useful_title grok-sess grok-sess grok)"
+  expect preview/useful-title-cmd '' "$(preview_useful_title grok grok-sess grok)"
+
+  mock_pane=$'Grok 4.6\n────────\n可以丢掉状态条\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]=grok-sess
+  session_preview_lines grok-sess 6 grok
+  expect preview/title-skip '可以丢掉状态条' "${(F)preview_lines}"
+  session_titles=()
+
+  mock_pane=$'Grok 4.6\n────────\nkeep-1\nkeep-2\nkeep-3\nkeep-4\n────────\n>'
+  : > "$mock_log"
+  session_titles[grok-sess]='怎么改预览 - grok'
+  session_preview_lines grok-sess 3 grok
+  expect preview/title-last $'怎么改预览 - grok\nkeep-3\nkeep-4' "${(F)preview_lines}"
+  session_titles=()
+
+  HAS_TMUX=1
+  host_short=testhost
+  preview_on=1
+  preview_defer=0
+  preview_cache=()
+  COLUMNS=40
+  LINES=24
+  cursor=1
+  items_kind=(session)
+  items_id=(grok-sess)
+  items_name=(grok-sess)
+  items_att=(0)
+  items_time=('09-04 12:00')
+  items_path=('~/p')
+  items_summary=('sum')
+  items_cmd=(grok)
+  items_activity=('')
+  items_pinned=('0')
+  mock_pane='/Users/mac/Documents/projects/lanjump'
+  : > "$mock_log"
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain == *'/Users/mac/Docume…s/projects/lanjump'* ]]; then
+    got=1
+  else
+    got=0
+  fi
+  expect draw/preview-head-tail 1 "$got"
+  if [[ $plain == *'/Users/mac/Documents/projects/lanju…'* ]]; then
+    print -u2 "FAIL draw/preview-only-head clipped with fit_right"
+    (( fails++ ))
+  fi
+  if [[ $plain == *'…sers/mac/Documents/projects/lanjump'* ]]; then
+    print -u2 "FAIL draw/preview-only-tail clipped with fit_left"
+    (( fails++ ))
+  fi
+  COLUMNS=120
+  LINES=40
 
   rm -f "$mock_log"
   unfunction tmuxx

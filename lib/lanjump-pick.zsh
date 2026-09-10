@@ -381,6 +381,89 @@ _fit_left() {
   REPLY="…${out}"
 }
 
+# Keep head and tail; paths and Grok titles often live at the ends.
+# Ellipsis counts as width 1, same as fit_right/fit_left.
+fit_head_tail() {
+  _fit_head_tail "$1" $2
+  print -r -- "$REPLY"
+}
+
+_fit_head_tail() {
+  local s=$1
+  local -i max=$2 i j cw left_w=0 right_w=0 budget left_budget right_budget leftover
+  local c stripped left= right=
+  REPLY=
+  (( max <= 0 )) && return
+  stripped=${s//[$'\x00'-$'\x7e']/}
+  if (( ${#s} + ${#stripped} <= max )); then
+    REPLY=$s
+    return
+  fi
+  if (( max <= 1 )); then
+    REPLY='…'
+    return
+  fi
+  budget=$(( max - 1 ))
+  left_budget=$(( budget / 2 ))
+  right_budget=$(( budget - left_budget ))
+  i=1
+  j=${#s}
+  while (( i <= j )); do
+    c=$s[i]
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
+    if (( left_w + cw > left_budget )); then
+      break
+    fi
+    left+="$c"
+    (( left_w += cw, i++ ))
+  done
+  while (( j >= i )); do
+    c=$s[j]
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
+    if (( right_w + cw > right_budget )); then
+      break
+    fi
+    right="$c$right"
+    (( right_w += cw, j-- ))
+  done
+  leftover=$(( budget - left_w - right_w ))
+  while (( leftover > 0 && i <= j )); do
+    c=$s[i]
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
+    if (( cw > leftover )); then
+      break
+    fi
+    left+="$c"
+    (( leftover -= cw, i++ ))
+  done
+  while (( leftover > 0 && j >= i )); do
+    c=$s[j]
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
+    if (( cw > leftover )); then
+      break
+    fi
+    right="$c$right"
+    (( leftover -= cw, j-- ))
+  done
+  REPLY="${left}…${right}"
+}
+
 padw() {
   _padw "$1" $2
   print -r -- "$REPLY"
@@ -2805,7 +2888,7 @@ draw() {
       preview_cache[$cache_key]="${(pj:\x1e:)preview_lines}"
     fi
     for pl in "${preview_lines[@]}"; do
-      _fit_right "$pl" $(( cols - 4 ))
+      _fit_head_tail "$pl" $(( cols - 4 ))
       draw_emit "  ${c_dim}${REPLY}${c_reset}" || break
     done
   fi
