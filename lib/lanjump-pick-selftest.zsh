@@ -1497,6 +1497,18 @@ pick_selftest() {
   expect settings/space-root "$testhome/root with space" "${project_roots[1]}"
   expect resolve/space-root "$testhome/root with space/child" "$(resolve_session_cwd child)"
 
+  project_roots=('/opt/a' '/opt/b' '/opt/c')
+  settings_remove_root 2
+  expect settings/remove-middle '/opt/a /opt/c' "${project_roots[*]}"
+  project_roots=('/opt/a' '/opt/b')
+  settings_cursor=3
+  settings_delete_key
+  expect settings/delete-key '/opt/b' "${project_roots[*]}"
+  project_roots=('/opt/keep')
+  settings_cursor=1
+  settings_delete_key
+  expect settings/delete-key-noop '/opt/keep' "${project_roots[*]}"
+
   project_roots=('/tmp/only')
   save_settings
   project_roots=()
