@@ -9,7 +9,9 @@
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
-# picker_boot_before_first_draw, picker_boot_after_first_draw.
+# picker_boot_before_first_draw, picker_boot_after_first_draw,
+# preview_is_grok, preview_line_is_tool, preview_line_is_model,
+# preview_grok_lines, preview_generic_lines, preview_select_lines.
 
 pick_selftest() {
   local -i fails=0
@@ -138,7 +140,7 @@ pick_selftest() {
   mock_pane=$'keep\n\n\n   \n█\n████\nreal █ line\n\nend'
   : > "$mock_log"
   session_preview_lines sh-sess 10 zsh
-  expect preview/blank-collapse $'keep\n\nreal █ line\n\nend' "${(F)preview_lines}"
+  expect preview/blank-collapse $'keep\nreal █ line\nend' "${(F)preview_lines}"
 
   mock_pane=$'hello\n────────'
   : > "$mock_log"
@@ -148,11 +150,11 @@ pick_selftest() {
   mock_pane=$(print -l line-{1..20})
   : > "$mock_log"
   session_preview_lines sh-sess 30 zsh
-  if (( ${#preview_lines} != 10 )); then
-    print -u2 "FAIL preview/cap got ${#preview_lines} want 10"
+  if (( ${#preview_lines} != 3 )); then
+    print -u2 "FAIL preview/cap got ${#preview_lines} want 3"
     (( fails++ ))
   fi
-  expect preview/cap-tail $'line-11\nline-12\nline-13\nline-14\nline-15\nline-16\nline-17\nline-18\nline-19\nline-20' "${(F)preview_lines}"
+  expect preview/cap-tail $'line-18\nline-19\nline-20' "${(F)preview_lines}"
 
   mock_pane=$'a\nb'
   : > "$mock_log"
@@ -239,7 +241,7 @@ pick_selftest() {
   mock_pane=$'zsh\n% ls\nlanjump-pick.zsh\nREADME.md\n% '
   : > "$mock_log"
   session_preview_lines sh-sess 6 zsh
-  expect preview/shell-keep $'zsh\n% ls\nlanjump-pick.zsh\nREADME.md' "${(F)preview_lines}"
+  expect preview/shell-keep $'% ls\nlanjump-pick.zsh\nREADME.md' "${(F)preview_lines}"
 
   mock_pane=$'Grok 4.6\n────────\n可以丢掉状态条\n────────\n>'
   : > "$mock_log"
@@ -323,6 +325,54 @@ pick_selftest() {
     print -r -- "${(j: :)@}" >> "$mock_log"
     print -r -- "$mock_pane"
   }
+
+  preview_is_grok grok-1.0.13-mac
+  expect preview/is-grok 0 "$?"
+  preview_is_grok zsh
+  expect preview/is-grok-sh 1 "$?"
+  preview_line_is_tool 'Calling github__issue_read'
+  expect preview/tool-calling 0 "$?"
+  preview_line_is_tool '{"name":"github__issue_read"}'
+  expect preview/tool-json 0 "$?"
+  preview_line_is_tool '预览要有标题吗'
+  expect preview/tool-question 1 "$?"
+  preview_line_is_model 'Grok 4.6'
+  expect preview/model-ver 0 "$?"
+  preview_line_is_model '要，还要最后几行'
+  expect preview/model-answer 1 "$?"
+
+  expect preview/grok-qa-fn $'预览要有标题吗\n要，还要最后几行' "$(preview_grok_lines 3 ToMax 'Grok 4.6' $'────────' '预览要有标题吗' 'Calling github__issue_read' '{"name":"github__issue_read"}' '要，还要最后几行' '>')"
+  expect preview/generic-ls-fn $'% ls\nlanjump-pick.zsh\nREADME.md' "$(preview_generic_lines 3 zsh '% ls' 'lanjump-pick.zsh' 'README.md' '%')"
+  expect preview/select-grok $'预览要有标题吗\n要，还要最后几行' "$(preview_select_lines grok 3 ToMax 'Grok 4.6' '预览要有标题吗' 'Calling github__issue_read' '要，还要最后几行')"
+  expect preview/select-zsh $'% ls\nlanjump-pick.zsh\nREADME.md' "$(preview_select_lines zsh 3 zsh '% ls' 'lanjump-pick.zsh' 'README.md' '%')"
+
+  mock_pane=$'ToMax\nGrok 4.6\n────────────────\n预览要有标题吗\nCalling github__issue_read\n{"name":"github__issue_read"}\n要，还要最后几行\n────────────────\n>\n█'
+  : > "$mock_log"
+  session_titles[grok-sess]=ToMax
+  session_preview_lines grok-sess 6 grok
+  expect preview/grok-qa $'预览要有标题吗\n要，还要最后几行' "${(F)preview_lines}"
+  if [[ ${(F)preview_lines} == *'Grok 4.6'* ]]; then
+    print -u2 "FAIL preview/grok-qa-no-model got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  if [[ ${(F)preview_lines} == *Calling* || ${(F)preview_lines} == *github__issue_read* ]]; then
+    print -u2 "FAIL preview/grok-qa-no-tool got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  if [[ ${(F)preview_lines} == *ToMax* ]]; then
+    print -u2 "FAIL preview/grok-qa-no-tomax got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
+  session_titles=()
+
+  mock_pane=$'zsh\n% ls\nlanjump-pick.zsh\nREADME.md\n% '
+  : > "$mock_log"
+  session_preview_lines sh-sess 6 zsh
+  expect preview/generic-ls $'% ls\nlanjump-pick.zsh\nREADME.md' "${(F)preview_lines}"
+  if [[ ${(F)preview_lines} == $'% '* && ${(F)preview_lines} != *lanjump-pick.zsh* ]]; then
+    print -u2 "FAIL preview/generic-not-only-prompt got=$(printf %q "${(F)preview_lines}")"
+    (( fails++ ))
+  fi
 
   HAS_TMUX=1
   host_short=testhost

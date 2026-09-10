@@ -2573,13 +2573,47 @@ preview_is_product_title() {
   return 1
 }
 
+preview_is_grok() {
+  [[ ${1:-} == (#i)*grok* ]]
+}
+
+preview_line_is_bare_prompt() {
+  local line=$1 stripped
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  stripped=${line//[[:space:]]/}
+  [[ $stripped == '>' || $stripped == '❯' || $stripped == '%' || $stripped == '$' || $stripped == '#' ]]
+}
+
 preview_line_is_prompt() {
   local line=$1
   line="${line#"${line%%[![:space:]]*}"}"
   line="${line%"${line##*[![:space:]]}"}"
   [[ -n $line ]] || return 1
-  [[ $line == ('%'|'$'|'>'|'#'|'❯') ]] && return 0
+  preview_line_is_bare_prompt "$line" && return 0
   [[ $line == ('% '|'$ '|'> '|'# '|$'❯ ')* ]] && return 0
+  return 1
+}
+
+preview_line_is_model() {
+  local s=$1 stripped
+  preview_is_product_title "$s" && return 0
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  stripped=${s//[[:space:]]/}
+  [[ $stripped == (#i)grok[0-9.]* ]] && return 0
+  return 1
+}
+
+preview_line_is_tool() {
+  local line=$1
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -n $line ]] || return 1
+  [[ $line == (#i)calling[[:space:]]* ]] && return 0
+  [[ $line == (#i)(function|tool)[[:space:]]#(result|call)* ]] && return 0
+  [[ $line == \{* || $line == \[* || $line == \}* ]] && return 0
+  [[ $line == [[:alnum:]_-]##__[[:alnum:]_-]##* ]] && return 0
   return 1
 }
 
@@ -2593,8 +2627,9 @@ preview_line_is_chrome() {
   rest=${rest//[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬▶▷▸•·]/}
   rest=${rest//[[:punct:]]/}
   [[ -z $rest ]] && return 0
-  [[ $stripped == '>' || $stripped == '❯' || $stripped == '%' || $stripped == '$' || $stripped == '#' ]] && return 0
+  preview_line_is_bare_prompt "$line" && return 0
   preview_is_product_title "$line" && return 0
+  preview_line_is_model "$line" && return 0
   return 1
 }
 
@@ -2623,7 +2658,7 @@ preview_conversation_heading() {
 
 preview_keep_useful_from_cap() {
   local cap=$1 line stripped
-  local -i saw_blank=0
+  local -i drop_grok_noise=${2:-0} saw_blank=0
   kept=()
   for line in "${(@f)cap}"; do
     line="${line%"${line##*[![:space:]]}"}"
@@ -2637,6 +2672,10 @@ preview_keep_useful_from_cap() {
     if preview_line_is_chrome "$line"; then
       continue
     fi
+    if (( drop_grok_noise )); then
+      preview_line_is_tool "$line" && continue
+      preview_line_is_model "$line" && continue
+    fi
     saw_blank=0
     kept+=("$line")
   done
@@ -2648,30 +2687,124 @@ preview_keep_useful_from_cap() {
   done
 }
 
+_preview_grok_lines() {
+  local -i max_body=$1
+  local line
+  local -a content
+  shift
+  picked=()
+  (( max_body < 1 )) && return
+  for line in "$@"; do
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n ${line//[[:space:]]/} ]] || continue
+    preview_line_is_chrome "$line" && continue
+    preview_line_is_bare_prompt "$line" && continue
+    preview_line_is_tool "$line" && continue
+    preview_line_is_model "$line" && continue
+    content+=("$line")
+  done
+  (( ${#content} == 0 )) && return
+  if (( ${#content} > max_body )); then
+    content=("${(@)content[-max_body,-1]}")
+  fi
+  picked=("${content[@]}")
+}
+
+preview_grok_lines() {
+  local -a picked
+  _preview_grok_lines "$@"
+  (( ${#picked} )) && print -l -- "${picked[@]}"
+}
+
+_preview_generic_lines() {
+  local -i max_body=$1 i last_cmd=0 nout
+  local line low
+  local -a all rest
+  shift
+  picked=()
+  (( max_body < 1 )) && return
+  for line in "$@"; do
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n ${line//[[:space:]]/} ]] || continue
+    preview_line_is_chrome "$line" && continue
+    preview_line_is_bare_prompt "$line" && continue
+    low=${line:l}
+    [[ $low == (zsh|bash|sh|fish|dash|login) ]] && continue
+    all+=("$line")
+  done
+  for (( i = 1; i <= ${#all}; i++ )); do
+    if preview_line_is_prompt "${all[i]}" && ! preview_line_is_bare_prompt "${all[i]}"; then
+      last_cmd=$i
+    fi
+  done
+  if (( last_cmd )); then
+    picked+=("${all[last_cmd]}")
+    for (( i = last_cmd + 1; i <= ${#all}; i++ )); do
+      preview_line_is_prompt "${all[i]}" && continue
+      picked+=("${all[i]}")
+    done
+  else
+    picked=("${all[@]}")
+  fi
+  if (( ${#picked} > max_body )); then
+    if (( last_cmd )) && preview_line_is_prompt "${picked[1]}"; then
+      rest=("${(@)picked[2,-1]}")
+      if (( max_body == 1 )); then
+        (( ${#rest} )) && picked=("${rest[-1]}")
+      else
+        nout=$(( max_body - 1 ))
+        (( ${#rest} > nout )) && rest=("${(@)rest[-nout,-1]}")
+        picked=("${picked[1]}" "${rest[@]}")
+      fi
+    else
+      picked=("${(@)picked[-max_body,-1]}")
+    fi
+  fi
+}
+
+preview_generic_lines() {
+  local -a picked
+  _preview_generic_lines "$@"
+  (( ${#picked} )) && print -l -- "${picked[@]}"
+}
+
+preview_select_lines() {
+  local cmd=$1
+  local -i max_body=$2
+  local -a picked
+  shift 2
+  if preview_is_grok "$cmd"; then
+    _preview_grok_lines $max_body "$@"
+  else
+    _preview_generic_lines $max_body "$@"
+  fi
+  (( ${#picked} )) && print -l -- "${picked[@]}"
+}
+
 session_preview_lines() {
   local name=$1 cmd=$3
   local title=${4:-${session_titles[$name]:-}}
-  local -i max_lines=$2 start grok=0 room
+  local -i max_lines=$2 grok=0 room
   local cap title_line heading
-  local -a kept
+  local -a kept picked
   preview_lines=()
   (( max_lines > preview_max_lines )) && max_lines=$preview_max_lines
   (( max_lines < 1 )) && return
-  [[ $cmd == (#i)*grok* ]] && grok=1
+  preview_is_grok "$cmd" && grok=1
 
   if (( grok )); then
     cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
-    preview_keep_useful_from_cap "$cap"
+    preview_keep_useful_from_cap "$cap" 1
     if (( ${#kept} == 0 )); then
       cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
-      preview_keep_useful_from_cap "$cap"
+      preview_keep_useful_from_cap "$cap" 1
     fi
   else
     cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
-    preview_keep_useful_from_cap "$cap"
+    preview_keep_useful_from_cap "$cap" 0
     if (( ${#kept} == 0 )); then
       cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
-      preview_keep_useful_from_cap "$cap"
+      preview_keep_useful_from_cap "$cap" 0
     fi
   fi
 
@@ -2688,22 +2821,33 @@ session_preview_lines() {
     fi
   fi
 
-  (( ${#kept} == 0 )) && {
-    [[ -n $title_line ]] || return
-    preview_lines=("$title_line")
-    return
-  }
   room=$max_lines
   [[ -n $title_line ]] && (( room-- ))
   (( room < 1 )) && room=1
-  if (( ${#kept} > room )); then
-    start=$(( ${#kept} - room + 1 ))
-    kept=("${(@)kept[start,-1]}")
+  if (( grok )); then
+    (( room > 2 )) && room=2
+    _preview_grok_lines $room "${kept[@]}"
+  else
+    (( room > 3 )) && room=3
+    _preview_generic_lines $room "${kept[@]}"
+  fi
+  if [[ -n $title_line && ${#picked} -gt 0 && ${picked[1]} == "$title_line" ]]; then
+    if (( ${#picked} == 1 )); then
+      picked=()
+    else
+      picked=("${(@)picked[2,-1]}")
+    fi
+  fi
+  if (( ${#picked} == 0 )); then
+    [[ -n $title_line ]] || return
+    preview_lines=("$title_line")
+    return
   fi
   if [[ -n $title_line ]]; then
-    kept=("$title_line" "${kept[@]}")
+    preview_lines=("$title_line" "${picked[@]}")
+  else
+    preview_lines=("${picked[@]}")
   fi
-  preview_lines=("${kept[@]}")
 }
 
 # Sticky window of `vis` item rows that keeps `cur` on screen.
