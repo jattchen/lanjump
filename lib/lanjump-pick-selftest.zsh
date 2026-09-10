@@ -1776,14 +1776,22 @@ pick_selftest() {
   load_settings
   expect settings/space-root "$testhome/root with space" "${project_roots[1]}"
   expect resolve/space-root "$testhome/root with space/child" "$(resolve_session_cwd child)"
-  if [[ ${functions[prompt_add_project_root]} != *e\[H* ]]; then
-    print -u2 "FAIL settings/add-root-clears-screen missing clear in prompt_add_project_root"
+  if (( ${+functions[prompt_add_project_root]} )); then
+    print -u2 "FAIL settings/no-fullscreen-prompt prompt_add_project_root should be gone"
     (( fails++ ))
   fi
-  if [[ ${functions[prompt_add_project_root]} != *'stty echo icanon'* ]]; then
-    print -u2 "FAIL settings/add-root-echo missing stty echo in prompt_add_project_root"
-    (( fails++ ))
-  fi
+  project_roots=()
+  settings_cursor=3
+  settings_enter
+  expect settings/input-starts "1" "$settings_input_on"
+  settings_input_buf='/opt/overlay-root'
+  settings_commit_input
+  expect settings/input-commit '/opt/overlay-root' "${project_roots[1]}"
+  expect settings/input-clears "0" "$settings_input_on"
+  settings_input_on=1
+  settings_input_buf='   '
+  settings_commit_input
+  expect settings/input-empty-cancels '/opt/overlay-root' "${project_roots[*]}"
 
   project_roots=('/opt/a' '/opt/b' '/opt/c')
   settings_remove_root 2

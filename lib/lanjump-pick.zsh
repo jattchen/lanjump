@@ -68,6 +68,9 @@ open_placement=window
 typeset -a project_roots
 settings_on=0
 settings_cursor=1
+settings_input_on=0
+settings_input_buf=
+settings_input_char=
 loading=0
 stty_orig=
 PENDING_KEY=""
@@ -2118,14 +2121,15 @@ settings_remove_root() {
   (( settings_cursor > n )) && settings_cursor=$n
 }
 
-# d removes the selected root. Enter cycles 打开到/窗口 or prompts on ＋.
+# d removes the selected root. Enter cycles 打开到/窗口 or starts overlay input on ＋.
 settings_enter() {
   local -i n=${#project_roots}
   case $settings_cursor in
     1|2) cycle_setting ;;
     *)
       if (( settings_cursor == 3 + n )); then
-        prompt_add_project_root
+        settings_input_on=1
+        settings_input_buf=
       fi
       ;;
   esac
@@ -2138,27 +2142,43 @@ settings_delete_key() {
   fi
 }
 
-prompt_add_project_root() {
-  local path
-  restore_tty
-  # Overlay is still on screen and stty_orig may be raw; leave the box
-  # and force echo so the path being typed is visible.
-  stty echo icanon 2>/dev/null || true
-  print -n $'\e[?25h\e[H\e[J'
-  print
-  print -n "项目根目录（空行取消）: "
-  read -r path || path=
+settings_commit_input() {
+  local path=$settings_input_buf
+  settings_input_on=0
+  settings_input_buf=
   path=${path##[[:space:]]#}
   path=${path%%[[:space:]]#}
-  if [[ -n $path ]]; then
-    if [[ "$path" != /* && "$path" != '~' && "$path" != '~/'* ]]; then
-      path="$PWD/$path"
-    fi
-    project_roots+=("$path")
-    save_settings
-    settings_cursor=$(( 2 + ${#project_roots} ))
+  [[ -n $path ]] || return 0
+  if [[ "$path" != /* && "$path" != '~' && "$path" != '~/'* ]]; then
+    path="$PWD/$path"
   fi
-  setup_tty
+  project_roots+=("$path")
+  save_settings
+  settings_cursor=$(( 2 + ${#project_roots} ))
+}
+
+# Raw-mode line editor for the settings overlay. REPLY=enter|esc|backspace|char.
+settings_input_read() {
+  local k k2 c
+  IFS= read -rsk1 k || return 1
+  if [[ $k == $'\e' ]]; then
+    IFS= read -rsk1 -t 0.2 k2 || { REPLY=esc; return 0 }
+    if [[ $k2 == '[' || $k2 == 'O' ]]; then
+      while IFS= read -rsk1 -t 0.2 c; do
+        [[ $c == [A-Za-z~] ]] && break
+      done
+    fi
+    REPLY=esc
+    return 0
+  fi
+  case $k in
+    $'\n'|$'\r') REPLY=enter ;;
+    $'\x7f'|$'\b') REPLY=backspace ;;
+    *)
+      REPLY=char
+      settings_input_char=$k
+      ;;
+  esac
 }
 
 effective_open_target() {
@@ -3374,8 +3394,16 @@ draw_settings_overlay() {
     lines+=("  项目根    $root")
   done
   lines+=("  ＋ 添加项目根")
+  if (( settings_input_on )); then
+    lines+=("  路径  ${settings_input_buf}█")
+    lines+=("  Enter 确定  Esc 取消")
+  fi
   lines+=("")
-  lines+=("  j/k 选择  Enter 切换/添加  d 删除根  q 关闭")
+  if (( settings_input_on )); then
+    lines+=("  在浮层里输入，能看见自己打的字")
+  else
+    lines+=("  j/k 选择  Enter 切换/添加  d 删除根  q 关闭")
+  fi
   w=44
   for line in "${lines[@]}"; do
     display_width "$line"
@@ -3396,7 +3424,9 @@ draw_settings_overlay() {
     line=${lines[$i]}
     _padw "$line" $(( w - 2 ))
     hl=0
-    if (( i == settings_cursor + 2 )); then
+    if (( settings_input_on )); then
+      (( i == 6 + ${#project_roots} )) && hl=1
+    elif (( i == settings_cursor + 2 )); then
       hl=1
     fi
     if (( hl )); then
@@ -3941,6 +3971,30 @@ picker_boot_before_first_draw
 picker_boot_after_first_draw
 
 while true; do
+  if (( settings_on && settings_input_on )); then
+    preview_defer=0
+    settings_input_read || continue
+    case $REPLY in
+      enter)
+        settings_commit_input
+        draw
+        ;;
+      esc)
+        settings_input_on=0
+        settings_input_buf=
+        draw
+        ;;
+      backspace)
+        (( ${#settings_input_buf} )) && settings_input_buf=${settings_input_buf[1,-2]}
+        draw
+        ;;
+      char)
+        settings_input_buf+=$settings_input_char
+        draw
+        ;;
+    esac
+    continue
+  fi
   if (( preview_defer )); then
     if ! read_key $preview_wait; then
       preview_defer=0
