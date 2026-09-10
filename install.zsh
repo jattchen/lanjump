@@ -193,7 +193,7 @@ APP="$HOME/Library/Application Support/lanjump"
 MAIN="$APP/lanjump.zsh"
 INSTALLER="$APP/install.zsh"
 
-if [[ ${1:-} == upgrade || ${1:-} == 升级 ]]; then
+if [[ ${1:-} == upgrade || ${1:-} == update ]]; then
   if [[ ! -f $INSTALLER ]]; then
     print -u2 '找不到安装脚本。请重新安装：zsh install.zsh'
     exit 1
@@ -229,7 +229,8 @@ save_self_installer
 
 cp -f "$ROOT/lib/lanjump.zsh" "$APP/lanjump.zsh"
 cp -f "$ROOT/lib/lanjump-pick.zsh" "$APP/lanjump-pick.zsh"
-chmod 755 "$APP/lanjump.zsh" "$APP/lanjump-pick.zsh"
+cp -f "$ROOT/bin/lanjump-ghostty-attach" "$APP/lanjump-ghostty-attach"
+chmod 755 "$APP/lanjump.zsh" "$APP/lanjump-pick.zsh" "$APP/lanjump-ghostty-attach"
 
 cp -f "$ROOT/lib/lanjump-keys.py" "$APP/lanjump-keys.py"
 chmod 755 "$APP/lanjump-keys.py"

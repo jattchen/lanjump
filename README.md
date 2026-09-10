@@ -30,7 +30,11 @@ lanjump upgrade
 
 tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 进入，`n` 新建，`e` 重命名，`d` 删除，`p` 常驻，`X` 删空闲，`h` 换机器，`o` 时间/占用/常驻，`v` 开关预览，`/` 包含，`!` 排除，`f` 开关上次筛选，`s` 普通 shell（`exit` 返回），`q` 退出。
 
-重启电脑或 `tmux kill-server` 之后再打开 tmux 列表：会重建常驻和上次占用中的命名 session（只回到当时目录，不自动开 grok；纯数字名不重建）。本机 Ghostty 会问一次要不要按占用中的 session 各开一个标签。也可以 `lanjump attach 名字` 直接进入已有 session。
+重启电脑或 `tmux kill-server` 之后再打开 tmux 列表：会重建常驻、以及改过名/进过的命名 session（回到当时目录；纯数字名不重建）。然后弹出勾选列表：默认打开「常驻」和「最近 48 小时占用过」的窗口（空格或鼠标勾选，Enter 打开并续上，`2` 只要空 shell，`q` 不打开）。超过 48 小时且非常驻的命名 session 只建在 tmux 里，不自动开窗。没有 Ghostty 时用「终端」标签。
+
+从列表 Enter 进入空 shell、且上次能续时，会再问要不要续上。窗格里已经有程序在跑则直接进去。
+
+命令：`lanjump update` 同 `upgrade`；`lanjump go [机器:]名字` 打开最近或指定 session（有 Ghostty 用 Ghostty，否则用终端；已打开则跳到那个窗口）；`lanjump work` 打开工作区；`lanjump pins` 打开常驻。默认机器是上次进的那台。名字不存在会问要不要新建。
 
 上次连的是本机还是远程，下次打开会记住并跳过扫描。
 

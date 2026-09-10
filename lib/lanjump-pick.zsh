@@ -13,7 +13,14 @@ else
   TMUX_BIN=""
 fi
 
-if [[ ${1:-} != --digit-selftest && ${1:-} != --pick-selftest ]]; then
+pick_needs_tty() {
+  case ${1:-} in
+    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--open-tabs|--has-session|--new-session|--pin-session|--snapshot|--install-hooks) return 1 ;;
+  esac
+  return 0
+}
+
+if pick_needs_tty "${1:-}"; then
   if [[ ! -t 0 || ! -t 1 ]]; then
     print "需要交互式终端。"
     exit 1
@@ -42,11 +49,18 @@ sort_mode=time
 filter_include=
 filter_exclude=
 typeset -i filter_on=0 filter_match_count=0 filter_total_count=0
-typeset -a pinned_names snap_names restore_names ghostty_names
-typeset -A pinned_cwd pinned_grok snap_cwd snap_occupied restore_cwd
+typeset -a pinned_names snap_names restore_names ghostty_names open_window_names
+typeset -a restore_pick_kind restore_pick_name restore_pick_checked restore_pick_row
+typeset -A pinned_cwd pinned_grok snap_cwd snap_occupied snap_workspace snap_cmd snap_attached restore_cwd
+typeset -i restore_pick_cursor=1 restore_mouse_col=0 restore_mouse_row=0
+restore_pick_action=skip
+RESTORE_RECENT_SECS=172800
 stamp_boot=
 stamp_token=
+stamp_gen=
 did_restore=0
+attach_shell_only=0
+ghostty_close_others=0
 loading=0
 stty_orig=
 PENDING_KEY=""
@@ -105,6 +119,7 @@ tmux_has_feature() {
 
 tmux_prepare_keys() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
+  tmux_install_snapshot_hooks
   (( prepared_keys )) && return 0
   tmuxx set-option -g extended-keys always 2>/dev/null || \
     tmuxx set-option -g extended-keys on 2>/dev/null || true
@@ -125,6 +140,56 @@ tmux_prepare_keys() {
   tmuxx set-option -g set-titles on 2>/dev/null || true
   tmuxx set-option -g set-titles-string '#S' 2>/dev/null || true
   prepared_keys=1
+}
+
+snapshot_hook_shell() {
+  local pick
+  pick=${LANJUMP_PICK_BIN:-$HOME/Library/Application Support/lanjump/lanjump-pick.zsh}
+  print -r -- "/bin/zsh $(printf %q "$pick") --snapshot >/dev/null 2>&1"
+}
+
+tmux_install_snapshot_hooks() {
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  local inner pick sr iv hook
+  inner=$(snapshot_hook_shell)
+  for hook in \
+    'client-attached[91]' \
+    'session-created[91]' \
+    'after-select-pane[91]' \
+    'after-select-window[91]' \
+    'after-refresh-client[91]'
+  do
+    tmuxx set-hook -gu "$hook" 2>/dev/null || true
+  done
+  tmuxx set-hook -g 'client-detached[91]' "run-shell -b $(printf %q "$inner")" 2>/dev/null || true
+  pick=${LANJUMP_PICK_BIN:-$HOME/Library/Application Support/lanjump/lanjump-pick.zsh}
+  sr=$(tmuxx show-options -gv status-right 2>/dev/null || true)
+  if [[ $sr != *lanjump-pick.zsh* ]]; then
+    tmuxx set-option -ag status-right "#(/bin/zsh $(printf %q "$pick") --snapshot;)" 2>/dev/null || true
+  fi
+  iv=$(tmuxx show-options -gv status-interval 2>/dev/null || true)
+  if [[ $iv != [0-9]## ]] || (( iv == 0 || iv > 5 )); then
+    tmuxx set-option -g status-interval 5 2>/dev/null || true
+  fi
+}
+
+snapshot_recently_written() {
+  local file m now min
+  session_snapshot_file
+  file=$REPLY
+  [[ -f $file ]] || return 1
+  min=${LANJUMP_SNAPSHOT_MIN:-2}
+  (( min <= 0 )) && return 1
+  m=$(stat -f %m "$file" 2>/dev/null) || return 1
+  now=$EPOCHSECONDS
+  (( now - m < min ))
+}
+
+run_session_snapshot() {
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  tmux_server_running || return 0
+  snapshot_recently_written && return 0
+  snapshot_live_sessions
 }
 
 tmux_tty() {
@@ -197,7 +262,7 @@ setup_tty() {
 on_exit() {
   restore_tty
 }
-if [[ ${1:-} != --digit-selftest && ${1:-} != --pick-selftest && ${1:-} != --attach ]]; then
+if pick_needs_tty "${1:-}" && [[ ${1:-} != --attach ]]; then
   trap on_exit EXIT
   trap 'restore_tty; exit 130' INT
   trap '[[ $loading -eq 1 ]] || draw' WINCH
@@ -341,16 +406,94 @@ short_path() {
   fi
 }
 
+short_command_name() {
+  local cmd=${1:-}
+  cmd=${cmd##*/}
+  [[ -n $cmd ]] || { print -r -- ''; return }
+  if [[ $cmd == grok-* || $cmd == grok ]]; then
+    print -r -- grok
+    return
+  fi
+  if [[ $cmd == codex-* ]]; then
+    print -r -- codex
+    return
+  fi
+  print -r -- "$cmd"
+}
+
+pane_is_shell() {
+  local cmd
+  cmd=$(short_command_name "$1")
+  [[ -z $cmd || $cmd == zsh || $cmd == bash || $cmd == sh || $cmd == fish || $cmd == dash || $cmd == login ]]
+}
+
+last_command_resumable() {
+  [[ $(short_command_name "$1") == grok ]]
+}
+
+cwd_is_home() {
+  local p=$1
+  [[ -z $p || $p == '~' || $p == "$HOME" || $p == "$HOME/" ]]
+}
+
+session_project_dir() {
+  local n=$1 d
+  [[ -n $n ]] || return 1
+  d="$HOME/Documents/projects/$n"
+  [[ -d $d ]] || return 1
+  print -r -- "$d"
+}
+
+resolve_session_cwd() {
+  local name=$1 live=${2:-}
+  local pin=${pinned_cwd[$name]:-}
+  local snap=${snap_cwd[$name]:-}
+  local proj c
+  proj=$(session_project_dir "$name") || proj=
+  for c in "$live" "$snap" "$pin"; do
+    [[ -n $c ]] || continue
+    cwd_is_home "$c" && continue
+    print -r -- "$c"
+    return 0
+  done
+  [[ -n $proj ]] && { print -r -- "$proj"; return 0 }
+  for c in "$live" "$snap" "$pin"; do
+    [[ -n $c ]] && { print -r -- "$c"; return 0 }
+  done
+}
+
+grok_bin() {
+  local c
+  if [[ -n ${LANJUMP_GROK_BIN:-} ]]; then
+    print -r -- "$LANJUMP_GROK_BIN"
+    return 0
+  fi
+  for c in "$HOME/.grok/bin/grok" "$HOME/.local/bin/grok"; do
+    [[ -x $c ]] && { print -r -- "$c"; return 0 }
+  done
+  (( $+commands[grok] )) && { print -r -- "${commands[grok]}"; return 0 }
+  print -r -- grok
+}
+
+resume_line_for() {
+  local cmd=$1 cwd=${2:-} bin
+  last_command_resumable "$cmd" || return 1
+  bin=$(grok_bin)
+  if cwd_is_home "$cwd"; then
+    print -r -- "$bin --resume"
+  else
+    print -r -- "$bin -c"
+  fi
+}
+
 useful_summary() {
   local title=$1 cmd=$2 wname=$3
-  if [[ -n $title && $title != *.local && $title != zsh && $title != grok && $title != bash ]]; then
-    print -r -- "$title"
-  elif [[ -n $cmd && $cmd != zsh && $cmd != bash && $cmd != sh ]]; then
-    print -r -- "$cmd"
+  local short
+  short=$(short_command_name "$cmd")
+  if [[ -n $short ]]; then
+    print -r -- "$short"
   elif [[ -n $wname && $wname != zsh && $wname != bash ]]; then
     print -r -- "$wname"
-  elif [[ -n $cmd ]]; then
-    print -r -- "$cmd"
   else
     print -r -- '-'
   fi
@@ -1016,6 +1159,10 @@ numeric_session_name() {
   [[ -n ${1:-} && $1 == [0-9]## ]]
 }
 
+lanjump_foreign_session() {
+  [[ -n ${1:-} && $1 == bmx-* ]]
+}
+
 session_snapshot_file() {
   REPLY="$HOME/Library/Application Support/lanjump/session-snapshot"
 }
@@ -1024,22 +1171,38 @@ restore_stamp_file() {
   REPLY="$HOME/Library/Application Support/lanjump/restore-stamp"
 }
 
+_commit_snap_record() {
+  local name=$1 cwd=$2 occ=$3 ws=$4 cmd=$5 att=$6
+  [[ -n $name ]] || return
+  snap_names+=("$name")
+  snap_cwd[$name]=$cwd
+  snap_occupied[$name]=${occ:-0}
+  snap_cmd[$name]=$cmd
+  snap_attached[$name]=${att:-0}
+  if [[ -n $ws ]]; then
+    snap_workspace[$name]=$ws
+  else
+    snap_workspace[$name]=${occ:-0}
+  fi
+}
+
 load_session_snapshot() {
-  local file line key val name cwd occ
+  local file line key val name cwd occ ws cmd att
   session_snapshot_file
   file=$REPLY
   snap_names=()
   snap_cwd=()
   snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
   [[ -f $file ]] || return 0
-  name= cwd= occ=
+  name= cwd= occ= ws= cmd= att=
   while IFS= read -r line || [[ -n $line ]]; do
     if [[ -z $line || $line == '#'* ]]; then
       if [[ -z $line && -n $name ]]; then
-        snap_names+=("$name")
-        snap_cwd[$name]=$cwd
-        snap_occupied[$name]=${occ:-0}
-        name= cwd= occ=
+        _commit_snap_record "$name" "$cwd" "$occ" "$ws" "$cmd" "$att"
+        name= cwd= occ= ws= cmd= att=
       fi
       continue
     fi
@@ -1054,21 +1217,20 @@ load_session_snapshot() {
     case $key in
       name)
         if [[ -n $name ]]; then
-          snap_names+=("$name")
-          snap_cwd[$name]=$cwd
-          snap_occupied[$name]=${occ:-0}
-          cwd= occ=
+          _commit_snap_record "$name" "$cwd" "$occ" "$ws" "$cmd" "$att"
+          cwd= occ= ws= cmd= att=
         fi
         name=$val
         ;;
       cwd) cwd=$val ;;
       occupied) occ=$val ;;
+      workspace) ws=$val ;;
+      cmd) cmd=$val ;;
+      attached) att=$val ;;
     esac
   done <"$file"
   if [[ -n $name ]]; then
-    snap_names+=("$name")
-    snap_cwd[$name]=$cwd
-    snap_occupied[$name]=${occ:-0}
+    _commit_snap_record "$name" "$cwd" "$occ" "$ws" "$cmd" "$att"
   fi
 }
 
@@ -1083,45 +1245,101 @@ save_session_snapshot() {
     [[ -n $n ]] || continue
     print -r -- "name $n" >>"$file"
     print -r -- "cwd ${snap_cwd[$n]:-}" >>"$file"
+    print -r -- "cmd ${snap_cmd[$n]:-}" >>"$file"
     print -r -- "occupied ${snap_occupied[$n]:-0}" >>"$file"
+    print -r -- "workspace ${snap_workspace[$n]:-${snap_occupied[$n]:-0}}" >>"$file"
+    print -r -- "attached ${snap_attached[$n]:-0}" >>"$file"
     print -r -- "" >>"$file"
   done
+}
+
+session_in_workspace() {
+  local n=$1
+  [[ ${snap_workspace[$n]:-${snap_occupied[$n]:-0}} == 1 ]]
 }
 
 snapshot_live_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   tmux_server_running || return 0
-  local line name cwd att
-  local -a raw f
+  local line name cwd att cmd
+  local -a raw f names
+  typeset -A prev_ws prev_cmd prev_cwd prev_att prev_seen
+  local n
+  for n in "${snap_names[@]}"; do
+    prev_ws[$n]=${snap_workspace[$n]:-${snap_occupied[$n]:-0}}
+    prev_cmd[$n]=${snap_cmd[$n]:-}
+    prev_cwd[$n]=${snap_cwd[$n]:-}
+    prev_att[$n]=${snap_attached[$n]:-0}
+    prev_seen[$n]=1
+  done
+  load_session_snapshot
+  for n in "${snap_names[@]}"; do
+    prev_ws[$n]=${snap_workspace[$n]:-${snap_occupied[$n]:-0}}
+    prev_cmd[$n]=${snap_cmd[$n]:-}
+    prev_cwd[$n]=${snap_cwd[$n]:-}
+    prev_att[$n]=${snap_attached[$n]:-0}
+    prev_seen[$n]=1
+  done
   snap_names=()
   snap_cwd=()
   snap_occupied=()
-  raw=("${(@f)$(tmuxx list-sessions -F $'#{session_name}\x1f#{pane_current_path}\x1f#{?session_attached,1,0}' 2>/dev/null)}")
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  raw=("${(@f)$(tmuxx list-sessions -F $'#{session_name}\x1f#{pane_current_path}\x1f#{?session_attached,1,0}\x1f#{pane_current_command}' 2>/dev/null)}")
   for line in "${raw[@]}"; do
     [[ -z $line ]] && continue
     f=("${(@ps:\x1f:)line}")
-    (( ${#f} < 3 )) && continue
+    (( ${#f} < 4 )) && continue
     name=${f[1]}
     cwd=${f[2]}
     att=${f[3]}
+    cmd=${f[4]}
     [[ -n $name ]] || continue
     snap_names+=("$name")
-    snap_cwd[$name]=$cwd
+    snap_cwd[$name]=$(resolve_session_cwd "$name" "${cwd:-${prev_cwd[$name]:-}}")
     snap_occupied[$name]=$att
+    if pane_is_shell "$cmd" && last_command_resumable "${prev_cmd[$name]:-}"; then
+      snap_cmd[$name]=${prev_cmd[$name]}
+    else
+      snap_cmd[$name]=$cmd
+    fi
+    if lanjump_foreign_session "$name"; then
+      snap_workspace[$name]=${prev_ws[$name]:-0}
+      snap_attached[$name]=${prev_att[$name]:-0}
+    elif [[ $att == 1 ]]; then
+      snap_workspace[$name]=1
+      snap_attached[$name]=$EPOCHSECONDS
+    elif (( ! ${prev_seen[$name]:-0} )) && ! numeric_session_name "$name"; then
+      snap_workspace[$name]=1
+      snap_attached[$name]=$EPOCHSECONDS
+    else
+      snap_workspace[$name]=${prev_ws[$name]:-0}
+      snap_attached[$name]=${prev_att[$name]:-0}
+    fi
   done
   save_session_snapshot
 }
 
 mark_snapshot_occupied() {
-  local name=$1 cwd
+  local name=$1 cwd cmd prev
   [[ -n $name ]] || return 0
   load_session_snapshot
   cwd=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
+  cmd=$(tmuxx display-message -p -t "=$name" '#{pane_current_command}' 2>/dev/null || true)
   if (( ${snap_names[(Ie)$name]} == 0 )); then
     snap_names+=("$name")
   fi
-  [[ -n $cwd ]] && snap_cwd[$name]=$cwd
+  [[ -n $cwd ]] && snap_cwd[$name]=$(resolve_session_cwd "$name" "$cwd")
+  prev=${snap_cmd[$name]:-}
+  if pane_is_shell "$cmd" && last_command_resumable "$prev"; then
+    :
+  elif [[ -n $cmd ]]; then
+    snap_cmd[$name]=$cmd
+  fi
   snap_occupied[$name]=1
+  snap_workspace[$name]=1
+  snap_attached[$name]=$EPOCHSECONDS
   save_session_snapshot
 }
 
@@ -1133,30 +1351,390 @@ collect_restore_names() {
   for n in "${pinned_names[@]}"; do
     [[ -n $n ]] || continue
     numeric_session_name "$n" && continue
+    lanjump_foreign_session "$n" && continue
     (( ${seen[$n]:-0} )) && continue
     seen[$n]=1
     restore_names+=("$n")
-    restore_cwd[$n]=${pinned_cwd[$n]:-${snap_cwd[$n]:-}}
+    restore_cwd[$n]=$(resolve_session_cwd "$n")
   done
   for n in "${snap_names[@]}"; do
     [[ -n $n ]] || continue
     numeric_session_name "$n" && continue
-    [[ ${snap_occupied[$n]:-0} == 1 ]] || continue
+    lanjump_foreign_session "$n" && continue
+    session_in_workspace "$n" || continue
     (( ${seen[$n]:-0} )) && continue
     seen[$n]=1
     restore_names+=("$n")
-    restore_cwd[$n]=${pinned_cwd[$n]:-${snap_cwd[$n]:-}}
+    restore_cwd[$n]=$(resolve_session_cwd "$n")
   done
 }
 
-collect_ghostty_session_names() {
+session_is_recent() {
+  local n=$1 ts
+  ts=${snap_attached[$n]:-0}
+  [[ $ts == [0-9]## ]] || return 1
+  (( ts > 0 && EPOCHSECONDS - ts < RESTORE_RECENT_SECS ))
+}
+
+collect_open_window_names() {
+  open_window_names=()
   ghostty_names=()
   local n
-  for n in "${restore_names[@]}"; do
-    [[ ${snap_occupied[$n]:-0} == 1 ]] || continue
+  typeset -A seen
+  for n in "${pinned_names[@]}"; do
+    [[ -n $n ]] || continue
     numeric_session_name "$n" && continue
-    ghostty_names+=("$n")
+    lanjump_foreign_session "$n" && continue
+    (( ${seen[$n]:-0} )) && continue
+    seen[$n]=1
+    open_window_names+=("$n")
   done
+  for n in "${snap_names[@]}"; do
+    [[ -n $n ]] || continue
+    numeric_session_name "$n" && continue
+    lanjump_foreign_session "$n" && continue
+    session_is_recent "$n" || continue
+    (( ${seen[$n]:-0} )) && continue
+    seen[$n]=1
+    open_window_names+=("$n")
+  done
+  ghostty_names=("${open_window_names[@]}")
+}
+
+collect_ghostty_session_names() {
+  collect_open_window_names
+}
+
+build_restore_pick() {
+  restore_pick_kind=()
+  restore_pick_name=()
+  restore_pick_checked=()
+  local n
+  typeset -A is_pin
+  local -a pins recents
+  pins=()
+  recents=()
+  for n in "${pinned_names[@]}"; do
+    [[ -n $n ]] || continue
+    numeric_session_name "$n" && continue
+    is_pin[$n]=1
+    pins+=("$n")
+  done
+  for n in "${open_window_names[@]}"; do
+    (( ${is_pin[$n]:-0} )) && continue
+    recents+=("$n")
+  done
+  if (( ${#pins} )); then
+    restore_pick_kind+=("header")
+    restore_pick_name+=("常驻")
+    restore_pick_checked+=(0)
+    for n in "${pins[@]}"; do
+      restore_pick_kind+=("item")
+      restore_pick_name+=("$n")
+      restore_pick_checked+=(1)
+    done
+  fi
+  if (( ${#recents} )); then
+    restore_pick_kind+=("header")
+    restore_pick_name+=("最近")
+    restore_pick_checked+=(0)
+    for n in "${recents[@]}"; do
+      restore_pick_kind+=("item")
+      restore_pick_name+=("$n")
+      restore_pick_checked+=(1)
+    done
+  fi
+  restore_pick_cursor=1
+  restore_pick_advance 1
+}
+
+restore_pick_advance() {
+  local dir=${1:-1}
+  local -i i=$restore_pick_cursor n=${#restore_pick_kind}
+  (( n )) || return
+  local -i guard=0
+  while (( guard < n )); do
+    if [[ ${restore_pick_kind[$i]} == item ]]; then
+      restore_pick_cursor=$i
+      return
+    fi
+    (( i += dir ))
+    (( i < 1 )) && i=$n
+    (( i > n )) && i=1
+    (( guard++ ))
+  done
+}
+
+draw_restore_pick() {
+  local -i i row=1
+  local mark box line
+  restore_pick_row=()
+  print -n $'\e[H\e[J\e[?25l'
+  print -r -- "${c_bold}恢复后要打开哪些窗口？${c_reset}"
+  print -r -- "${c_dim}空格/鼠标勾选    Enter 打开并续上    2 只要空 shell    q 不打开${c_reset}"
+  print
+  (( row += 3 ))
+  for (( i = 1; i <= ${#restore_pick_kind}; i++ )); do
+    restore_pick_row[$i]=$row
+    if [[ ${restore_pick_kind[$i]} == header ]]; then
+      print -r -- "${c_cyan}${restore_pick_name[$i]}${c_reset}"
+    else
+      if (( restore_pick_checked[i] )); then
+        box='[x]'
+      else
+        box='[ ]'
+      fi
+      line="${box} ${restore_pick_name[$i]}"
+      if (( i == restore_pick_cursor )); then
+        print -r -- "${c_rev} ${line} ${c_reset}"
+      else
+        print -r -- " ${line}"
+      fi
+    fi
+    (( row++ ))
+  done
+}
+
+restore_read_key() {
+  local k k2 k3 c buf
+  IFS= read -rsk1 k || return 1
+  if [[ $k == $'\e' ]]; then
+    IFS= read -rsk1 -t 0.2 k2 || { REPLY=esc; return 0 }
+    if [[ $k2 == '[' ]]; then
+      IFS= read -rsk1 -t 0.2 k3 || { REPLY=esc; return 0 }
+      if [[ $k3 == '<' ]]; then
+        buf=
+        while IFS= read -rsk1 c; do
+          buf+=$c
+          [[ $c == M || $c == m ]] && break
+        done
+        if [[ $buf == 0\;[0-9]##\;[0-9]##M ]]; then
+          restore_mouse_col=${${buf#*;}%%;*}
+          restore_mouse_row=${buf##*;}
+          restore_mouse_row=${restore_mouse_row%M}
+          REPLY=click
+          return 0
+        fi
+        REPLY=other
+        return 0
+      fi
+      case $k3 in
+        A) REPLY=up ;;
+        B) REPLY=down ;;
+        *) REPLY=esc ;;
+      esac
+      return 0
+    fi
+    REPLY=esc
+    return 0
+  fi
+  case $k in
+    $'\n'|$'\r') REPLY=enter ;;
+    ' ') REPLY=space ;;
+    2) REPLY=two ;;
+    q|Q) REPLY=q ;;
+    j|J) REPLY=down ;;
+    k|K) REPLY=up ;;
+    *) REPLY=other ;;
+  esac
+}
+
+restore_pick_toggle() {
+  local i=$1
+  [[ ${restore_pick_kind[$i]:-} == item ]] || return
+  if (( restore_pick_checked[i] )); then
+    restore_pick_checked[i]=0
+  else
+    restore_pick_checked[i]=1
+  fi
+}
+
+restore_pick_checked_names() {
+  ghostty_names=()
+  local -i i
+  for (( i = 1; i <= ${#restore_pick_kind}; i++ )); do
+    [[ ${restore_pick_kind[$i]} == item ]] || continue
+    (( restore_pick_checked[i] )) || continue
+    ghostty_names+=("${restore_pick_name[$i]}")
+  done
+}
+
+prompt_restore_windows() {
+  restore_pick_action=skip
+  ghostty_names=()
+  collect_open_window_names
+  (( ${#open_window_names} )) || return 0
+  build_restore_pick
+  (( ${#restore_pick_kind} )) || return 0
+  setup_tty
+  print -n $'\e[?1000h\e[?1006h'
+  trap draw_restore_pick WINCH
+  while true; do
+    draw_restore_pick
+    restore_read_key || continue
+    case $REPLY in
+      up)
+        (( restore_pick_cursor-- ))
+        (( restore_pick_cursor < 1 )) && restore_pick_cursor=${#restore_pick_kind}
+        restore_pick_advance -1
+        ;;
+      down)
+        (( restore_pick_cursor++ ))
+        (( restore_pick_cursor > ${#restore_pick_kind} )) && restore_pick_cursor=1
+        restore_pick_advance 1
+        ;;
+      space)
+        restore_pick_toggle $restore_pick_cursor
+        ;;
+      click)
+        local -i i
+        for (( i = 1; i <= ${#restore_pick_kind}; i++ )); do
+          if [[ ${restore_pick_kind[$i]} == item && ${restore_pick_row[$i]} == "$restore_mouse_row" ]]; then
+            restore_pick_cursor=$i
+            restore_pick_toggle $i
+            break
+          fi
+        done
+        ;;
+      enter)
+        restore_pick_checked_names
+        if (( ${#ghostty_names} )); then
+          restore_pick_action=resume
+        else
+          restore_pick_action=skip
+        fi
+        break
+        ;;
+      two)
+        restore_pick_checked_names
+        if (( ${#ghostty_names} )); then
+          restore_pick_action=shell
+        else
+          restore_pick_action=skip
+        fi
+        break
+        ;;
+      q|esc)
+        restore_pick_action=skip
+        ghostty_names=()
+        break
+        ;;
+    esac
+  done
+  print -n $'\e[?1000l\e[?1006l'
+  trap '[[ $loading -eq 1 ]] || draw' WINCH
+  restore_tty
+  print -n $'\e[H\e[J'
+}
+
+ensure_session_cwd() {
+  local name=$1 want live
+  [[ -n $name ]] || return 0
+  live=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
+  want=$(resolve_session_cwd "$name" "$live")
+  [[ -n $want ]] || return 0
+  [[ $live == "$want" ]] && return 0
+  tmuxx send-keys -t "=$name" -- "cd ${(q)want}" Enter 2>/dev/null || true
+}
+
+session_first_pane() {
+  local name=$1
+  local -a panes
+  panes=("${(@f)$(tmuxx list-panes -t "=$name" -F '#{pane_id}' 2>/dev/null)}")
+  [[ -n ${panes[1]:-} ]] && print -r -- "${panes[1]}"
+}
+
+maybe_resume_last_command() {
+  local name=$1 live last line want path pane
+  local -a args
+  [[ -n $name ]] || return 0
+  live=$(tmuxx display-message -p -t "=$name" '#{pane_current_command}' 2>/dev/null || true)
+  if [[ -n ${LANJUMP_DEBUG:-} ]]; then
+    print -u2 "lanjump-resume enter name=$name live=${live:-empty}"
+  fi
+  pane_is_shell "$live" || return 0
+  path=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
+  want=$(resolve_session_cwd "$name" "$path")
+  (( attach_shell_only )) && {
+    if [[ -n $want && $path != "$want" ]]; then
+      tmuxx send-keys -t "=$name" -- "cd ${(q)want}" Enter 2>/dev/null || true
+    fi
+    return 0
+  }
+  last=${snap_cmd[$name]:-}
+  line=$(resume_line_for "$last" "${want:-$path}") || {
+    if [[ -n ${LANJUMP_DEBUG:-} ]]; then
+      print -u2 "lanjump-resume skip name=$name last=$last want=$want"
+    fi
+    if [[ -n $want && $path != "$want" ]]; then
+      tmuxx send-keys -t "=$name" -- "cd ${(q)want}" Enter 2>/dev/null || true
+    fi
+    return 0
+  }
+  pane=$(session_first_pane "$name")
+  [[ -n $pane ]] || pane="=$name:0.0"
+  args=(respawn-pane -t "$pane" -k)
+  [[ -n $want ]] && args+=(-c "$want")
+  args+=("${(z)line}")
+  if [[ -n ${LANJUMP_DEBUG:-} ]]; then
+    print -u2 "lanjump-resume ${args[*]}"
+  fi
+  tmuxx "${args[@]}" || print -u2 "无法在 session「${name}」启动上次的程序。"
+}
+
+last_session_file() {
+  REPLY="$HOME/Library/Application Support/lanjump/last-session"
+}
+
+remember_last_session() {
+  local name=$1 file
+  [[ -n $name ]] || return 0
+  last_session_file
+  file=$REPLY
+  mkdir -p "${file:h}"
+  print -r -- "$name" >"$file"
+}
+
+read_last_session_name() {
+  local file s
+  last_session_file
+  file=$REPLY
+  [[ -f $file ]] || return 1
+  s=$(<"$file")
+  s=${s%%$'\n'*}
+  [[ -n $s ]] || return 1
+  print -r -- "$s"
+}
+
+attach_named_session() {
+  local name=$1 ask=${2:-0} live last ans
+  [[ -n $name ]] || return 1
+  mark_snapshot_occupied "$name"
+  load_session_snapshot
+  remember_last_session "$name"
+  if (( ask )); then
+    live=$(tmuxx display-message -p -t "=$name" '#{pane_current_command}' 2>/dev/null || true)
+    last=${snap_cmd[$name]:-}
+    if pane_is_shell "$live" && last_command_resumable "$last"; then
+      restore_tty
+      print
+      enter_resume_prompt_text "$last"
+      print -n "> "
+      read -r ans || ans=
+      case $ans in
+        '') attach_shell_only=0 ;;
+        s|S) attach_shell_only=1 ;;
+        *) return 0 ;;
+      esac
+    else
+      restore_tty
+      print
+    fi
+  fi
+  maybe_resume_last_command "$name"
+  tmux_tty attach-session -t "=$name"
+  snapshot_live_sessions
+  attach_shell_only=0
 }
 
 restore_saved_sessions() {
@@ -1198,19 +1776,32 @@ tmux_server_running() {
   tmuxx list-sessions >/dev/null 2>&1
 }
 
-tmux_restore_token() {
-  local line
-  line=$(tmuxx show-environment -g LANJUMP_RESTORE_TOKEN 2>/dev/null) || line=
-  if [[ $line == LANJUMP_RESTORE_TOKEN=* ]]; then
-    print -r -- "${line#LANJUMP_RESTORE_TOKEN=}"
+session_has_live_client() {
+  local name=$1 clients
+  [[ -n $name ]] || return 1
+  clients=$(tmuxx list-clients -t "=$name" -F '#{client_tty}' 2>/dev/null) || return 1
+  [[ -n $clients ]]
+}
+
+current_tmux_generation() {
+  local sock inode
+  if [[ -n ${LANJUMP_TMUX_GEN:-} ]]; then
+    print -r -- "$LANJUMP_TMUX_GEN"
+    return
   fi
+  tmux_server_running || { print -r -- none; return }
+  sock=$(tmuxx display-message -p '#{socket_path}' 2>/dev/null) || sock=
+  if [[ -n $sock && -e $sock ]]; then
+    inode=$(stat -f %i "$sock" 2>/dev/null) || inode=
+  fi
+  print -r -- "${inode:-unknown}"
 }
 
 read_restore_stamp() {
   local file line key val
   restore_stamp_file
   file=$REPLY
-  stamp_boot= stamp_token=
+  stamp_boot= stamp_token= stamp_gen=
   [[ -f $file ]] || return 1
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -n $line ]] || continue
@@ -1223,51 +1814,46 @@ read_restore_stamp() {
     case $key in
       boot) stamp_boot=$val ;;
       token) stamp_token=$val ;;
+      gen) stamp_gen=$val ;;
     esac
   done <"$file"
 }
 
 write_restore_stamp() {
-  local file dir boot=$1 token=$2
+  local file dir boot=$1 gen=$2
   restore_stamp_file
   file=$REPLY
   dir=${file:h}
   mkdir -p "$dir"
   print -r -- "boot $boot" >"$file"
-  print -r -- "token $token" >>"$file"
+  print -r -- "gen $gen" >>"$file"
+}
+
+any_restore_session_live() {
+  local n
+  collect_restore_names
+  (( ${#restore_names} )) || return 1
+  for n in "${restore_names[@]}"; do
+    tmuxx has-session -t "=$n" 2>/dev/null && return 0
+  done
+  return 1
 }
 
 should_restore_sessions() {
-  local boot live
   collect_restore_names
   (( ${#restore_names} )) || return 1
-  boot=$(current_boot_id)
-  read_restore_stamp || true
-  if ! tmux_server_running; then
-    return 0
-  fi
-  live=$(tmux_restore_token)
-  if [[ -z ${stamp_token:-} && -z $live ]]; then
-    return 1
-  fi
-  if [[ $boot == "${stamp_boot:-}" && -n $live && $live == "${stamp_token:-}" ]]; then
-    return 1
-  fi
+  tmux_server_running || return 0
+  any_restore_session_live && return 1
   return 0
 }
 
 ensure_restore_token() {
-  local boot token
+  local boot gen
   tmux_server_running || return 0
   boot=$(current_boot_id)
-  token=$(tmux_restore_token)
-  if [[ -z $token ]]; then
-    token="${boot}-${RANDOM}-${EPOCHSECONDS}"
-    tmuxx set-environment -g LANJUMP_RESTORE_TOKEN "$token" 2>/dev/null || true
-    token=$(tmux_restore_token)
-    [[ -n $token ]] || token="${boot}-${RANDOM}-${EPOCHSECONDS}"
-  fi
-  write_restore_stamp "$boot" "$token"
+  gen=$(current_tmux_generation)
+  [[ $gen == none ]] && return 0
+  write_restore_stamp "$boot" "$gen"
 }
 
 ghostty_restore_available() {
@@ -1275,41 +1861,209 @@ ghostty_restore_available() {
   [[ -d ${LANJUMP_GHOSTTY_APP:-/Applications/Ghostty.app} ]]
 }
 
+terminal_restore_available() {
+  local_keyboard || return 1
+  [[ -d /System/Applications/Utilities/Terminal.app || -d /Applications/Utilities/Terminal.app ]]
+}
+
 ghostty_attach_bin() {
   print -r -- "${LANJUMP_ATTACH_BIN:-$HOME/.local/bin/lanjump}"
 }
 
+ghostty_attach_helper() {
+  print -r -- "${LANJUMP_GHOSTTY_ATTACH:-$HOME/Library/Application Support/lanjump/lanjump-ghostty-attach}"
+}
+
+attach_spec_for() {
+  local name=$1 host=${LANJUMP_ATTACH_HOST:-}
+  if [[ -n $host && $host != local ]]; then
+    print -r -- "${host}:${name}"
+  else
+    print -r -- "$name"
+  fi
+}
+
+attach_command_for() {
+  local name=$1 spec
+  spec=$(attach_spec_for "$name")
+  if (( attach_shell_only )); then
+    print -r -- "$(ghostty_attach_bin) attach --shell $spec"
+  else
+    print -r -- "$(ghostty_attach_bin) attach $spec"
+  fi
+}
+
+workspace_restore_prompt_text() {
+  print -r -- "工作区：${(j:、:)@}"
+  print -r -- "1  打开窗口；能续的续上，其余进空 shell"
+  print -r -- "2  打开窗口，全部只要空 shell"
+  print -r -- "回车  先不打开"
+}
+
+enter_resume_prompt_text() {
+  local short
+  short=$(short_command_name "$1")
+  print -r -- "上次在跑 ${short}。"
+  print -r -- "Enter  续上    s  只要 shell"
+}
+
 ghostty_restore_prompt_text() {
-  print -r -- "上次占用中的 session：${(j:、:)@}"
-  print -r -- "要在 Ghostty 里各开一个标签并进入吗？（y=是，回车=否）"
+  workspace_restore_prompt_text "$@"
+}
+
+ghostty_cfg_lines() {
+  local name=$1 cmd cwd
+  # Ghostty on macOS runs command via `login … bash -c 'exec -l <command>'`.
+  # `direct:` is config-file only and becomes a literal path; spaces in
+  # Application Support also split. Use ~/.local/bin/lanjump (no spaces).
+  cmd=$(attach_command_for "$name")
+  cwd=${snap_cwd[$name]:-}
+  print -r -- '  set cfg to new surface configuration'
+  print -r -- "  set command of cfg to \"${cmd}\""
+  if [[ -n $cwd ]]; then
+    print -r -- "  set initial working directory of cfg to \"${cwd}\""
+  fi
+  print -r -- '  set wait after command of cfg to true'
 }
 
 ghostty_osascript_for_sessions() {
-  local bin first n
+  local first n
   (( $# )) || return 1
-  bin=$(ghostty_attach_bin)
   first=$1
   shift
-  # Ghostty `direct:` / `shell:` prefixes leave an empty 👻 window and never
-  # attach. A command with arguments is run via /bin/sh -c, which does attach.
   print -r -- 'tell application "Ghostty"'
-  print -r -- '  activate'
-  print -r -- '  set cfg to new surface configuration'
-  print -r -- "  set command of cfg to \"${bin} attach ${first}\""
-  print -r -- '  set wait after command of cfg to true'
+  if (( ghostty_close_others )); then
+    print -r -- '  set preexisting to {}'
+    print -r -- '  try'
+    print -r -- '    if (count of windows) > 0 then set preexisting to (id of every window) as list'
+    print -r -- '  end try'
+  fi
+  ghostty_cfg_lines "$first"
   print -r -- '  set win to new window with configuration cfg'
   for n in "$@"; do
-    print -r -- '  set cfg to new surface configuration'
-    print -r -- "  set command of cfg to \"${bin} attach ${n}\""
-    print -r -- '  set wait after command of cfg to true'
+    ghostty_cfg_lines "$n"
     print -r -- '  new tab in win with configuration cfg'
+  done
+  if (( ghostty_close_others )); then
+    print -r -- '  delay 0.3'
+    print -r -- '  repeat with i in preexisting'
+    print -r -- '    try'
+    print -r -- '      close (first window whose id is i)'
+    print -r -- '    end try'
+    print -r -- '  end repeat'
+  fi
+  print -r -- '  activate'
+  print -r -- 'end tell'
+}
+
+terminal_osascript_for_sessions() {
+  local first n cmd
+  (( $# )) || return 1
+  first=$1
+  shift
+  cmd=$(attach_command_for "$first")
+  print -r -- 'tell application "Terminal"'
+  print -r -- '  activate'
+  print -r -- "  set win to do script \"${cmd}\""
+  for n in "$@"; do
+    cmd=$(attach_command_for "$n")
+    print -r -- "  do script \"${cmd}\" in win"
   done
   print -r -- 'end tell'
 }
 
+ghostty_tab_titles() {
+  osascript <<'APPLESCRIPT' 2>/dev/null
+tell application "Ghostty"
+  set out to ""
+  repeat with w in windows
+    repeat with t in tabs of w
+      set out to out & name of t & linefeed
+    end repeat
+  end repeat
+  return out
+end tell
+APPLESCRIPT
+}
+
+ghostty_focus_session() {
+  local name=$1
+  [[ -n $name ]] || return 1
+  /usr/bin/osascript <<APPLESCRIPT >/dev/null 2>&1
+tell application "Ghostty"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if name of t is "$name" or name of w is "$name" then
+        try
+          set selected of t to true
+        end try
+        activate
+        return true
+      end if
+    end repeat
+  end repeat
+  return false
+end tell
+APPLESCRIPT
+}
+
 open_ghostty_session_tabs() {
+  local n titles err
+  local -a todo
   (( $# )) || return 0
-  ghostty_osascript_for_sessions "$@" | osascript
+  ghostty_close_others=0
+  if ! pgrep -f '/Ghostty.app/Contents/MacOS/ghostty' >/dev/null 2>&1; then
+    ghostty_close_others=1
+  fi
+  titles=
+  if (( ! ghostty_close_others )); then
+    titles=$(ghostty_tab_titles) || titles=
+  fi
+  todo=()
+  for n in "$@"; do
+    if session_has_live_client "$n" && [[ -n $titles && ( $titles == *$'\n'"$n"$'\n'* || $titles == "$n"$'\n'* || $titles == *$'\n'"$n" || $titles == "$n" ) ]]; then
+      ghostty_focus_session "$n" || true
+      continue
+    fi
+    todo+=("$n")
+  done
+  (( ${#todo} )) || return 0
+  err=$(ghostty_osascript_for_sessions "${todo[@]}" | /usr/bin/osascript 2>&1) || {
+    print -u2 "无法打开 Ghostty${err:+：${err}}"
+    return 1
+  }
+  if (( ghostty_close_others )); then
+    /usr/bin/osascript <<'APPLESCRIPT' 2>/dev/null || true
+tell application "System Events"
+  tell process "Ghostty"
+    repeat with w in windows
+      try
+        if name of w is "~" then
+          perform action "AXPress" of (first button of w whose subrole is "AXCloseButton")
+        end if
+      end try
+    end repeat
+  end tell
+end tell
+APPLESCRIPT
+  fi
+}
+
+open_terminal_session_tabs() {
+  (( $# )) || return 0
+  terminal_osascript_for_sessions "$@" | osascript
+}
+
+open_workspace_tabs() {
+  (( $# )) || return 0
+  if ghostty_restore_available; then
+    open_ghostty_session_tabs "$@" || print -u2 "无法打开 Ghostty 标签。"
+  elif terminal_restore_available; then
+    open_terminal_session_tabs "$@" || print -u2 "无法打开终端标签。"
+  else
+    print -u2 "没有可用的本机终端来打开窗口。"
+    return 1
+  fi
 }
 
 maybe_restore_sessions() {
@@ -1322,24 +2076,32 @@ maybe_restore_sessions() {
     did_restore=1
   fi
   if tmux_server_running; then
+    tmux_install_snapshot_hooks
     ensure_restore_token
-    if (( ! did_restore )); then
-      snapshot_live_sessions
-    fi
+    snapshot_live_sessions
   fi
   (( did_restore )) || return 0
   collect_restore_names
-  collect_ghostty_session_names
-  if (( ${#ghostty_names} )) && ghostty_restore_available; then
-    local ans
-    print
-    ghostty_restore_prompt_text "${ghostty_names[@]}"
-    print -n "> "
-    read -r ans || ans=
-    if [[ $ans == y || $ans == Y ]]; then
-      open_ghostty_session_tabs "${ghostty_names[@]}" || \
-        print -u2 "无法打开 Ghostty 标签。"
-    fi
+  if { ghostty_restore_available || terminal_restore_available }; then
+    local n
+    prompt_restore_windows
+    case ${restore_pick_action:-skip} in
+      resume)
+        attach_shell_only=0
+        for n in "${ghostty_names[@]}"; do
+          maybe_resume_last_command "$n"
+        done
+        open_workspace_tabs "${ghostty_names[@]}"
+        ;;
+      shell)
+        attach_shell_only=1
+        for n in "${ghostty_names[@]}"; do
+          ensure_session_cwd "$n"
+        done
+        open_workspace_tabs "${ghostty_names[@]}"
+        attach_shell_only=0
+        ;;
+    esac
   fi
 }
 
@@ -1448,6 +2210,7 @@ load_items() {
       items_cmd+=("$cmd")
       items_activity+=("${f[1]}")
       items_pinned+=("$pin")    done
+    snapshot_live_sessions
   fi
 
   if [[ $HAS_TMUX -eq 1 ]]; then
@@ -1918,11 +2681,7 @@ activate() {
   case ${items_kind[$i]} in
     session)
       [[ $HAS_TMUX -eq 1 ]] || return
-      mark_snapshot_occupied "${items_id[$i]}"
-      restore_tty
-      print
-      tmux_tty attach-session -t "=${items_id[$i]}"
-      snapshot_live_sessions
+      attach_named_session "${items_id[$i]}" 1
       setup_tty
       load_items
       draw
@@ -2005,6 +2764,7 @@ prompt_new() {
       add_pin_record "$created" "$PWD" ""
       tmux_set_pinned "$created" 1
     fi
+    mark_snapshot_occupied "$created"
     tmux_tty attach-session -t "=$created"
   fi
   setup_tty
@@ -2134,19 +2894,154 @@ if [[ ${1:-} == --pick-selftest ]]; then
   exit $?
 fi
 
-if [[ ${1:-} == --attach ]]; then
+print_workspace_names() {
+  load_pinned_sessions
+  load_session_snapshot
+  collect_restore_names
+  collect_ghostty_session_names
+  local n
+  for n in "${ghostty_names[@]}"; do
+    print -r -- "$n"
+  done
+}
+
+print_pinned_names() {
+  load_pinned_sessions
+  local n
+  for n in "${pinned_names[@]}"; do
+    [[ -n $n ]] || continue
+    numeric_session_name "$n" && continue
+    print -r -- "$n"
+  done
+}
+
+print_last_name() {
+  local n
+  n=$(read_last_session_name) && { print -r -- "$n"; return 0 }
+  load_session_snapshot
+  (( ${#snap_names} )) || return 1
+  print -r -- "${snap_names[-1]}"
+}
+
+if [[ ${1:-} == --snapshot ]]; then
+  run_session_snapshot
+  exit 0
+fi
+if [[ ${1:-} == --install-hooks ]]; then
+  tmux_install_snapshot_hooks
+  exit 0
+fi
+
+if [[ ${1:-} == --print-workspace ]]; then
+  print_workspace_names
+  exit 0
+fi
+if [[ ${1:-} == --print-pinned ]]; then
+  print_pinned_names
+  exit 0
+fi
+if [[ ${1:-} == --print-last ]]; then
+  print_last_name || exit 1
+  exit 0
+fi
+
+if [[ ${1:-} == --has-session ]]; then
+  name=${2:-}
+  [[ -n $name ]] || exit 1
+  [[ $HAS_TMUX -eq 1 ]] || exit 1
+  tmuxx has-session -t "=$name" 2>/dev/null
+  exit $?
+fi
+
+if [[ ${1:-} == --pin-session ]]; then
+  name=${2:-}
+  [[ -n $name ]] || exit 1
+  load_pinned_sessions
+  load_session_snapshot
+  cwd=$(resolve_session_cwd "$name")
+  add_pin_record "$name" "${cwd:-$PWD}" ""
+  tmux_set_pinned "$name" 1
+  exit 0
+fi
+
+if [[ ${1:-} == --new-session ]]; then
   name=${2:-}
   if [[ -z $name ]]; then
-    print -u2 "用法：lanjump attach <session>"
+    print -u2 "用法：lanjump go <session>"
     exit 1
   fi
   if [[ $HAS_TMUX -ne 1 ]]; then
     print -u2 "这台机器上没有 tmux。"
     exit 1
   fi
+  if tmuxx has-session -t "=$name" 2>/dev/null; then
+    exit 0
+  fi
+  load_pinned_sessions
+  load_session_snapshot
+  cwd=$(resolve_session_cwd "$name")
+  if [[ -n $cwd ]]; then
+    tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || tmuxx new-session -d -s "$name" 2>/dev/null || exit 1
+  else
+    tmuxx new-session -d -s "$name" 2>/dev/null || exit 1
+  fi
   mark_snapshot_occupied "$name"
-  tmux_tty attach-session -t "=$name"
+  exit 0
+fi
+
+if [[ ${1:-} == --open-tabs ]]; then
+  shift
+  attach_shell_only=0
+  names=()
+  while (( $# )); do
+    case $1 in
+      --shell) attach_shell_only=1 ;;
+      *) names+=("$1") ;;
+    esac
+    shift
+  done
+  load_pinned_sessions
+  load_session_snapshot
+  if (( ! attach_shell_only )); then
+    for n in "${names[@]}"; do
+      maybe_resume_last_command "$n"
+    done
+  fi
+  open_workspace_tabs "${names[@]}"
   exit $?
+fi
+
+if [[ ${1:-} == --attach ]]; then
+  shift
+  attach_shell_only=0
+  name=
+  while (( $# )); do
+    case $1 in
+      --shell) attach_shell_only=1 ;;
+      *) name=$1 ;;
+    esac
+    shift
+  done
+  if [[ -z $name ]]; then
+    print -u2 "用法：lanjump attach [--shell] <session>"
+    exit 1
+  fi
+  if [[ $HAS_TMUX -ne 1 ]]; then
+    print -u2 "这台机器上没有 tmux。"
+    exit 1
+  fi
+  load_session_snapshot
+  mark_snapshot_occupied "$name"
+  remember_last_session "$name"
+  maybe_resume_last_command "$name"
+  tmux_prepare_color
+  tmux_prepare_keys
+  keys=
+  if local_keyboard && keys=$(keys_bin); then
+    exec "$keys" "$TMUX_BIN" attach-session -t "=$name"
+  else
+    exec "$TMUX_BIN" attach-session -t "=$name"
+  fi
 fi
 
 maybe_restore_sessions

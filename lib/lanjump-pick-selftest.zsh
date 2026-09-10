@@ -6,7 +6,8 @@
 # session_delete_needs_pin_warning, pin_delete_warning_text,
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
-# ghostty_restore_available, ghostty_osascript_for_sessions.
+# ghostty_restore_available, ghostty_osascript_for_sessions,
+# workspace_restore_prompt_text, short_command_name, useful_summary.
 
 pick_selftest() {
   local -i fails=0
@@ -900,6 +901,22 @@ pick_selftest() {
   expect restore/collect-names 'missing still-live lanjump sysmtn' "${restore_names[*]}"
   expect restore/collect-cwd-occupied /proj/lanjump "${restore_cwd[lanjump]}"
   expect restore/collect-cwd-pinned /tmp/missing-cwd "${restore_cwd[missing]}"
+  snap_attached=()
+  snap_attached[lanjump]=$EPOCHSECONDS
+  snap_attached[sysmtn]=$((EPOCHSECONDS - 200000))
+  collect_open_window_names
+  expect open/window-names 'missing still-live lanjump' "${open_window_names[*]}"
+  snap_names+=(bmx-ae65d23f)
+  snap_attached[bmx-ae65d23f]=$EPOCHSECONDS
+  snap_workspace[bmx-ae65d23f]=1
+  collect_open_window_names
+  if [[ ${open_window_names[(Ie)bmx-ae65d23f]} -ne 0 ]]; then
+    print -u2 "FAIL open/window-names leaked botmux got=${open_window_names[*]}"
+    (( fails++ ))
+  fi
+  build_restore_pick
+  expect open/pick-first-header 常驻 "${restore_pick_name[1]}"
+  expect open/pick-pin-item missing "${restore_pick_name[2]}"
 
   : >"$tmux_log"
   tmuxx() {
@@ -933,13 +950,11 @@ pick_selftest() {
     (( fails++ ))
   fi
 
-  LANJUMP_BOOT_ID=boot1
-  stamp_boot= stamp_token=
-  : >"$HOME/Library/Application Support/lanjump/restore-stamp"
   tmuxx() {
     print -r -- "$*" >>"$tmux_log"
     case $1 in
       list-sessions) return 1 ;;
+      has-session) return 1 ;;
       *) return 0 ;;
     esac
   }
@@ -951,51 +966,31 @@ pick_selftest() {
   tmuxx() {
     case $1 in
       list-sessions) return 0 ;;
-      show-environment) return 1 ;;
-      *) return 0 ;;
-    esac
-  }
-  rm -f "$HOME/Library/Application Support/lanjump/restore-stamp"
-  if should_restore_sessions; then
-    print -u2 "FAIL restore/gate first-run live tmux should migrate not restore"
-    (( fails++ ))
-  fi
-
-  print -r -- $'boot boot1\ntoken tok-old\n' >"$HOME/Library/Application Support/lanjump/restore-stamp"
-  tmuxx() {
-    case $1 in
-      list-sessions) return 0 ;;
-      show-environment)
-        print -r -- 'LANJUMP_RESTORE_TOKEN=tok-old'
-        return 0
-        ;;
+      has-session) return 0 ;;
       *) return 0 ;;
     esac
   }
   if should_restore_sessions; then
-    print -u2 "FAIL restore/gate same server should skip"
+    print -u2 "FAIL restore/gate sessions already live should skip"
     (( fails++ ))
   fi
 
   tmuxx() {
     case $1 in
       list-sessions) return 0 ;;
-      show-environment)
-        print -r -- 'LANJUMP_RESTORE_TOKEN=tok-new'
-        return 0
-        ;;
+      has-session) return 1 ;;
       *) return 0 ;;
     esac
   }
   if ! should_restore_sessions; then
-    print -u2 "FAIL restore/gate new tmux server should restore"
+    print -u2 "FAIL restore/gate server up but sessions missing should restore"
     (( fails++ ))
   fi
 
-  LANJUMP_BOOT_ID=boot2
   tmuxx() {
     case $1 in
       list-sessions) return 1 ;;
+      has-session) return 1 ;;
       *) return 0 ;;
     esac
   }
@@ -1017,9 +1012,8 @@ pick_selftest() {
     (( fails++ ))
   fi
   unset SSH_CONNECTION
-  expect ghostty/prompt '上次占用中的 session：lanjump、sysmtn
-要在 Ghostty 里各开一个标签并进入吗？（y=是，回车=否）' "$(ghostty_restore_prompt_text lanjump sysmtn)"
-  LANJUMP_ATTACH_BIN=/opt/lanjump/bin/lanjump
+  expect ghostty/prompt $'工作区：lanjump、sysmtn\n1  打开窗口；能续的续上，其余进空 shell\n2  打开窗口，全部只要空 shell\n回车  先不打开' "$(workspace_restore_prompt_text lanjump sysmtn)"
+  LANJUMP_ATTACH_BIN=/Users/mac/.local/bin/lanjump
   local script
   script=$(ghostty_osascript_for_sessions lanjump sysmtn)
   if [[ $script != *'new window'* ]]; then
@@ -1030,16 +1024,343 @@ pick_selftest() {
     print -u2 "FAIL ghostty/script missing new tab got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script == *direct:* || $script == *shell:* ]]; then
-    print -u2 "FAIL ghostty/script used direct:/shell: prefix which Ghostty does not attach with got=$(printf %q "$script")"
+  if [[ $script == *direct:* ]]; then
+    print -u2 "FAIL ghostty/script used direct: which macOS Ghostty passes to bash got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'/opt/lanjump/bin/lanjump attach lanjump'* ]]; then
+  if [[ $script != *'/Users/mac/.local/bin/lanjump attach lanjump'* ]]; then
     print -u2 "FAIL ghostty/script missing attach lanjump got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'/opt/lanjump/bin/lanjump attach sysmtn'* ]]; then
+  if [[ $script != *'/Users/mac/.local/bin/lanjump attach sysmtn'* ]]; then
     print -u2 "FAIL ghostty/script missing attach sysmtn got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+
+  if pane_is_shell ''; then
+    :
+  else
+    print -u2 "FAIL shell/empty should count as idle shell"
+    (( fails++ ))
+  fi
+  expect cmd/short-grok grok "$(short_command_name grok-1.0.24-mac)"
+  expect cmd/short-path grok "$(short_command_name /Users/mac/.grok/bin/grok)"
+  expect cmd/short-zsh zsh "$(short_command_name zsh)"
+  expect summary/cmd grok "$(useful_summary '对话标题 - grok' grok-1.0.24-mac grok-1.0.24-mac)"
+  expect summary/zsh zsh "$(useful_summary '' zsh zsh)"
+  if last_command_resumable grok-1.0.24-mac; then
+    :
+  else
+    print -u2 "FAIL resume/grok should be resumable"
+    (( fails++ ))
+  fi
+  if last_command_resumable zsh; then
+    print -u2 "FAIL resume/zsh should not be resumable"
+    (( fails++ ))
+  fi
+  if last_command_resumable codex; then
+    print -u2 "FAIL resume/codex v1 should not be resumable"
+    (( fails++ ))
+  fi
+  LANJUMP_GROK_BIN=grok
+  expect resume/line-project 'grok -c' "$(resume_line_for grok-1.0.24-mac /proj/lanjump)"
+  expect resume/line-home 'grok --resume' "$(resume_line_for grok-1.0.24-mac "$HOME")"
+  expect resume/line-tilde 'grok --resume' "$(resume_line_for grok '~')"
+  mkdir -p "$HOME/Documents/projects/inferme"
+  snap_cwd[inferme]=$HOME
+  pinned_cwd[inferme]=$HOME
+  expect resolve/named-project "$HOME/Documents/projects/inferme" "$(resolve_session_cwd inferme "$HOME")"
+  expect resolve/keep-explicit /proj/keep "$(resolve_session_cwd nosuch /proj/keep)"
+  expect enter/prompt $'上次在跑 grok。\nEnter  续上    s  只要 shell' "$(enter_resume_prompt_text grok-1.0.24-mac)"
+
+  snap_names=(keep drop)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_cwd[keep]=/proj/keep
+  snap_cwd[drop]=/proj/drop
+  snap_occupied[keep]=0
+  snap_occupied[drop]=0
+  snap_workspace[keep]=1
+  snap_workspace[drop]=0
+  snap_cmd[keep]=grok-1.0.24-mac
+  snap_cmd[drop]=zsh
+  save_session_snapshot
+  tmuxx() {
+    case $1 in
+      list-sessions)
+        print -r -- $'keep\x1f/proj/keep\x1f0\x1fzsh'
+        print -r -- $'drop\x1f/proj/drop\x1f0\x1fzsh'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  snapshot_live_sessions
+  expect snap/ws-keep 1 "${snap_workspace[keep]}"
+  expect snap/ws-drop 0 "${snap_workspace[drop]}"
+  expect snap/cmd-keep-grok grok-1.0.24-mac "${snap_cmd[keep]}"
+  tmuxx() {
+    case $1 in
+      list-sessions)
+        print -r -- $'keep\x1f/proj/keep\x1f0\x1fcodex'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  snapshot_live_sessions
+  expect snap/cmd-follow-codex codex "${snap_cmd[keep]}"
+  : >"$tmux_log"
+  LANJUMP_PICK_BIN=/opt/lanjump/lanjump-pick.zsh
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    return 0
+  }
+  tmux_install_snapshot_hooks
+  hook_log=$(<"$tmux_log")
+  if [[ $hook_log != *'set-hook -g client-detached[91]'* ]]; then
+    print -u2 "FAIL snap/hook missing client-detached got=$(printf %q "$hook_log")"
+    (( fails++ ))
+  fi
+  if [[ $hook_log == *'set-hook -g client-attached[91]'* ]]; then
+    print -u2 "FAIL snap/hook should not install client-attached got=$(printf %q "$hook_log")"
+    (( fails++ ))
+  fi
+  if [[ $hook_log != *'--snapshot'* ]]; then
+    print -u2 "FAIL snap/hook missing --snapshot got=$(printf %q "$hook_log")"
+    (( fails++ ))
+  fi
+  if [[ $hook_log != *'status-right'* ]]; then
+    print -u2 "FAIL snap/hook missing status-right tick got=$(printf %q "$hook_log")"
+    (( fails++ ))
+  fi
+  if pick_needs_tty --snapshot; then
+    print -u2 "FAIL snap/tty --snapshot should not need a tty"
+    (( fails++ ))
+  fi
+  tmuxx() {
+    case $1 in
+      list-sessions)
+        print -r -- $'keep\x1f/proj/keep\x1f0\x1fzsh'
+        print -r -- $'test\x1f/tmp/test\x1f0\x1fzsh'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  snapshot_live_sessions
+  expect snap/new-named-ws 1 "${snap_workspace[test]}"
+  if [[ ${snap_attached[test]:-0} == 0 ]]; then
+    print -u2 "FAIL snap/new-named-attached should be set"
+    (( fails++ ))
+  fi
+  collect_restore_names
+  if [[ ${restore_names[(Ie)test]} -eq 0 ]]; then
+    print -u2 "FAIL snap/new-named should be restored got=${restore_names[*]}"
+    (( fails++ ))
+  fi
+  collect_open_window_names
+  if [[ ${open_window_names[(Ie)test]} -eq 0 ]]; then
+    print -u2 "FAIL snap/new-named should be in open-window list got=${open_window_names[*]}"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  snap_cmd[idle-grok]=grok-1.0.24-mac
+  snap_cwd[idle-grok]=/proj/lanjump
+  attach_shell_only=0
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- "$HOME"
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes) print -r -- '%1'; return 0 ;;
+      respawn-pane|send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command idle-grok
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'respawn-pane -t %1 -k'* ]]; then
+    print -u2 "FAIL resume/send missing respawn-pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'grok -c'* ]]; then
+    print -u2 "FAIL resume/send missing grok -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message) print -r -- grok-1.0.24-mac; return 0 ;;
+      send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command idle-grok
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'respawn-pane'* || $restore_log == *'grok -c'* || $restore_log == *'grok --resume'* ]]; then
+    print -u2 "FAIL resume/running-grok still sent command got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  attach_shell_only=1
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message) print -r -- zsh; return 0 ;;
+      send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command idle-grok
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'grok -c'* || $restore_log == *'grok --resume'* ]]; then
+    print -u2 "FAIL resume/shell-only still sent grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  attach_shell_only=0
+
+  : >"$tmux_log"
+  snap_cmd[home-grok]=grok-1.0.24-mac
+  snap_cwd[home-grok]=$HOME
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- "$HOME"
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes) print -r -- '%1'; return 0 ;;
+      respawn-pane|send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command home-grok
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'grok --resume'* ]]; then
+    print -u2 "FAIL resume/home missing grok --resume got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'grok -c'* ]]; then
+    print -u2 "FAIL resume/home used grok -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  snap_cmd[inferme]=grok-1.0.24-mac
+  snap_cwd[inferme]=$HOME
+  pinned_cwd[inferme]=$HOME
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- "$HOME"
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes) print -r -- '%1'; return 0 ;;
+      respawn-pane|send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command inferme
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *"-c $HOME/Documents/projects/inferme"* ]]; then
+    print -u2 "FAIL resume/named-project missing respawn -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'grok -c'* ]]; then
+    print -u2 "FAIL resume/named-project missing grok -c after cd got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  snap_cmd[wrong-cwd]=grok-1.0.24-mac
+  snap_cwd[wrong-cwd]=/proj/keep
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- "$HOME"
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes) print -r -- '%1'; return 0 ;;
+      respawn-pane|send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command wrong-cwd
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'-c /proj/keep'* ]]; then
+    print -u2 "FAIL resume/cd missing respawn -c to project got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'grok -c'* ]]; then
+    print -u2 "FAIL resume/cd-project missing grok -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  ghostty_close_others=1
+  script=$(ghostty_osascript_for_sessions lanjump)
+  if [[ $script != *'preexisting'* || $script != *'close (first window whose id is i)'* ]]; then
+    print -u2 "FAIL ghostty/close-others missing close extra windows got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script == *'saving no'* ]]; then
+    print -u2 "FAIL ghostty/close-others uses saving no which Ghostty rejects got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  print -r -- "$script" >"$testhome/ghostty.applescript"
+  if ! /usr/bin/osacompile -o "$testhome/ghostty.scpt" "$testhome/ghostty.applescript" 2>"$testhome/osacompile.err"; then
+    print -u2 "FAIL ghostty/script-compile $(<"$testhome/osacompile.err") got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  ghostty_close_others=0
+
+  attach_shell_only=1
+  script=$(ghostty_osascript_for_sessions lanjump)
+  if [[ $script != *'attach --shell lanjump'* ]]; then
+    print -u2 "FAIL ghostty/script-shell missing --shell got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  attach_shell_only=0
+
+  tmuxx() {
+    case $1 in
+      list-clients)
+        [[ $3 == '=alive' ]] && { print -r -- /dev/ttys001; return 0 }
+        return 1
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  if ! session_has_live_client alive; then
+    print -u2 "FAIL client/alive should count as live"
+    (( fails++ ))
+  fi
+  if session_has_live_client dead; then
+    print -u2 "FAIL client/dead should not count as live"
     (( fails++ ))
   fi
 
