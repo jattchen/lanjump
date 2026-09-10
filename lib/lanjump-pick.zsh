@@ -486,6 +486,22 @@ resume_line_for() {
   fi
 }
 
+# tmux session env often has no PATH. Respawned grok then cannot find `sh`,
+# so Grok SessionStart hooks fail with ENOENT. Keep a unix baseline.
+resume_pane_path() {
+  local p=${PATH:-}
+  case :$p: in
+    *:/bin:*|*:/usr/bin:*) print -r -- "$p" ;;
+    *)
+      if [[ -n $p ]]; then
+        print -r -- "$p:/usr/bin:/bin:/usr/sbin:/sbin"
+      else
+        print -r -- '/usr/bin:/bin:/usr/sbin:/sbin'
+      fi
+      ;;
+  esac
+}
+
 useful_summary() {
   local title=$1 cmd=$2 wname=$3
   local short
@@ -1645,7 +1661,7 @@ session_first_pane() {
 }
 
 maybe_resume_last_command() {
-  local name=$1 live last line want path pane
+  local name=$1 live last line want pane_cwd pane
   local -a args
   [[ -n $name ]] || return 0
   live=$(tmuxx display-message -p -t "=$name" '#{pane_current_command}' 2>/dev/null || true)
@@ -1653,20 +1669,20 @@ maybe_resume_last_command() {
     print -u2 "lanjump-resume enter name=$name live=${live:-empty}"
   fi
   pane_is_shell "$live" || return 0
-  path=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
-  want=$(resolve_session_cwd "$name" "$path")
+  pane_cwd=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
+  want=$(resolve_session_cwd "$name" "$pane_cwd")
   (( attach_shell_only )) && {
-    if [[ -n $want && $path != "$want" ]]; then
+    if [[ -n $want && $pane_cwd != "$want" ]]; then
       tmuxx send-keys -t "=$name" -- "cd ${(q)want}" Enter 2>/dev/null || true
     fi
     return 0
   }
   last=${snap_cmd[$name]:-}
-  line=$(resume_line_for "$last" "${want:-$path}") || {
+  line=$(resume_line_for "$last" "${want:-$pane_cwd}") || {
     if [[ -n ${LANJUMP_DEBUG:-} ]]; then
       print -u2 "lanjump-resume skip name=$name last=$last want=$want"
     fi
-    if [[ -n $want && $path != "$want" ]]; then
+    if [[ -n $want && $pane_cwd != "$want" ]]; then
       tmuxx send-keys -t "=$name" -- "cd ${(q)want}" Enter 2>/dev/null || true
     fi
     return 0
@@ -1675,6 +1691,7 @@ maybe_resume_last_command() {
   [[ -n $pane ]] || pane="=$name:0.0"
   args=(respawn-pane -t "$pane" -k)
   [[ -n $want ]] && args+=(-c "$want")
+  args+=(-e "PATH=$(resume_pane_path)")
   args+=("${(z)line}")
   if [[ -n ${LANJUMP_DEBUG:-} ]]; then
     print -u2 "lanjump-resume ${args[*]}"

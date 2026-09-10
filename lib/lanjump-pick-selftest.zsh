@@ -1066,6 +1066,9 @@ pick_selftest() {
   expect resume/line-project 'grok -c' "$(resume_line_for grok-1.0.24-mac /proj/lanjump)"
   expect resume/line-home 'grok --resume' "$(resume_line_for grok-1.0.24-mac "$HOME")"
   expect resume/line-tilde 'grok --resume' "$(resume_line_for grok '~')"
+  expect resume/path-keep '/opt/x/bin:/bin' "$(PATH='/opt/x/bin:/bin' resume_pane_path)"
+  expect resume/path-fill '/opt/lanjump-nopath:/usr/bin:/bin:/usr/sbin:/sbin' "$(PATH='/opt/lanjump-nopath' resume_pane_path)"
+  expect resume/path-empty '/usr/bin:/bin:/usr/sbin:/sbin' "$(PATH='' resume_pane_path)"
   mkdir -p "$HOME/Documents/projects/inferme"
   snap_cwd[inferme]=$HOME
   pinned_cwd[inferme]=$HOME
@@ -1195,6 +1198,21 @@ pick_selftest() {
   fi
   if [[ $restore_log != *'grok -c'* ]]; then
     print -u2 "FAIL resume/send missing grok -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'-e PATH='* ]]; then
+    print -u2 "FAIL resume/path missing -e PATH got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'/bin'* ]]; then
+    print -u2 "FAIL resume/path missing /bin got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  PATH=/opt/lanjump-nopath maybe_resume_last_command idle-grok
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'-e PATH=/opt/lanjump-nopath:/usr/bin:/bin:/usr/sbin:/sbin '* ]]; then
+    print -u2 "FAIL resume/path-fill-argv got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
   : >"$tmux_log"
