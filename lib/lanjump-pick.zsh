@@ -42,7 +42,8 @@ fi
 typeset -a items_kind items_id items_name items_att items_time items_path items_summary items_cmd items_activity items_pinned
 typeset -a all_kind all_id all_name all_att all_time all_path all_summary all_cmd all_activity all_pinned
 typeset -a preview_lines
-typeset -A preview_cache
+preview_heading=
+typeset -A preview_cache preview_cache_heading
 typeset -A session_titles
 cursor=1
 # time = all by last activity desc; attached = 占用中 first, idle after, each time-desc.
@@ -72,8 +73,8 @@ PENDING_KEY=""
 digit_wait=0.5
 preview_defer=0
 preview_wait=0.08
-preview_max_lines=10
-typeset -i preview_on=1 preview_band=6
+preview_max_lines=12
+typeset -i preview_on=1 preview_band=8
 w_name=4 w_status=6 w_time=11 w_summary=4 w_path=4
 show_summary=1
 show_path=1
@@ -2477,7 +2478,7 @@ load_items() {
   items_summary=()
   items_cmd=()
   items_activity=()
-  items_pinned=()  preview_cache=()
+  items_pinned=()  preview_cache=() preview_cache_heading=()
   session_titles=()
   raw=()
 
@@ -2603,6 +2604,8 @@ preview_line_is_status() {
   [[ $line == [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]* ]] && return 0
   [[ $line == (#i)*[[:space:]]-[[:space:]]responding[[:space:]]-* ]] && return 0
   [[ $line == (#i)*[[:space:]]-[[:space:]]thinking[[:space:]]-* ]] && return 0
+  [[ $line == (#i)*waiting[[:space:]]for[[:space:]]response* ]] && return 0
+  [[ $line == (#i)worked[[:space:]]for[[:space:]][0-9]* ]] && return 0
   [[ $line == (#i)*compactions[[:space:]]remaining* ]] && return 0
   return 1
 }
@@ -2644,16 +2647,21 @@ preview_line_is_tool() {
 }
 
 preview_line_is_chrome() {
-  local line=$1 stripped rest
+  local line=$1 stripped rest arrows
   line="${line%"${line##*[![:space:]]}"}"
+  line="${line#"${line%%[![:space:]]*}"}"
   stripped=${line//[[:space:]]/}
   [[ -z $stripped ]] && return 0
   [[ $stripped == █## ]] && return 0
+  arrows=${line//[▲▼[:space:]]/}
+  [[ -z $arrows && $line == *[▲▼]* ]] && return 0
   rest=$stripped
-  rest=${rest//[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬╭╮╯╰▶▷▸•·]/}
+  rest=${rest//[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬╭╮╯╰▶▷▸•·▲▼]/}
   rest=${rest//[❯>]/}
   rest=${rest//[[:punct:]]/}
   [[ -z $rest ]] && return 0
+  [[ $line == *⎇* ]] && return 0
+  [[ $line == *[0-9]K[[:space:]]/[[:space:]][0-9]#K* ]] && return 0
   preview_line_is_bare_prompt "$line" && return 0
   preview_is_product_title "$line" && return 0
   preview_line_is_model "$line" && return 0
@@ -2662,16 +2670,61 @@ preview_line_is_chrome() {
   return 1
 }
 
+preview_strip_grok_line() {
+  local line=$1
+  line="${line%"${line##*[![:space:]]}"}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  while [[ $line == *█ ]]; do
+    line=${line%█}
+  done
+  line="${line%"${line##*[![:space:]]}"}"
+  if [[ $line =~ '^(.*)[[:space:]]+[0-9]{1,2}:[0-9]{2}[[:space:]]*(AM|PM|am|pm)[[:space:]]*$' ]]; then
+    line=$match[1]
+    line="${line%"${line##*[![:space:]]}"}"
+  fi
+  if [[ $line == *'[Dashboard]'* ]]; then
+    line=${line%%[[:space:]]#\[Dashboard\]*}
+    line="${line%"${line##*[![:space:]]}"}"
+  fi
+  print -r -- "$line"
+}
+
+preview_clean_title() {
+  local t=$1
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  [[ -n $t ]] || return 1
+  t=${t##[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏[:space:]]#}
+  t="${t#"${t%%[![:space:]]*}"}"
+  [[ $t == '- '* ]] && t=${t#- }
+  t="${t#"${t%%[![:space:]]*}"}"
+  if [[ $t == (#i)waiting[[:space:]]for[[:space:]]response* || $t == (#i)responding* || $t == (#i)thinking* ]]; then
+    if [[ $t == *' - '* ]]; then
+      t=${t#* - }
+    else
+      return 1
+    fi
+  fi
+  if [[ $t == (#i)*' - grok-'* ]]; then
+    t=${t% - grok-*}
+  elif [[ $t == (#i)*' - grok' ]]; then
+    t=${t%[ ]-[ ][Gg]rok}
+  fi
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  [[ -n $t ]] || return 1
+  preview_is_product_title "$t" && return 1
+  preview_line_is_status "$t" && return 1
+  print -r -- "$t"
+}
+
 preview_useful_title() {
-  local title=$1 name=$2 cmd=$3 wname=${4:-} short
-  title="${title#"${title%%[![:space:]]*}"}"
-  title="${title%"${title##*[![:space:]]}"}"
-  [[ -n $title ]] || return 1
+  local title=$1 name=$2 cmd=$3 wname=${4:-} short cleaned
+  cleaned=$(preview_clean_title "$title") || return 1
   short=$(short_command_name "$cmd")
-  [[ $title != "$name" && $title != "$cmd" && $title != "$short" ]] || return 1
-  [[ -n $wname && $title == "$wname" ]] && preview_is_product_title "$wname" && return 1
-  preview_is_product_title "$title" && return 1
-  print -r -- "$title"
+  [[ $cleaned != "$name" && $cleaned != "$cmd" && $cleaned != "$short" ]] || return 1
+  [[ -n $wname && $cleaned == "$wname" ]] && preview_is_product_title "$wname" && return 1
+  print -r -- "$cleaned"
 }
 
 preview_conversation_heading() {
@@ -2722,34 +2775,67 @@ preview_keep_useful_from_cap() {
 }
 
 _preview_grok_lines() {
-  local -i max_body=$1
-  local line
-  local -a content
+  local -i max_body=$1 i n u=0 a=0 take
+  local line kind
+  local -a lines tags after
   shift
   picked=()
   (( max_body < 1 )) && return
   for line in "$@"; do
-    line="${line%"${line##*[![:space:]]}"}"
+    line=$(preview_strip_grok_line "$line")
     [[ -n ${line//[[:space:]]/} ]] || continue
     preview_line_is_chrome "$line" && continue
     preview_line_is_bare_prompt "$line" && continue
     preview_line_is_tool "$line" && continue
     preview_line_is_model "$line" && continue
     preview_line_is_status "$line" && continue
+    kind=asst
     if [[ $line == '❯ '* ]]; then
       line=${line#'❯ '}
+      kind=user
     elif [[ $line == '> '* ]]; then
       line=${line#'> '}
+      kind=user
     fi
     line="${line#"${line%%[![:space:]]*}"}"
     [[ -n $line ]] || continue
-    content+=("$line")
+    lines+=("$line")
+    tags+=("$kind")
   done
-  (( ${#content} == 0 )) && return
-  if (( ${#content} > max_body )); then
-    content=("${(@)content[-max_body,-1]}")
+  n=${#lines}
+  (( n == 0 )) && return
+  for (( i = n; i >= 1; i-- )); do
+    [[ ${tags[i]} == user && u -eq 0 ]] && u=$i
+    [[ ${tags[i]} == asst && a -eq 0 ]] && a=$i
+    (( u && a )) && break
+  done
+  if (( u )); then
+    picked+=("${lines[u]}")
+    after=()
+    for (( i = u + 1; i <= n; i++ )); do
+      [[ ${tags[i]} == asst ]] && after+=("${lines[i]}")
+    done
+    if (( ${#after} == 0 )); then
+      for (( i = 1; i < u; i++ )); do
+        [[ ${tags[i]} == asst ]] && after+=("${lines[i]}")
+      done
+    fi
+    take=$(( max_body - 1 ))
+    (( take < 1 )) && take=1
+    if (( ${#after} > take )); then
+      after=("${(@)after[-take,-1]}")
+    fi
+    picked+=("${after[@]}")
+    if (( ${#picked} > max_body )); then
+      picked=("${(@)picked[-max_body,-1]}")
+    fi
+  else
+    if (( n > max_body )); then
+      picked=("${(@)lines[-max_body,-1]}")
+    else
+      picked=("${lines[@]}")
+    fi
   fi
-  picked=("${content[@]}")
 }
 
 preview_grok_lines() {
@@ -2830,6 +2916,7 @@ session_preview_lines() {
   local cap title_line heading
   local -a kept picked
   preview_lines=()
+  preview_heading=
   (( max_lines > preview_max_lines )) && max_lines=$preview_max_lines
   (( max_lines < 1 )) && return
   preview_is_grok "$cmd" && grok=1
@@ -2842,9 +2929,18 @@ session_preview_lines() {
   fi
 
   title_line=$(preview_useful_title "$title" "$name" "$cmd") || title_line=
-  if [[ -z $title_line ]] && preview_is_product_title "$title"; then
+  if (( grok )) && [[ -z $title_line ]]; then
     heading=$(preview_conversation_heading "${kept[@]}") || heading=
-    title_line=$heading
+    title_line=$(preview_useful_title "$heading" "$name" "$cmd") || title_line=
+  fi
+  if (( grok )); then
+    preview_heading=$title_line
+    room=$max_lines
+    (( room > 6 )) && room=6
+    (( room < 1 )) && room=1
+    _preview_grok_lines $room "${kept[@]}"
+    preview_lines=("${picked[@]}")
+    return
   fi
   if [[ -n $title_line && ${#kept} -gt 0 && ${kept[1]} == "$title_line" ]]; then
     if (( ${#kept} == 1 )); then
@@ -2853,17 +2949,11 @@ session_preview_lines() {
       kept=("${(@)kept[2,-1]}")
     fi
   fi
-
   room=$max_lines
   [[ -n $title_line ]] && (( room-- ))
   (( room < 1 )) && room=1
-  if (( grok )); then
-    (( room > 2 )) && room=2
-    _preview_grok_lines $room "${kept[@]}"
-  else
-    (( room > 3 )) && room=3
-    _preview_generic_lines $room "${kept[@]}"
-  fi
+  (( room > 3 )) && room=3
+  _preview_generic_lines $room "${kept[@]}"
   if [[ -n $title_line && ${#picked} -gt 0 && ${picked[1]} == "$title_line" ]]; then
     if (( ${#picked} == 1 )); then
       picked=()
@@ -2881,6 +2971,22 @@ session_preview_lines() {
   else
     preview_lines=("${picked[@]}")
   fi
+}
+
+preview_render_grok() {
+  local name=$1 pane_title=$2 cmd=$3 dump=$4
+  local -a kept picked
+  local heading
+  preview_keep_useful_from_cap "$dump" 1
+  heading=$(preview_useful_title "$pane_title" "$name" "$cmd") || heading=
+  if [[ -z $heading ]]; then
+    heading=$(preview_conversation_heading "${kept[@]}") || heading=
+    heading=$(preview_useful_title "$heading" "$name" "$cmd") || heading=
+  fi
+  _preview_grok_lines 6 "${kept[@]}"
+  print -r -- "预览  ${name}  grok"
+  [[ -n $heading ]] && print -r -- "标题：${heading}"
+  (( ${#picked} )) && print -l -- "${picked[@]}"
 }
 
 # Sticky window of `vis` item rows that keeps `cur` on screen.
@@ -3095,26 +3201,33 @@ draw() {
 
   if (( preview_on )) && [[ ${items_kind[$cursor]} == session ]] && (( draw_remain >= 3 )); then
     local pname psum pmeta pl cache_key
-    local -i pname_w cap_lines
+    local -i pname_w cap_lines grok_prev=0
     draw_emit "" || return
+    preview_is_grok "${items_cmd[$cursor]}" && grok_prev=1
     _fit_right "${items_name[$cursor]}" 20
     pname=$REPLY
-    display_width "$pname"
-    pname_w=REPLY
-    _fit_right "${items_summary[$cursor]}" $(( cols - 10 - pname_w ))
-    psum=$REPLY
-    draw_emit "  ${c_cyan}预览${c_reset}  ${c_bold}${pname}${c_reset}  ${c_dim}${psum}${c_reset}" || return
-    _fit_right "${items_path[$cursor]}  ·  ${items_cmd[$cursor]}" $(( cols - 4 ))
-    pmeta=$REPLY
-    draw_emit "  ${c_dim}${pmeta}${c_reset}" || return
+    if (( grok_prev )); then
+      draw_emit "  ${c_cyan}预览${c_reset}  ${c_bold}${pname}${c_reset}  ${c_dim}grok${c_reset}" || return
+    else
+      display_width "$pname"
+      pname_w=REPLY
+      _fit_right "${items_summary[$cursor]}" $(( cols - 10 - pname_w ))
+      psum=$REPLY
+      draw_emit "  ${c_cyan}预览${c_reset}  ${c_bold}${pname}${c_reset}  ${c_dim}${psum}${c_reset}" || return
+      _fit_right "${items_path[$cursor]}  ·  ${items_cmd[$cursor]}" $(( cols - 4 ))
+      pmeta=$REPLY
+      draw_emit "  ${c_dim}${pmeta}${c_reset}" || return
+    fi
     cap_lines=$draw_remain
     (( cap_lines > preview_max_lines )) && cap_lines=$preview_max_lines
     cache_key="${items_id[$cursor]}"$'\x1f'"${items_activity[$cursor]:-}"
     if [[ -n ${preview_cache[$cache_key]+x} ]]; then
       if [[ -n ${preview_cache[$cache_key]} ]]; then
         preview_lines=("${(@ps:\x1e:)preview_cache[$cache_key]}")
+        preview_heading=${preview_cache_heading[$cache_key]:-}
       else
         preview_lines=()
+        preview_heading=
       fi
     elif (( preview_defer )); then
       draw_emit "  ${c_dim}…${c_reset}" || return
@@ -3122,6 +3235,11 @@ draw() {
     else
       session_preview_lines "${items_id[$cursor]}" $cap_lines "${items_cmd[$cursor]}"
       preview_cache[$cache_key]="${(pj:\x1e:)preview_lines}"
+      preview_cache_heading[$cache_key]=$preview_heading
+    fi
+    if (( grok_prev )) && [[ -n $preview_heading ]]; then
+      _fit_head_tail "标题：${preview_heading}" $(( cols - 4 ))
+      draw_emit "  ${c_bold}${REPLY}${c_reset}" || return
     fi
     for pl in "${preview_lines[@]}"; do
       _fit_head_tail "$pl" $(( cols - 4 ))

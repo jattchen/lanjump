@@ -247,10 +247,11 @@ pick_selftest() {
   : > "$mock_log"
   session_titles[grok-sess]='怎么改预览 - grok'
   session_preview_lines grok-sess 6 grok
-  expect preview/title $'怎么改预览 - grok\n可以丢掉状态条' "${(F)preview_lines}"
+  expect preview/title-heading '怎么改预览' "$preview_heading"
+  expect preview/title '可以丢掉状态条' "${(F)preview_lines}"
   session_titles=()
 
-  expect preview/useful-title '怎么改预览 - grok' "$(preview_useful_title '怎么改预览 - grok' grok-sess grok)"
+  expect preview/useful-title '怎么改预览' "$(preview_useful_title '怎么改预览 - grok' grok-sess grok)"
   expect preview/useful-title-name '' "$(preview_useful_title grok-sess grok-sess grok)"
   expect preview/useful-title-cmd '' "$(preview_useful_title grok grok-sess grok)"
   expect preview/useful-title-tomax '' "$(preview_useful_title ToMax grok-sess grok)"
@@ -276,7 +277,7 @@ pick_selftest() {
   : > "$mock_log"
   session_titles[grok-sess]='怎么改预览 - grok'
   session_preview_lines grok-sess 3 grok
-  expect preview/title-last $'怎么改预览 - grok\nkeep-3\nkeep-4' "${(F)preview_lines}"
+  expect preview/title-last $'keep-2\nkeep-3\nkeep-4' "${(F)preview_lines}"
   session_titles=()
 
   mock_pane=$'ToMax\n────────\n怎么改 tmux 预览\n可以先丢掉状态条\n────────\n>'
@@ -405,6 +406,79 @@ pick_selftest() {
   session_preview_lines grok-sess 6 grok
   expect preview/live-footer-session $'预览要有标题吗\n要，还要最后几行' "${(F)preview_lines}"
   session_titles=()
+
+  preview_line_is_status 'Worked for 4m11s'
+  expect preview/status-worked 0 "$?"
+  preview_line_is_status 'Worked for 1m29s'
+  expect preview/status-worked-short 0 "$?"
+  preview_line_is_status $'⠹ - Waiting for response… - 手机 Shadowrocket 分流兼进家里内网 - grok'
+  expect preview/status-waiting 0 "$?"
+  preview_line_is_chrome '▼'
+  expect preview/chrome-arrow 0 "$?"
+  expect preview/clean-title-suffix '新建 devloop 仓库并规划 LoopX 自主长跑' "$(preview_clean_title '新建 devloop 仓库并规划 LoopX 自主长跑 - grok')"
+  expect preview/clean-title-waiting '手机 Shadowrocket 分流兼进家里内网' "$(preview_clean_title $'⠹ - Waiting for response… - 手机 Shadowrocket 分流兼进家里内网 - grok')"
+
+  local panes dump out
+  panes=/var/folders/hb/21sdw0893vxbvq2wpch2rpxr0000gn/T/grok-goal-2b0ef817ca46/implementer/panes
+  if [[ ! -f $panes/devloop-main.txt || ! -f $panes/sysmtn-main.txt ]]; then
+    print -u2 "FAIL preview/render-dumps missing $panes"
+    (( fails++ ))
+  else
+    dump=$(<"$panes/devloop-main.txt")
+    out=$(preview_render_grok devloop '新建 devloop 仓库并规划 LoopX 自主长跑 - grok' grok-1.0.25-mac "$dump")
+    local scratch=/var/folders/hb/21sdw0893vxbvq2wpch2rpxr0000gn/T/grok-goal-2b0ef817ca46/implementer/preview-render-devloop-sysmtn.txt
+    {
+      print -r -- '=== devloop ==='
+      print -r -- "$out"
+    } > "$scratch"
+    if [[ $out != *'标题：新建 devloop 仓库并规划 LoopX 自主长跑'* ]]; then
+      print -u2 "FAIL preview/render-devloop-title got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out != *开分支改* ]]; then
+      print -u2 "FAIL preview/render-devloop-ask got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'Worked for'* ]]; then
+      print -u2 "FAIL preview/render-devloop-worked got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'grok-1.0.25-mac'* ]]; then
+      print -u2 "FAIL preview/render-devloop-ver got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'~/Documents/projects'* ]]; then
+      print -u2 "FAIL preview/render-devloop-path got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    dump=$(<"$panes/sysmtn-main.txt")
+    out=$(preview_render_grok sysmtn $'⠹ - Waiting for response… - 手机 Shadowrocket 分流兼进家里内网 - grok' grok-1.0.25-mac "$dump")
+    {
+      print -r -- ''
+      print -r -- '=== sysmtn ==='
+      print -r -- "$out"
+    } >> "$scratch"
+    if [[ $out != *'标题：手机 Shadowrocket 分流兼进家里内网'* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-title got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out != *你改哪了* && $out != *Shadowrocket* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-body got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'Waiting for response'* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-waiting got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'11:18 PM'* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-clock got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+    if [[ $out == *'grok-1.0.25-mac'* ]]; then
+      print -u2 "FAIL preview/render-sysmtn-ver got=$(printf %q "$out")"
+      (( fails++ ))
+    fi
+  fi
 
   HAS_TMUX=1
   host_short=testhost
