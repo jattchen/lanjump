@@ -8,7 +8,8 @@
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
-# load_settings, save_settings, cycle_setting, effective_open_target.
+# load_settings, save_settings, cycle_setting, effective_open_target,
+# picker_boot_before_first_draw, picker_boot_after_first_draw.
 
 pick_selftest() {
   local -i fails=0
@@ -1495,6 +1496,76 @@ pick_selftest() {
     print -u2 "FAIL client/dead should not count as live"
     (( fails++ ))
   fi
+
+  expect boot/before-first-draw 'load_settings load_session_filter load_items setup_tty draw' "${picker_boot_before_first_draw_steps[*]-}"
+  expect boot/after-first-draw 'maybe_restore_sessions tmux_prepare_color tmux_prepare_keys' "${picker_boot_after_first_draw_steps[*]-}"
+
+  local -a boot_calls boot_saved
+  boot_save() {
+    local fn
+    for fn in "$@"; do
+      functions -c "$fn" "_boot_orig_${fn}"
+      boot_saved+=("$fn")
+    done
+  }
+  boot_restore() {
+    local fn
+    for fn in "${boot_saved[@]}"; do
+      functions -c "_boot_orig_${fn}" "$fn"
+      unset -f "_boot_orig_${fn}"
+    done
+    boot_saved=()
+  }
+  boot_save load_settings load_session_filter load_items setup_tty draw \
+    maybe_restore_sessions tmux_prepare_color tmux_prepare_keys
+  load_settings() { boot_calls+=(load_settings) }
+  load_session_filter() { boot_calls+=(load_session_filter) }
+  load_items() { boot_calls+=(load_items) }
+  setup_tty() { boot_calls+=(setup_tty) }
+  draw() { boot_calls+=(draw) }
+  maybe_restore_sessions() { boot_calls+=(maybe_restore_sessions) }
+  tmux_prepare_color() { boot_calls+=(tmux_prepare_color) }
+  tmux_prepare_keys() { boot_calls+=(tmux_prepare_keys) }
+
+  boot_calls=()
+  filter_on=1
+  picker_boot_before_first_draw
+  expect boot/before-runs 'load_settings load_session_filter load_items setup_tty draw' "${boot_calls[*]}"
+  expect boot/before-filter-off 0 "$filter_on"
+
+  boot_calls=()
+  items_id=(keep)
+  load_items() { boot_calls+=(load_items); items_id=(keep restored) }
+  picker_boot_after_first_draw
+  expect boot/after-runs-changed 'maybe_restore_sessions tmux_prepare_color tmux_prepare_keys load_items draw' "${boot_calls[*]}"
+
+  boot_calls=()
+  items_id=(keep)
+  load_items() { boot_calls+=(load_items) }
+  picker_boot_after_first_draw
+  expect boot/after-runs-unchanged 'maybe_restore_sessions tmux_prepare_color tmux_prepare_keys load_items' "${boot_calls[*]}"
+
+  stty_orig='saved-tty'
+  maybe_restore_sessions() { boot_calls+=(maybe_restore_sessions); stty_orig=clobbered }
+  boot_calls=()
+  items_id=(keep)
+  picker_boot_after_first_draw
+  expect boot/after-keeps-stty saved-tty "$stty_orig"
+
+  functions -c _boot_orig_load_items load_items
+  load_items() {
+    boot_calls+=(load_items)
+    _boot_orig_load_items
+  }
+  boot_calls=()
+  HAS_TMUX=1
+  items_id=()
+  tmuxx() { return 1 }
+  picker_boot_before_first_draw
+  expect boot/first-paint-empty 'new shell hosts quit' "${items_id[*]}"
+  expect boot/first-paint-empty-steps 'load_settings load_session_filter load_items setup_tty draw' "${boot_calls[*]}"
+
+  boot_restore
 
   HOME=$oldhome
   rm -rf "$testhome"
