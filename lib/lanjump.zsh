@@ -1620,7 +1620,7 @@ cli_dispatch() {
   host=$(default_cli_host)
   session=
   case $cmd in
-    list|ls|last)
+    list|ls|last|work|pins)
       if (( ${#extra} )); then
         host=${extra[1]}
       fi
@@ -1676,11 +1676,11 @@ cli_dispatch() {
       cli_open_tabs "$host" "$session"
       ;;
     work)
-      names=("${(@f)$(cli_list_names "$host" --print-workspace)}")
+      names=("${(@f)$(cli_list_names "$host" --print-workspace)}") || return 1
       cli_open_tabs "$host" "${names[@]}"
       ;;
     pins)
-      names=("${(@f)$(cli_list_names "$host" --print-pinned)}")
+      names=("${(@f)$(cli_list_names "$host" --print-pinned)}") || return 1
       cli_open_tabs "$host" "${names[@]}"
       ;;
     list|ls)
@@ -1699,6 +1699,11 @@ cli_dispatch() {
       ;;
   esac
 }
+
+if [[ ${1:-} == --cli-selftest ]]; then
+  . "${0:A:h}/lanjump-cli-selftest.zsh"
+  exit $?
+fi
 
 if [[ ${1:-} == help || ${1:-} == -h || ${1:-} == --help ]]; then
   cli_usage
