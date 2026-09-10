@@ -234,6 +234,9 @@ chmod 755 "$APP/lanjump.zsh" "$APP/lanjump-pick.zsh" "$APP/lanjump-ghostty-attac
 
 cp -f "$ROOT/lib/lanjump-keys.py" "$APP/lanjump-keys.py"
 chmod 755 "$APP/lanjump-keys.py"
+if [[ -f $ROOT/lib/lanjump-ime.py ]]; then
+  cp -f "$ROOT/lib/lanjump-ime.py" "$APP/lanjump-ime.py"
+fi
 
 keys_err=$(mktemp)
 if cc -O2 -framework CoreGraphics -o "$APP/lanjump-keys" "$ROOT/src/lanjump-keys.c" 2>"$keys_err"; then

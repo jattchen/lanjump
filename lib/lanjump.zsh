@@ -38,6 +38,8 @@ MYIP=""
 PREFIX=""
 IFACE=""
 LANJUMP_KEYS=""
+IME_PY="${0:A:h}/lanjump-ime.py"
+ime_switched=0
 
 if [[ -z ${NO_COLOR:-} ]]; then
   c_reset=$'\e[0m'
@@ -159,6 +161,61 @@ trim() {
   s="${s#"${s%%[![:space:]]*}"}"
   s="${s%"${s##*[![:space:]]}"}"
   print -r -- "$s"
+}
+
+# Same idea as pick.zsh local_keyboard: this Mac is typing, not a phone SSH session.
+local_keyboard() {
+  [[ -z ${SSH_CONNECTION:-} && -z ${SSH_CLIENT:-} && -z ${SSH_TTY:-} ]]
+}
+
+ime_file() {
+  print -r -- "$APP/ime"
+}
+
+ime_enabled() {
+  local f v
+  f=$(ime_file)
+  [[ -f $f ]] || return 0
+  v=$(<"$f")
+  v=${v%%$'\n'*}
+  v=$(trim "$v")
+  v=${v:l}
+  [[ $v != off ]]
+}
+
+should_switch_ime() {
+  ime_enabled || return 1
+  local_keyboard
+}
+
+ime_switch_command() {
+  local py=${IME_PY:-}
+  [[ -n $py && -f $py ]] || return 1
+  print -r -- "python3 ${(q)py}"
+}
+
+maybe_switch_ime() {
+  should_switch_ime || return 0
+  (( ime_switched )) && return 0
+  ime_switched=1
+  local py=${IME_PY:-}
+  [[ -n $py && -f $py ]] || return 0
+  command python3 "$py" >/dev/null 2>&1 || true
+}
+
+toggle_ime() {
+  local f dir
+  f=$(ime_file)
+  dir=${f:h}
+  mkdir -p "$dir"
+  if ime_enabled; then
+    print -r -- off >"$f"
+    notice="已关闭打开时切英文输入法。"
+  else
+    print -r -- on >"$f"
+    notice="已打开打开时切英文输入法。"
+    maybe_switch_ime
+  fi
 }
 
 mark_last() {
@@ -885,7 +942,7 @@ draw_emit() {
 
 draw() {
   local -i cols rows i n w_name=4 w_addr=8 w_user=4 w_stat=4
-  local mark line sep addr
+  local mark line sep addr ime_key
   cols=$(term_cols)
   rows=$(term_lines)
   n=${#items_kind}
@@ -915,8 +972,10 @@ draw() {
 
   draw_remain=$(( rows > 1 ? rows - 1 : 1 ))
   print -n $'\e[H\e[J'
+  ime_key='i 英文'
+  ime_enabled || ime_key='i 英文关'
   draw_emit "${c_bold}  局域网 SSH${c_reset}" || return
-  draw_emit "${c_dim}  ↑↓/jk 选择   Enter 进入   r 扫描   d 忘掉   q 退出${c_reset}" || return
+  draw_emit "${c_dim}  ↑↓/jk 选择   Enter 进入   r 扫描   d 忘掉   ${ime_key}   q 退出${c_reset}" || return
   if [[ -n $notice ]]; then
     draw_emit "  ${c_cyan}${notice}${c_reset}" || return
   else
@@ -1044,6 +1103,7 @@ read_key() {
     q|Q) REPLY=q ;;
     r|R) REPLY=r ;;
     d|D) REPLY=d ;;
+    i|I) REPLY=ime ;;
     g) REPLY=top ;;
     G) REPLY=bottom ;;
     [0-9]) REPLY="num$k" ;;
@@ -1348,6 +1408,12 @@ if [[ ${1:-} == --host-selftest ]]; then
   exit $?
 fi
 
+if [[ ${1:-} == --ime-selftest ]]; then
+  . "${0:A:h}/lanjump-ime-selftest.zsh"
+  ime_selftest
+  exit $?
+fi
+
 if [[ ${1:-} == --print-lan ]]; then
   detect_lan
   print -r -- "${IFACE:-}|${MYIP:-}|${PREFIX:-}"
@@ -1534,6 +1600,7 @@ cli_usage() {
   print
   print -r -- '机器省略时用上次进入的那台。'
   print -r -- '打开方式可在 tmux 列表按 , 设置（Ghostty / 系统终端 / 当前窗口）。'
+  print -r -- '主机列表按 i 开关打开时切英文输入法（默认开；手机 SSH 进来时不切）。'
 }
 
 cli_dispatch() {
@@ -1665,6 +1732,7 @@ if [[ ! -t 0 || ! -t 1 ]]; then
 fi
 
 setup_tty
+maybe_switch_ime
 # No saved remotes: auto-scan unless last used this Mac.
 if (( ${#h_alias} == 0 )) && [[ $(read_last) != local ]]; then
   do_scan
@@ -1703,6 +1771,10 @@ while true; do
       ;;
     d)
       forget_item $cursor
+      draw
+      ;;
+    ime)
+      toggle_ime
       draw
       ;;
     q|esc)
