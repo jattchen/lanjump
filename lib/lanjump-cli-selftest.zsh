@@ -236,6 +236,8 @@ if (( st != 0 )); then
 fi
 expect_contains new-foo-grok/create 'PICK --new-session foo' "$hay"
 expect_contains new-foo-grok/grok 'TMUX send-keys' "$hay"
+expect_contains new-foo-grok/pane-target '-t =foo:.' "$hay"
+expect_absent new-foo-grok/no-bare-pane '-t =foo ' "$hay"
 expect_contains new-foo-grok/grok-bin 'grok -c' "$hay"
 expect_contains new-foo-grok/attach 'PICK_EXEC --attach foo' "$hay"
 expect_absent new-foo-grok/no-open-tabs 'OPEN ' "$hay"

@@ -1617,9 +1617,11 @@ cli_auto_new_session() {
 
 cli_start_grok() {
   local session=$1
-  local live pane_cwd bin line
+  local live pane_cwd bin line target
   [[ -n $session ]] || return 1
-  live=$(cli_tmux display-message -p -t "=$session" '#{pane_current_command}' 2>/dev/null || true)
+  # tmux treats -t =name as a pane id and errors "can't find pane".
+  target="=${session}:."
+  live=$(cli_tmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
   live=${live##*/}
   if [[ $live == grok || $live == grok-* ]]; then
     return 0
@@ -1628,14 +1630,14 @@ cli_start_grok() {
     ''|zsh|bash|sh|fish|dash|login) ;;
     *) return 0 ;;
   esac
-  pane_cwd=$(cli_tmux display-message -p -t "=$session" '#{pane_current_path}' 2>/dev/null || true)
+  pane_cwd=$(cli_tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
   bin=$(cli_grok_bin)
   if [[ -z $pane_cwd || $pane_cwd == '~' || $pane_cwd == "$HOME" || $pane_cwd == "$HOME/" ]]; then
     line="$bin --resume"
   else
     line="$bin -c"
   fi
-  cli_tmux send-keys -t "=$session" -- "$line" Enter
+  cli_tmux send-keys -t "$target" -- "$line" Enter
 }
 
 cli_usage() {
