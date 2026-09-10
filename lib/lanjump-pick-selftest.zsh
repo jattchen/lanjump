@@ -9,7 +9,7 @@
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
-# picker_boot_before_first_draw, picker_boot_after_first_draw,
+# resolve_session_cwd, picker_boot_before_first_draw, picker_boot_after_first_draw,
 # session_name_invalid.
 
 pick_selftest() {
@@ -1111,6 +1111,7 @@ pick_selftest() {
   mkdir -p "$HOME/Documents/projects/inferme"
   snap_cwd[inferme]=$HOME
   pinned_cwd[inferme]=$HOME
+  load_settings
   expect resolve/named-project "$HOME/Documents/projects/inferme" "$(resolve_session_cwd inferme "$HOME")"
   expect resolve/keep-explicit /proj/keep "$(resolve_session_cwd nosuch /proj/keep)"
   expect enter/prompt $'上次在跑 grok。\nEnter  续上    s  只要 shell' "$(enter_resume_prompt_text grok-1.0.24-mac)"
@@ -1440,6 +1441,100 @@ pick_selftest() {
   open_placement=window
   cycle_setting
   expect settings/cycle-placement tab "$open_placement"
+
+  print -r -- $'open_target auto\nopen_placement window\n' >"$HOME/Library/Application Support/lanjump/settings"
+  load_settings
+  expect settings/default-root "$HOME/Documents/projects" "${project_roots[*]}"
+  expect resolve/default-root "$HOME/Documents/projects/inferme" "$(resolve_session_cwd inferme "$HOME")"
+
+  local isolated
+  isolated=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-noroots.XXXXXX")
+  HOME=$isolated
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  project_roots=(leftover)
+  load_settings
+  expect settings/no-projects-empty '' "${project_roots[*]}"
+  HOME=$testhome
+  rm -rf "$isolated"
+
+  local r1 r2
+  r1=$testhome/roots/first
+  r2=$testhome/roots/second
+  mkdir -p "$r1/dup" "$r2/dup" "$r2/onlysecond"
+  project_roots=("$r1" "$r2")
+  open_target=auto
+  open_placement=window
+  save_settings
+  project_roots=()
+  snap_cwd=()
+  pinned_cwd=()
+  load_settings
+  expect settings/two-roots "$r1 $r2" "${project_roots[*]}"
+  expect resolve/earlier-root "$r1/dup" "$(resolve_session_cwd dup)"
+  expect resolve/later-if-missing "$r2/onlysecond" "$(resolve_session_cwd onlysecond)"
+
+  snap_cwd[dup]=/opt/recorded
+  expect resolve/snap-over-root /opt/recorded "$(resolve_session_cwd dup)"
+  unset 'snap_cwd[dup]'
+  expect resolve/live-over-root /opt/live "$(resolve_session_cwd dup /opt/live)"
+  expect resolve/live-home-uses-root "$r1/dup" "$(resolve_session_cwd dup "$HOME")"
+
+  project_roots=("$testhome/roots/missing" "$r2")
+  save_settings
+  load_settings
+  expect resolve/skip-missing "$r2/dup" "$(resolve_session_cwd dup)"
+
+  mkdir -p "$HOME/altroot/tildeme"
+  print -r -- $'open_target auto\nopen_placement window\nproject_root ~/altroot\n' >"$HOME/Library/Application Support/lanjump/settings"
+  load_settings
+  expect resolve/tilde "$HOME/altroot/tildeme" "$(resolve_session_cwd tildeme)"
+
+  mkdir -p "$testhome/root with space/child"
+  project_roots=("$testhome/root with space")
+  save_settings
+  project_roots=()
+  load_settings
+  expect settings/space-root "$testhome/root with space" "${project_roots[1]}"
+  expect resolve/space-root "$testhome/root with space/child" "$(resolve_session_cwd child)"
+
+  project_roots=('/tmp/only')
+  save_settings
+  project_roots=()
+  save_settings
+  load_settings
+  expect settings/empty-redefault "$HOME/Documents/projects" "${project_roots[*]}"
+
+  settings_on=1
+  settings_cursor=1
+  project_roots=('/opt/foo' '/opt/bar')
+  host_short=testhost
+  COLUMNS=80
+  LINES=24
+  items_kind=(session)
+  items_id=(sess)
+  items_name=(sess)
+  items_att=(0)
+  items_time=('01-01 00:00')
+  items_path=('~/p')
+  items_summary=('sum')
+  items_cmd=(zsh)
+  items_activity=(1)
+  items_pinned=(0)
+  cursor=1
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'＋ 添加项目根'* ]]; then
+    print -u2 "FAIL settings/overlay-add missing ＋ 添加项目根 got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'/opt/foo'* || $plain != *'/opt/bar'* ]]; then
+    print -u2 "FAIL settings/overlay-roots missing listed roots got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
+  settings_on=0
+  project_roots=()
+  open_target=auto
+  open_placement=window
 
   open_target=auto
   unset SSH_CONNECTION SSH_CLIENT SSH_TTY
