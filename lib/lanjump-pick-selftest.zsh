@@ -164,12 +164,12 @@ pick_selftest() {
     print -u2 "FAIL preview/grok-once got ${tmux_n} captures want 1"
     (( fails++ ))
   fi
-  if [[ ${tmux_argv[(ie)-a]} -gt ${#tmux_argv} ]]; then
-    print -u2 "FAIL preview/grok-alt missing -a in ${(j: :)tmux_argv}"
+  if [[ ${tmux_argv[(ie)-J]} -gt ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/grok-J missing -J in ${(j: :)tmux_argv}"
     (( fails++ ))
   fi
-  if [[ ${tmux_argv[(ie)-J]} -le ${#tmux_argv} ]]; then
-    print -u2 "FAIL preview/grok-no-J got ${(j: :)tmux_argv}"
+  if [[ ${tmux_argv[(ie)-a]} -le ${#tmux_argv} ]]; then
+    print -u2 "FAIL preview/grok-no-alt got ${(j: :)tmux_argv}"
     (( fails++ ))
   fi
   if [[ ${tmux_argv[(ie)-S]} -le ${#tmux_argv} ]]; then
@@ -373,6 +373,38 @@ pick_selftest() {
     print -u2 "FAIL preview/generic-not-only-prompt got=$(printf %q "${(F)preview_lines}")"
     (( fails++ ))
   fi
+
+  local footer_responding footer_modelbox footer_shortcuts footer_thought footer_run footer_read footer_spin footer_box
+  footer_responding='⠹ - Responding - Write LoopX coordinator Goal for remaini… - grok'
+  footer_modelbox='╰────────────────…Grok 4.6 (xhigh) · always-approve ─╯'
+  footer_shortcuts=$'Ctrl+\\:dashboard  │  Ctrl+[/]:prev…│  Space:prompt  │  Ctrl+.:shortcuts'
+  footer_thought='◆ Thought for 22.6s'
+  footer_run='◆ Run Consume LoopX turn-start quota packet once'
+  footer_read='◈ Read 2 files'
+  footer_spin='⠴ Save full Grok...'
+  footer_box='│ ❯'
+  preview_line_is_chrome "$footer_responding"
+  expect preview/footer-responding 0 "$?"
+  preview_line_is_chrome "$footer_modelbox"
+  expect preview/footer-modelbox 0 "$?"
+  preview_line_is_chrome "$footer_shortcuts"
+  expect preview/footer-shortcuts 0 "$?"
+  preview_line_is_tool "$footer_run"
+  expect preview/tool-run 0 "$?"
+  preview_line_is_tool "$footer_read"
+  expect preview/tool-read 0 "$?"
+  preview_line_is_tool "$footer_thought"
+  expect preview/tool-thought 0 "$?"
+  expect preview/footer-only '' "$(preview_grok_lines 3 "$footer_responding" "$footer_modelbox" "$footer_shortcuts")"
+  expect preview/live-footer-dump $'预览要有标题吗\n要，还要最后几行' "$(preview_grok_lines 3 "$footer_responding" "$footer_modelbox" "$footer_shortcuts" "$footer_thought" "$footer_run" "$footer_read" "$footer_spin" "$footer_box" '❯ 预览要有标题吗' '要，还要最后几行')"
+  expect preview/live-footer-mention $'你贴的这段预览还是 Grok 底栏：Responding、Grok 4.6 (xhigh)、快捷键，不是问题和回复。' "$(preview_grok_lines 1 "$footer_responding" "$footer_modelbox" "$footer_shortcuts" '你贴的这段预览还是 Grok 底栏：Responding、Grok 4.6 (xhigh)、快捷键，不是问题和回复。')"
+
+  mock_pane="${footer_thought}"$'\n'"${footer_run}"$'\n'"${footer_read}"$'\n''❯ 预览要有标题吗'$'\n''要，还要最后几行'$'\n'"${footer_responding}"$'\n'"${footer_modelbox}"$'\n'"${footer_shortcuts}"$'\n'"${footer_spin}"$'\n'"${footer_box}"
+  : > "$mock_log"
+  session_titles[grok-sess]=ToMax
+  session_preview_lines grok-sess 6 grok
+  expect preview/live-footer-session $'预览要有标题吗\n要，还要最后几行' "${(F)preview_lines}"
+  session_titles=()
 
   HAS_TMUX=1
   host_short=testhost

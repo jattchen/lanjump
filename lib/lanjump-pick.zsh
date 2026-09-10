@@ -2595,6 +2595,26 @@ preview_line_is_prompt() {
   return 1
 }
 
+preview_line_is_status() {
+  local line=$1
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -n $line ]] || return 1
+  [[ $line == [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]* ]] && return 0
+  [[ $line == (#i)*[[:space:]]-[[:space:]]responding[[:space:]]-* ]] && return 0
+  [[ $line == (#i)*[[:space:]]-[[:space:]]thinking[[:space:]]-* ]] && return 0
+  [[ $line == (#i)*compactions[[:space:]]remaining* ]] && return 0
+  return 1
+}
+
+preview_line_is_shortcut_bar() {
+  local line=$1
+  [[ $line == (#i)*space:prompt* ]] && return 0
+  [[ $line == *Ctrl+* && $line == *│* ]] && return 0
+  [[ $line == (#i)*:dashboard* && $line == (#i)*:shortcuts* ]] && return 0
+  return 1
+}
+
 preview_line_is_model() {
   local s=$1 stripped
   preview_is_product_title "$s" && return 0
@@ -2602,6 +2622,11 @@ preview_line_is_model() {
   s="${s%"${s##*[![:space:]]}"}"
   stripped=${s//[[:space:]]/}
   [[ $stripped == (#i)grok[0-9.]* ]] && return 0
+  if [[ $s == *[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬╭╮╯╰]* ]]; then
+    [[ $s == (#i)*grok[[:space:]]#[0-9.]* ]] && return 0
+    [[ $s == (#i)*always-approve* ]] && return 0
+    [[ $s == (#i)*'(xhigh)'* || $s == (#i)*xhigh* ]] && return 0
+  fi
   return 1
 }
 
@@ -2614,6 +2639,7 @@ preview_line_is_tool() {
   [[ $line == (#i)(function|tool)[[:space:]]#(result|call)* ]] && return 0
   [[ $line == \{* || $line == \[* || $line == \}* ]] && return 0
   [[ $line == [[:alnum:]_-]##__[[:alnum:]_-]##* ]] && return 0
+  [[ $line == ◆* || $line == ◈* ]] && return 0
   return 1
 }
 
@@ -2624,12 +2650,15 @@ preview_line_is_chrome() {
   [[ -z $stripped ]] && return 0
   [[ $stripped == █## ]] && return 0
   rest=$stripped
-  rest=${rest//[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬▶▷▸•·]/}
+  rest=${rest//[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬╭╮╯╰▶▷▸•·]/}
+  rest=${rest//[❯>]/}
   rest=${rest//[[:punct:]]/}
   [[ -z $rest ]] && return 0
   preview_line_is_bare_prompt "$line" && return 0
   preview_is_product_title "$line" && return 0
   preview_line_is_model "$line" && return 0
+  preview_line_is_status "$line" && return 0
+  preview_line_is_shortcut_bar "$line" && return 0
   return 1
 }
 
@@ -2675,6 +2704,11 @@ preview_keep_useful_from_cap() {
     if (( drop_grok_noise )); then
       preview_line_is_tool "$line" && continue
       preview_line_is_model "$line" && continue
+      if [[ $line == '❯ '* ]]; then
+        line=${line#'❯ '}
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -n $line ]] || continue
+      fi
     fi
     saw_blank=0
     kept+=("$line")
@@ -2701,6 +2735,14 @@ _preview_grok_lines() {
     preview_line_is_bare_prompt "$line" && continue
     preview_line_is_tool "$line" && continue
     preview_line_is_model "$line" && continue
+    preview_line_is_status "$line" && continue
+    if [[ $line == '❯ '* ]]; then
+      line=${line#'❯ '}
+    elif [[ $line == '> '* ]]; then
+      line=${line#'> '}
+    fi
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -n $line ]] || continue
     content+=("$line")
   done
   (( ${#content} == 0 )) && return
@@ -2792,20 +2834,11 @@ session_preview_lines() {
   (( max_lines < 1 )) && return
   preview_is_grok "$cmd" && grok=1
 
-  if (( grok )); then
+  cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
+  preview_keep_useful_from_cap "$cap" $grok
+  if (( ${#kept} == 0 )); then
     cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
-    preview_keep_useful_from_cap "$cap" 1
-    if (( ${#kept} == 0 )); then
-      cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
-      preview_keep_useful_from_cap "$cap" 1
-    fi
-  else
-    cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
-    preview_keep_useful_from_cap "$cap" 0
-    if (( ${#kept} == 0 )); then
-      cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
-      preview_keep_useful_from_cap "$cap" 0
-    fi
+    preview_keep_useful_from_cap "$cap" $grok
   fi
 
   title_line=$(preview_useful_title "$title" "$name" "$cmd") || title_line=
