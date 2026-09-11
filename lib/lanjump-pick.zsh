@@ -15,7 +15,7 @@ fi
 
 pick_needs_tty() {
   case ${1:-} in
-    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--snapshot|--install-hooks) return 1 ;;
+    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-recent|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--snapshot|--install-hooks) return 1 ;;
   esac
   return 0
 }
@@ -3630,12 +3630,6 @@ if [[ ${1:-} == --digit-selftest ]]; then
   exit $?
 fi
 
-if [[ ${1:-} == --pick-selftest ]]; then
-  . "${0:A:h}/lanjump-pick-selftest.zsh"
-  pick_selftest
-  exit $?
-fi
-
 print_workspace_names() {
   load_pinned_sessions
   load_session_snapshot
@@ -3664,6 +3658,30 @@ print_last_name() {
   (( ${#snap_names} )) || return 1
   print -r -- "${snap_names[-1]}"
 }
+
+# Newest-activity first, up to $1 names (default 5).
+print_recent_names() {
+  local -i max=${1:-5} n=0
+  local line act name
+  local -a raw
+  [[ $HAS_TMUX -eq 1 ]] || return 1
+  raw=("${(@f)$(tmuxx list-sessions -F $'#{session_activity}\t#{session_name}' 2>/dev/null)}")
+  (( ${#raw} )) || return 1
+  for line in "${(@f)$(print -r -- "${(F)raw}" | sort -t $'\t' -k1,1nr)}"; do
+    [[ -n $line ]] || continue
+    name=${line#*$'\t'}
+    [[ -n $name ]] || continue
+    print -r -- "$name"
+    (( ++n >= max )) && break
+  done
+  (( n ))
+}
+
+if [[ ${1:-} == --pick-selftest ]]; then
+  . "${0:A:h}/lanjump-pick-selftest.zsh"
+  pick_selftest
+  exit $?
+fi
 
 print_session_list() {
   local line
@@ -3695,6 +3713,10 @@ if [[ ${1:-} == --print-pinned ]]; then
 fi
 if [[ ${1:-} == --print-last ]]; then
   print_last_name || exit 1
+  exit 0
+fi
+if [[ ${1:-} == --print-recent ]]; then
+  print_recent_names 5 || exit 1
   exit 0
 fi
 if [[ ${1:-} == --print-sessions ]]; then
