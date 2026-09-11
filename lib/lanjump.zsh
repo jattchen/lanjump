@@ -1744,15 +1744,32 @@ cli_usage() {
   print -r -- '主机列表按 i 开关打开时切英文输入法（默认开；手机 SSH 进来时不切）。'
 }
 
+# Empty / y / Y / 是 = yes. Used by go create; 常驻 stays y=yes, empty=no.
+cli_confirm_create() {
+  local ans=$1
+  [[ -z $ans || $ans == y || $ans == Y || $ans == 是 ]]
+}
+
+cli_tty_read() {
+  local _cli_tty_name=$1
+  local _cli_tty_val=
+  read -r _cli_tty_val </dev/tty || _cli_tty_val=
+  printf -v $_cli_tty_name '%s' "$_cli_tty_val"
+}
+
 cli_dispatch() {
   local cmd=$1
   shift
-  local host session spec
+  local host session spec ans pinans
   local -i shell=0 pin=0 want_grok=0
   local -a extra names
   extra=()
   while (( $# )); do
     case $1 in
+      -h|--help)
+        cli_usage
+        return 0
+        ;;
       --shell) shell=1 ;;
       --grok) want_grok=1 ;;
       *) extra+=("$1") ;;
@@ -1786,7 +1803,9 @@ cli_dispatch() {
         print -u2 "用法：lanjump attach [--shell] <session>"
         return 1
       fi
-      cli_attach_one "$host" "$session" $shell
+      [[ $host == local ]] && mark_last "$host"
+      cli_attach_one "$host" "$session" $shell || return 1
+      mark_last "$host"
       ;;
     go)
       if [[ -z $session ]]; then
@@ -1798,8 +1817,15 @@ cli_dispatch() {
         return
       fi
       if ! cli_has_session "$host" "$session"; then
-        cli_ask_create "$session" || return 1
-        cli_ask_pin && pin=1
+        print "没有 session「${session}」。"
+        print -n "要新建并打开吗？（回车或 y=是，其他键=否） "
+        cli_tty_read ans
+        if ! cli_confirm_create "$ans"; then
+          return 1
+        fi
+        print -n "常驻（y=是，回车=否）: "
+        cli_tty_read pinans
+        [[ $pinans == y || $pinans == Y ]] && pin=1
         cli_new_session "$host" "$session" || return 1
         if (( pin )); then
           cli_pin_session "$host" "$session"
@@ -1808,18 +1834,22 @@ cli_dispatch() {
       if (( want_grok )); then
         cli_start_grok "$session" || return 1
       fi
-      cli_open_tabs "$host" "$session"
+      cli_open_tabs "$host" "$session" || return 1
+      mark_last "$host"
       ;;
     work)
       names=("${(@f)$(cli_list_names "$host" --print-workspace)}") || return 1
-      cli_open_tabs "$host" "${names[@]}"
+      cli_open_tabs "$host" "${names[@]}" || return 1
+      mark_last "$host"
       ;;
     pins)
       names=("${(@f)$(cli_list_names "$host" --print-pinned)}") || return 1
-      cli_open_tabs "$host" "${names[@]}"
+      cli_open_tabs "$host" "${names[@]}" || return 1
+      mark_last "$host"
       ;;
     list|ls)
-      cli_list_names "$host" --print-sessions
+      cli_list_names "$host" --print-sessions || return 1
+      mark_last "$host"
       ;;
     last)
       names=("${(@f)$(cli_list_names "$host" --print-recent)}")
@@ -1848,6 +1878,10 @@ if [[ ${1:-} == help || ${1:-} == -h || ${1:-} == --help ]]; then
 fi
 
 if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then
+  if [[ ${2:-} == --help || ${2:-} == -h ]]; then
+    cli_usage
+    exit 0
+  fi
   ensure_setup
   detect_lan
   load_hosts
