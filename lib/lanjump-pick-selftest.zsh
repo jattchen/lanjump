@@ -1363,6 +1363,21 @@ pick_selftest() {
     print -u2 "FAIL shell/empty should count as idle shell"
     (( fails++ ))
   fi
+  if pane_is_idle_shell ''; then
+    print -u2 "FAIL idle/empty unread command should not count as idle shell"
+    (( fails++ ))
+  fi
+  if pane_is_idle_shell zsh; then
+    :
+  else
+    print -u2 "FAIL idle/zsh should count as idle shell"
+    (( fails++ ))
+  fi
+  if pane_is_idle_shell grok-1.0.24-mac; then
+    print -u2 "FAIL idle/grok should not count as idle shell"
+    (( fails++ ))
+  fi
+  expect pane/target '=lanjump:.' "$(session_pane_target lanjump)"
   expect cmd/short-grok grok "$(short_command_name grok-1.0.24-mac)"
   expect cmd/short-path grok "$(short_command_name /Users/mac/.grok/bin/grok)"
   expect cmd/short-zsh zsh "$(short_command_name zsh)"
@@ -1680,6 +1695,135 @@ pick_selftest() {
   fi
   if [[ $restore_log != *'grok -c'* ]]; then
     print -u2 "FAIL resume/cd-project missing grok -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # tmux 3.7c: session-only -t '=$name' leaves pane formats empty; grok is still running.
+  : >"$tmux_log"
+  snap_cmd[reattach-grok]=grok-1.0.24-mac
+  snap_cwd[reattach-grok]=/proj/lanjump
+  attach_shell_only=0
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *'-t =reattach-grok '* ]]; then
+          print -r -- ''
+          return 0
+        fi
+        if [[ $* == *pane_current_command* ]]; then
+          print -r -- grok-1.0.24-mac
+        else
+          print -r -- /proj/lanjump
+        fi
+        return 0
+        ;;
+      list-panes)
+        if [[ $* == *pane_current_command* ]]; then
+          print -r -- grok-1.0.24-mac
+        elif [[ $* == *pane_current_path* ]]; then
+          print -r -- /proj/lanjump
+        else
+          print -r -- '%1'
+        fi
+        return 0
+        ;;
+      respawn-pane|send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command reattach-grok
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'respawn-pane'* || $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL resume/session-only-empty killed running grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'-t =reattach-grok '* && $restore_log != *'-t =reattach-grok:'* ]]; then
+    print -u2 "FAIL resume/session-only-empty still used session-only pane target got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  snap_cmd[unread-grok]=grok-1.0.24-mac
+  snap_cwd[unread-grok]=/proj/lanjump
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message) print -r -- ''; return 0 ;;
+      list-panes) print -r -- '%1'; return 0 ;;
+      respawn-pane|send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command unread-grok
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'respawn-pane'* || $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL resume/unread-command mutated pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  snap_cwd[reattach-cwd]=/proj/lanjump
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *'-t =reattach-cwd '* ]]; then
+          print -r -- ''
+          return 0
+        fi
+        print -r -- /proj/lanjump
+        return 0
+        ;;
+      send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  ensure_session_cwd reattach-cwd
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL cwd/session-only-empty sent cd into pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  snap_cwd[unread-cwd]=/proj/lanjump
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message) print -r -- ''; return 0 ;;
+      send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  ensure_session_cwd unread-cwd
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL cwd/unread-path sent cd into pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  snap_cwd[idle-cd]=/proj/keep
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *'-t =idle-cd '* ]]; then
+          print -r -- ''
+          return 0
+        fi
+        print -r -- "$HOME"
+        return 0
+        ;;
+      send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  ensure_session_cwd idle-cd
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'send-keys'* || $restore_log != *'cd /proj/keep'* ]]; then
+    print -u2 "FAIL cwd/idle-cd missing send-keys cd to project got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
@@ -2149,6 +2293,14 @@ pick_selftest() {
   fi
   if [[ ${functions[attach_named_session]} != *resume_prompt_choice* ]]; then
     print -u2 "FAIL resume/attach missing resume_prompt_choice got=$(printf %q "${functions[attach_named_session]}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[attach_named_session]} != *pane_is_idle_shell* ]]; then
+    print -u2 "FAIL resume/attach missing pane_is_idle_shell got=$(printf %q "${functions[attach_named_session]}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[attach_named_session]} != *session_pane_target* ]]; then
+    print -u2 "FAIL resume/attach missing session_pane_target got=$(printf %q "${functions[attach_named_session]}")"
     (( fails++ ))
   fi
 
