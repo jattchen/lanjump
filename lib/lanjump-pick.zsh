@@ -3775,12 +3775,6 @@ if [[ ${1:-} == --digit-selftest ]]; then
   exit $?
 fi
 
-if [[ ${1:-} == --pick-selftest ]]; then
-  . "${0:A:h}/lanjump-pick-selftest.zsh"
-  pick_selftest
-  exit $?
-fi
-
 print_workspace_names() {
   load_pinned_sessions
   load_session_snapshot
@@ -3810,6 +3804,7 @@ print_last_name() {
   print -r -- "${snap_names[-1]}"
 }
 
+# Newest-activity first, up to $1 names (default 5).
 print_recent_names() {
   local -i max=${1:-5} n=0
   local line name
@@ -3826,6 +3821,12 @@ print_recent_names() {
   done
   (( n ))
 }
+
+if [[ ${1:-} == --pick-selftest ]]; then
+  . "${0:A:h}/lanjump-pick-selftest.zsh"
+  pick_selftest
+  exit $?
+fi
 
 print_session_list() {
   local line
