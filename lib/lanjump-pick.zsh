@@ -15,7 +15,7 @@ fi
 
 pick_needs_tty() {
   case ${1:-} in
-    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--snapshot|--install-hooks) return 1 ;;
+    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-recent|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--snapshot|--install-hooks) return 1 ;;
   esac
   return 0
 }
@@ -42,7 +42,8 @@ fi
 typeset -a items_kind items_id items_name items_att items_time items_path items_summary items_cmd items_activity items_pinned
 typeset -a all_kind all_id all_name all_att all_time all_path all_summary all_cmd all_activity all_pinned
 typeset -a preview_lines
-typeset -A preview_cache
+preview_heading=
+typeset -A preview_cache preview_cache_heading
 typeset -A session_titles
 cursor=1
 # time = all by last activity desc; attached = 占用中 first, idle after, each time-desc.
@@ -64,16 +65,20 @@ attach_shell_only=0
 ghostty_close_others=0
 open_target=auto
 open_placement=window
+typeset -a project_roots
 settings_on=0
 settings_cursor=1
+settings_input_on=0
+settings_input_buf=
+settings_input_char=
 loading=0
 stty_orig=
 PENDING_KEY=""
 digit_wait=0.5
 preview_defer=0
 preview_wait=0.08
-preview_max_lines=10
-typeset -i preview_on=1 preview_band=6
+preview_max_lines=12
+typeset -i preview_on=1 preview_band=8
 w_name=4 w_status=6 w_time=11 w_summary=4 w_path=4
 show_summary=1
 show_path=1
@@ -194,6 +199,7 @@ run_session_snapshot() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   tmux_server_running || return 0
   snapshot_recently_written && return 0
+  load_settings
   snapshot_live_sessions
 }
 
@@ -381,6 +387,89 @@ _fit_left() {
   REPLY="…${out}"
 }
 
+# Keep head and tail; paths and Grok titles often live at the ends.
+# Ellipsis counts as width 1, same as fit_right/fit_left.
+fit_head_tail() {
+  _fit_head_tail "$1" $2
+  print -r -- "$REPLY"
+}
+
+_fit_head_tail() {
+  local s=$1
+  local -i max=$2 i j cw left_w=0 right_w=0 budget left_budget right_budget leftover
+  local c stripped left= right=
+  REPLY=
+  (( max <= 0 )) && return
+  stripped=${s//[$'\x00'-$'\x7e']/}
+  if (( ${#s} + ${#stripped} <= max )); then
+    REPLY=$s
+    return
+  fi
+  if (( max <= 1 )); then
+    REPLY='…'
+    return
+  fi
+  budget=$(( max - 1 ))
+  left_budget=$(( budget / 2 ))
+  right_budget=$(( budget - left_budget ))
+  i=1
+  j=${#s}
+  while (( i <= j )); do
+    c=$s[i]
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
+    if (( left_w + cw > left_budget )); then
+      break
+    fi
+    left+="$c"
+    (( left_w += cw, i++ ))
+  done
+  while (( j >= i )); do
+    c=$s[j]
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
+    if (( right_w + cw > right_budget )); then
+      break
+    fi
+    right="$c$right"
+    (( right_w += cw, j-- ))
+  done
+  leftover=$(( budget - left_w - right_w ))
+  while (( leftover > 0 && i <= j )); do
+    c=$s[i]
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
+    if (( cw > leftover )); then
+      break
+    fi
+    left+="$c"
+    (( leftover -= cw, i++ ))
+  done
+  while (( leftover > 0 && j >= i )); do
+    c=$s[j]
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
+    if (( cw > leftover )); then
+      break
+    fi
+    right="$c$right"
+    (( leftover -= cw, j-- ))
+  done
+  REPLY="${left}…${right}"
+}
+
 padw() {
   _padw "$1" $2
   print -r -- "$REPLY"
@@ -441,12 +530,28 @@ cwd_is_home() {
   [[ -z $p || $p == '~' || $p == "$HOME" || $p == "$HOME/" ]]
 }
 
+expand_project_root() {
+  local p=$1
+  case "$p" in
+    '~') REPLY=$HOME ;;
+    '~/'*) REPLY="$HOME/${p#"~/"}" ;;
+    *) REPLY=$p ;;
+  esac
+}
+
 session_project_dir() {
-  local n=$1 d
+  local n=$1 root d
   [[ -n $n ]] || return 1
-  d="$HOME/Documents/projects/$n"
-  [[ -d $d ]] || return 1
-  print -r -- "$d"
+  for root in "${project_roots[@]}"; do
+    expand_project_root "$root"
+    root=$REPLY
+    [[ -n $root ]] || continue
+    d="$root/$n"
+    [[ -d "$d" ]] || continue
+    print -r -- "$d"
+    return 0
+  done
+  return 1
 }
 
 resolve_session_cwd() {
@@ -1890,44 +1995,63 @@ settings_file() {
   REPLY="$HOME/Library/Application Support/lanjump/settings"
 }
 
+default_project_roots() {
+  project_roots=()
+  [[ -d $HOME/Documents/projects ]] && project_roots=("$HOME/Documents/projects")
+}
+
 load_settings() {
   local file line key val
+  local -i saw_project_root=0
   open_target=auto
   open_placement=window
+  project_roots=()
   settings_file
   file=$REPLY
-  [[ -f $file ]] || return 0
-  while IFS= read -r line || [[ -n $line ]]; do
-    [[ -z $line || $line == '#'* ]] && continue
-    key=${line%% *}
-    if [[ $line == *' '* ]]; then
-      val=${line#* }
-    else
-      val=
-    fi
-    case $key in
-      open_target)
-        case $val in
-          auto|ghostty|terminal|current) open_target=$val ;;
-        esac
-        ;;
-      open_placement)
-        case $val in
-          window|tab) open_placement=$val ;;
-        esac
-        ;;
-    esac
-  done <"$file"
+  if [[ -f $file ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ -z $line || $line == '#'* ]] && continue
+      key=${line%% *}
+      if [[ $line == *' '* ]]; then
+        val=${line#* }
+      else
+        val=
+      fi
+      case $key in
+        open_target)
+          case $val in
+            auto|ghostty|terminal|current) open_target=$val ;;
+          esac
+          ;;
+        open_placement)
+          case $val in
+            window|tab) open_placement=$val ;;
+          esac
+          ;;
+        project_root)
+          val=${val##[[:space:]]#}
+          val=${val%%[[:space:]]#}
+          [[ -n $val ]] || continue
+          saw_project_root=1
+          project_roots+=("$val")
+          ;;
+      esac
+    done <"$file"
+  fi
+  (( saw_project_root )) || default_project_roots
 }
 
 save_settings() {
-  local file dir
+  local file dir root
   settings_file
   file=$REPLY
   dir=${file:h}
   mkdir -p "$dir"
   print -r -- "open_target ${open_target}" >"$file"
   print -r -- "open_placement ${open_placement}" >>"$file"
+  for root in "${project_roots[@]}"; do
+    print -r -- "project_root ${root}" >>"$file"
+  done
 }
 
 settings_value_label() {
@@ -1968,6 +2092,93 @@ cycle_setting() {
       ;;
   esac
   save_settings
+}
+
+settings_n_rows() {
+  REPLY=$(( 3 + ${#project_roots} ))
+}
+
+settings_move() {
+  local -i delta=$1 n
+  settings_n_rows
+  n=$REPLY
+  (( n < 1 )) && return
+  (( settings_cursor += delta ))
+  if (( settings_cursor < 1 )); then
+    settings_cursor=$n
+  elif (( settings_cursor > n )); then
+    settings_cursor=1
+  fi
+}
+
+settings_remove_root() {
+  local -i idx=$1 n
+  (( idx >= 1 && idx <= ${#project_roots} )) || return 1
+  project_roots[idx]=()
+  save_settings
+  settings_n_rows
+  n=$REPLY
+  (( settings_cursor > n )) && settings_cursor=$n
+}
+
+# d removes the selected root. Enter cycles 打开到/窗口 or starts overlay input on ＋.
+settings_enter() {
+  local -i n=${#project_roots}
+  case $settings_cursor in
+    1|2) cycle_setting ;;
+    *)
+      if (( settings_cursor == 3 + n )); then
+        settings_input_on=1
+        settings_input_buf=
+      fi
+      ;;
+  esac
+}
+
+settings_delete_key() {
+  local -i n=${#project_roots}
+  if (( settings_cursor >= 3 && settings_cursor < 3 + n )); then
+    settings_remove_root $(( settings_cursor - 2 ))
+  fi
+}
+
+settings_commit_input() {
+  local path=$settings_input_buf
+  settings_input_on=0
+  settings_input_buf=
+  path=${path##[[:space:]]#}
+  path=${path%%[[:space:]]#}
+  [[ -n $path ]] || return 0
+  if [[ "$path" != /* && "$path" != '~' && "$path" != '~/'* ]]; then
+    path="$PWD/$path"
+  fi
+  project_roots+=("$path")
+  save_settings
+  settings_cursor=$(( 2 + ${#project_roots} ))
+}
+
+# Raw-mode line editor for the settings overlay. REPLY=enter|esc|backspace|char.
+settings_input_read() {
+  local k k2 c
+  IFS= read -rsk1 k || return 1
+  if [[ $k == $'\e' ]]; then
+    IFS= read -rsk1 -t 0.2 k2 || { REPLY=esc; return 0 }
+    if [[ $k2 == '[' || $k2 == 'O' ]]; then
+      while IFS= read -rsk1 -t 0.2 c; do
+        [[ $c == [A-Za-z~] ]] && break
+      done
+    fi
+    REPLY=esc
+    return 0
+  fi
+  case $k in
+    $'\n'|$'\r') REPLY=enter ;;
+    $'\x7f'|$'\b') REPLY=backspace ;;
+    *)
+      REPLY=char
+      settings_input_char=$k
+      ;;
+  esac
 }
 
 effective_open_target() {
@@ -2394,7 +2605,7 @@ load_items() {
   items_summary=()
   items_cmd=()
   items_activity=()
-  items_pinned=()  preview_cache=()
+  items_pinned=()  preview_cache=() preview_cache_heading=()
   session_titles=()
   raw=()
 
@@ -2479,52 +2690,186 @@ load_items() {
   loading=0
 }
 
-preview_line_is_chrome() {
-  local line=$1 stripped rest
-  line="${line%"${line##*[![:space:]]}"}"
-  stripped=${line//[[:space:]]/}
-  [[ -z $stripped ]] && return 0
-  [[ $stripped == █## ]] && return 0
-  rest=$stripped
-  rest=${rest//[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬▶▷▸•·]/}
-  rest=${rest//[[:punct:]]/}
-  [[ -z $rest ]] && return 0
-  [[ $stripped == '>' || $stripped == '❯' || $stripped == '%' || $stripped == '$' || $stripped == '#' ]] && return 0
-  [[ $stripped == (#i)grok([0-9.-]#) ]] && return 0
+preview_is_product_title() {
+  local s=$1 stripped
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  [[ -n $s ]] || return 1
+  stripped=${s//[[:space:]]/}
+  [[ $stripped == (#i)(tomax|grok) ]] && return 0
+  [[ $stripped == (#i)(tomax|grok)[-0-9.]* ]] && return 0
   return 1
 }
 
-preview_useful_title() {
-  local title=$1 name=$2 cmd=$3 short
-  [[ -n $title ]] || return 1
-  short=$(short_command_name "$cmd")
-  [[ $title != "$name" && $title != "$cmd" && $title != "$short" ]] || return 1
-  print -r -- "$title"
+preview_is_grok() {
+  [[ ${1:-} == (#i)*grok* ]]
 }
 
-session_preview_lines() {
-  local name=$1 cmd=$3
-  local title=${4:-${session_titles[$name]:-}}
-  local -i max_lines=$2 start grok=0 saw_blank=0 room
-  local cap line stripped title_line
-  local -a kept raw_lines
-  preview_lines=()
-  (( max_lines > preview_max_lines )) && max_lines=$preview_max_lines
-  (( max_lines < 1 )) && return
-  [[ $cmd == (#i)*grok* ]] && grok=1
+preview_line_is_bare_prompt() {
+  local line=$1 stripped
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  stripped=${line//[[:space:]]/}
+  [[ $stripped == '>' || $stripped == '❯' || $stripped == '%' || $stripped == '$' || $stripped == '#' ]]
+}
 
-  if (( grok )); then
-    cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
-  else
-    cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
-    if [[ -z ${cap//[$' \t\n']/} ]]; then
-      cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
+preview_line_is_prompt() {
+  local line=$1
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -n $line ]] || return 1
+  preview_line_is_bare_prompt "$line" && return 0
+  [[ $line == ('% '|'$ '|'> '|'# '|$'❯ ')* ]] && return 0
+  return 1
+}
+
+preview_line_is_status() {
+  local line=$1
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -n $line ]] || return 1
+  [[ $line == [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]* ]] && return 0
+  [[ $line == (#i)*[[:space:]]-[[:space:]]responding[[:space:]]-* ]] && return 0
+  [[ $line == (#i)*[[:space:]]-[[:space:]]thinking[[:space:]]-* ]] && return 0
+  [[ $line == (#i)*waiting[[:space:]]for[[:space:]]response* ]] && return 0
+  [[ $line == (#i)worked[[:space:]]for[[:space:]][0-9]* ]] && return 0
+  [[ $line == (#i)*compactions[[:space:]]remaining* ]] && return 0
+  return 1
+}
+
+preview_line_is_shortcut_bar() {
+  local line=$1
+  [[ $line == (#i)*space:prompt* ]] && return 0
+  [[ $line == *Ctrl+* && $line == *│* ]] && return 0
+  [[ $line == (#i)*:dashboard* && $line == (#i)*:shortcuts* ]] && return 0
+  return 1
+}
+
+preview_line_is_model() {
+  local s=$1 stripped
+  preview_is_product_title "$s" && return 0
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  stripped=${s//[[:space:]]/}
+  [[ $stripped == (#i)grok[0-9.]* ]] && return 0
+  if [[ $s == *[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬╭╮╯╰]* ]]; then
+    [[ $s == (#i)*grok[[:space:]]#[0-9.]* ]] && return 0
+    [[ $s == (#i)*always-approve* ]] && return 0
+    [[ $s == (#i)*'(xhigh)'* || $s == (#i)*xhigh* ]] && return 0
+  fi
+  return 1
+}
+
+preview_line_is_tool() {
+  local line=$1
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  [[ -n $line ]] || return 1
+  [[ $line == (#i)calling[[:space:]]* ]] && return 0
+  [[ $line == (#i)(function|tool)[[:space:]]#(result|call)* ]] && return 0
+  [[ $line == \{* || $line == \[* || $line == \}* ]] && return 0
+  [[ $line == [[:alnum:]_-]##__[[:alnum:]_-]##* ]] && return 0
+  [[ $line == ◆* || $line == ◈* ]] && return 0
+  return 1
+}
+
+preview_line_is_chrome() {
+  local line=$1 stripped rest arrows
+  line="${line%"${line##*[![:space:]]}"}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  stripped=${line//[[:space:]]/}
+  [[ -z $stripped ]] && return 0
+  [[ $stripped == █## ]] && return 0
+  arrows=${line//[▲▼[:space:]]/}
+  [[ -z $arrows && $line == *[▲▼]* ]] && return 0
+  rest=$stripped
+  rest=${rest//[█░▒▓─│┌┐└┘├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬╭╮╯╰▶▷▸•·▲▼]/}
+  rest=${rest//[❯>]/}
+  rest=${rest//[[:punct:]]/}
+  [[ -z $rest ]] && return 0
+  [[ $line == *⎇* ]] && return 0
+  [[ $line == *[0-9]K[[:space:]]/[[:space:]][0-9]#K* ]] && return 0
+  preview_line_is_bare_prompt "$line" && return 0
+  preview_is_product_title "$line" && return 0
+  preview_line_is_model "$line" && return 0
+  preview_line_is_status "$line" && return 0
+  preview_line_is_shortcut_bar "$line" && return 0
+  return 1
+}
+
+preview_strip_grok_line() {
+  local line=$1
+  line="${line%"${line##*[![:space:]]}"}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  while [[ $line == *█ ]]; do
+    line=${line%█}
+  done
+  line="${line%"${line##*[![:space:]]}"}"
+  if [[ $line =~ '^(.*)[[:space:]]+[0-9]{1,2}:[0-9]{2}[[:space:]]*(AM|PM|am|pm)[[:space:]]*$' ]]; then
+    line=$match[1]
+    line="${line%"${line##*[![:space:]]}"}"
+  fi
+  if [[ $line == *'[Dashboard]'* ]]; then
+    line=${line%%[[:space:]]#\[Dashboard\]*}
+    line="${line%"${line##*[![:space:]]}"}"
+  fi
+  print -r -- "$line"
+}
+
+preview_clean_title() {
+  local t=$1
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  [[ -n $t ]] || return 1
+  t=${t##[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏[:space:]]#}
+  t="${t#"${t%%[![:space:]]*}"}"
+  [[ $t == '- '* ]] && t=${t#- }
+  t="${t#"${t%%[![:space:]]*}"}"
+  if [[ $t == (#i)waiting[[:space:]]for[[:space:]]response* || $t == (#i)responding* || $t == (#i)thinking* ]]; then
+    if [[ $t == *' - '* ]]; then
+      t=${t#* - }
+    else
+      return 1
     fi
   fi
+  if [[ $t == (#i)*' - grok-'* ]]; then
+    t=${t% - grok-*}
+  elif [[ $t == (#i)*' - grok' ]]; then
+    t=${t%[ ]-[ ][Gg]rok}
+  fi
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  [[ -n $t ]] || return 1
+  preview_is_product_title "$t" && return 1
+  preview_line_is_status "$t" && return 1
+  print -r -- "$t"
+}
 
-  raw_lines=("${(@f)cap}")
+preview_useful_title() {
+  local title=$1 name=$2 cmd=$3 wname=${4:-} short cleaned
+  cleaned=$(preview_clean_title "$title") || return 1
+  short=$(short_command_name "$cmd")
+  [[ $cleaned != "$name" && $cleaned != "$cmd" && $cleaned != "$short" ]] || return 1
+  [[ -n $wname && $cleaned == "$wname" ]] && preview_is_product_title "$wname" && return 1
+  print -r -- "$cleaned"
+}
+
+preview_conversation_heading() {
+  local line
+  for line in "$@"; do
+    preview_line_is_chrome "$line" && continue
+    preview_line_is_prompt "$line" && continue
+    print -r -- "$line"
+    return 0
+  done
+  return 1
+}
+
+preview_keep_useful_from_cap() {
+  local cap=$1 line stripped
+  local -i drop_grok_noise=${2:-0} saw_blank=0
   kept=()
-  for line in "${raw_lines[@]}"; do
+  for line in "${(@f)cap}"; do
     line="${line%"${line##*[![:space:]]}"}"
     stripped=${line//[[:space:]]/}
     if [[ -z $stripped ]]; then
@@ -2536,6 +2881,15 @@ session_preview_lines() {
     if preview_line_is_chrome "$line"; then
       continue
     fi
+    if (( drop_grok_noise )); then
+      preview_line_is_tool "$line" && continue
+      preview_line_is_model "$line" && continue
+      if [[ $line == '❯ '* ]]; then
+        line=${line#'❯ '}
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -n $line ]] || continue
+      fi
+    fi
     saw_blank=0
     kept+=("$line")
   done
@@ -2545,23 +2899,221 @@ session_preview_lines() {
   while (( ${#kept} )) && [[ -z "${kept[-1]}" ]]; do
     kept=("${(@)kept[1,-2]}")
   done
-  (( ${#kept} == 0 )) && {
-    title_line=$(preview_useful_title "$title" "$name" "$cmd") || return
-    preview_lines=("$title_line")
-    return
-  }
+}
+
+_preview_grok_lines() {
+  local -i max_body=$1 i n u=0 a=0 take
+  local line kind
+  local -a lines tags after
+  shift
+  picked=()
+  (( max_body < 1 )) && return
+  for line in "$@"; do
+    line=$(preview_strip_grok_line "$line")
+    [[ -n ${line//[[:space:]]/} ]] || continue
+    preview_line_is_chrome "$line" && continue
+    preview_line_is_bare_prompt "$line" && continue
+    preview_line_is_tool "$line" && continue
+    preview_line_is_model "$line" && continue
+    preview_line_is_status "$line" && continue
+    kind=asst
+    if [[ $line == '❯ '* ]]; then
+      line=${line#'❯ '}
+      kind=user
+    elif [[ $line == '> '* ]]; then
+      line=${line#'> '}
+      kind=user
+    fi
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -n $line ]] || continue
+    lines+=("$line")
+    tags+=("$kind")
+  done
+  n=${#lines}
+  (( n == 0 )) && return
+  for (( i = n; i >= 1; i-- )); do
+    [[ ${tags[i]} == user && u -eq 0 ]] && u=$i
+    [[ ${tags[i]} == asst && a -eq 0 ]] && a=$i
+    (( u && a )) && break
+  done
+  if (( u )); then
+    picked+=("${lines[u]}")
+    after=()
+    for (( i = u + 1; i <= n; i++ )); do
+      [[ ${tags[i]} == asst ]] && after+=("${lines[i]}")
+    done
+    if (( ${#after} == 0 )); then
+      for (( i = 1; i < u; i++ )); do
+        [[ ${tags[i]} == asst ]] && after+=("${lines[i]}")
+      done
+    fi
+    take=$(( max_body - 1 ))
+    (( take < 1 )) && take=1
+    if (( ${#after} > take )); then
+      after=("${(@)after[-take,-1]}")
+    fi
+    picked+=("${after[@]}")
+    if (( ${#picked} > max_body )); then
+      picked=("${(@)picked[-max_body,-1]}")
+    fi
+  else
+    if (( n > max_body )); then
+      picked=("${(@)lines[-max_body,-1]}")
+    else
+      picked=("${lines[@]}")
+    fi
+  fi
+}
+
+preview_grok_lines() {
+  local -a picked
+  _preview_grok_lines "$@"
+  (( ${#picked} )) && print -l -- "${picked[@]}"
+}
+
+_preview_generic_lines() {
+  local -i max_body=$1 i last_cmd=0 nout
+  local line low
+  local -a all rest
+  shift
+  picked=()
+  (( max_body < 1 )) && return
+  for line in "$@"; do
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n ${line//[[:space:]]/} ]] || continue
+    preview_line_is_chrome "$line" && continue
+    preview_line_is_bare_prompt "$line" && continue
+    low=${line:l}
+    [[ $low == (zsh|bash|sh|fish|dash|login) ]] && continue
+    all+=("$line")
+  done
+  for (( i = 1; i <= ${#all}; i++ )); do
+    if preview_line_is_prompt "${all[i]}" && ! preview_line_is_bare_prompt "${all[i]}"; then
+      last_cmd=$i
+    fi
+  done
+  if (( last_cmd )); then
+    picked+=("${all[last_cmd]}")
+    for (( i = last_cmd + 1; i <= ${#all}; i++ )); do
+      preview_line_is_prompt "${all[i]}" && continue
+      picked+=("${all[i]}")
+    done
+  else
+    picked=("${all[@]}")
+  fi
+  if (( ${#picked} > max_body )); then
+    if (( last_cmd )) && preview_line_is_prompt "${picked[1]}"; then
+      rest=("${(@)picked[2,-1]}")
+      if (( max_body == 1 )); then
+        (( ${#rest} )) && picked=("${rest[-1]}")
+      else
+        nout=$(( max_body - 1 ))
+        (( ${#rest} > nout )) && rest=("${(@)rest[-nout,-1]}")
+        picked=("${picked[1]}" "${rest[@]}")
+      fi
+    else
+      picked=("${(@)picked[-max_body,-1]}")
+    fi
+  fi
+}
+
+preview_generic_lines() {
+  local -a picked
+  _preview_generic_lines "$@"
+  (( ${#picked} )) && print -l -- "${picked[@]}"
+}
+
+preview_select_lines() {
+  local cmd=$1
+  local -i max_body=$2
+  local -a picked
+  shift 2
+  if preview_is_grok "$cmd"; then
+    _preview_grok_lines $max_body "$@"
+  else
+    _preview_generic_lines $max_body "$@"
+  fi
+  (( ${#picked} )) && print -l -- "${picked[@]}"
+}
+
+session_preview_lines() {
+  local name=$1 cmd=$3
+  local title=${4:-${session_titles[$name]:-}}
+  local -i max_lines=$2 grok=0 room
+  local cap title_line heading
+  local -a kept picked
+  preview_lines=()
+  preview_heading=
+  (( max_lines > preview_max_lines )) && max_lines=$preview_max_lines
+  (( max_lines < 1 )) && return
+  preview_is_grok "$cmd" && grok=1
+
+  cap=$(tmuxx capture-pane -t "=$name:." -p -J 2>/dev/null) || cap=""
+  preview_keep_useful_from_cap "$cap" $grok
+  if (( ${#kept} == 0 )); then
+    cap=$(tmuxx capture-pane -t "=$name:." -a -p 2>/dev/null) || cap=""
+    preview_keep_useful_from_cap "$cap" $grok
+  fi
+
   title_line=$(preview_useful_title "$title" "$name" "$cmd") || title_line=
+  if (( grok )) && [[ -z $title_line ]]; then
+    heading=$(preview_conversation_heading "${kept[@]}") || heading=
+    title_line=$(preview_useful_title "$heading" "$name" "$cmd") || title_line=
+  fi
+  if (( grok )); then
+    preview_heading=$title_line
+    room=$max_lines
+    (( room > 6 )) && room=6
+    (( room < 1 )) && room=1
+    _preview_grok_lines $room "${kept[@]}"
+    preview_lines=("${picked[@]}")
+    return
+  fi
+  if [[ -n $title_line && ${#kept} -gt 0 && ${kept[1]} == "$title_line" ]]; then
+    if (( ${#kept} == 1 )); then
+      kept=()
+    else
+      kept=("${(@)kept[2,-1]}")
+    fi
+  fi
   room=$max_lines
   [[ -n $title_line ]] && (( room-- ))
   (( room < 1 )) && room=1
-  if (( ${#kept} > room )); then
-    start=$(( ${#kept} - room + 1 ))
-    kept=("${(@)kept[start,-1]}")
+  (( room > 3 )) && room=3
+  _preview_generic_lines $room "${kept[@]}"
+  if [[ -n $title_line && ${#picked} -gt 0 && ${picked[1]} == "$title_line" ]]; then
+    if (( ${#picked} == 1 )); then
+      picked=()
+    else
+      picked=("${(@)picked[2,-1]}")
+    fi
+  fi
+  if (( ${#picked} == 0 )); then
+    [[ -n $title_line ]] || return
+    preview_lines=("$title_line")
+    return
   fi
   if [[ -n $title_line ]]; then
-    kept=("$title_line" "${kept[@]}")
+    preview_lines=("$title_line" "${picked[@]}")
+  else
+    preview_lines=("${picked[@]}")
   fi
-  preview_lines=("${kept[@]}")
+}
+
+preview_render_grok() {
+  local name=$1 pane_title=$2 cmd=$3 dump=$4
+  local -a kept picked
+  local heading
+  preview_keep_useful_from_cap "$dump" 1
+  heading=$(preview_useful_title "$pane_title" "$name" "$cmd") || heading=
+  if [[ -z $heading ]]; then
+    heading=$(preview_conversation_heading "${kept[@]}") || heading=
+    heading=$(preview_useful_title "$heading" "$name" "$cmd") || heading=
+  fi
+  _preview_grok_lines 6 "${kept[@]}"
+  print -r -- "预览  ${name}  grok"
+  [[ -n $heading ]] && print -r -- "标题：${heading}"
+  (( ${#picked} )) && print -l -- "${picked[@]}"
 }
 
 # Sticky window of `vis` item rows that keeps `cur` on screen.
@@ -2776,26 +3328,33 @@ draw() {
 
   if (( preview_on )) && [[ ${items_kind[$cursor]} == session ]] && (( draw_remain >= 3 )); then
     local pname psum pmeta pl cache_key
-    local -i pname_w cap_lines
+    local -i pname_w cap_lines grok_prev=0
     draw_emit "" || return
+    preview_is_grok "${items_cmd[$cursor]}" && grok_prev=1
     _fit_right "${items_name[$cursor]}" 20
     pname=$REPLY
-    display_width "$pname"
-    pname_w=REPLY
-    _fit_right "${items_summary[$cursor]}" $(( cols - 10 - pname_w ))
-    psum=$REPLY
-    draw_emit "  ${c_cyan}预览${c_reset}  ${c_bold}${pname}${c_reset}  ${c_dim}${psum}${c_reset}" || return
-    _fit_right "${items_path[$cursor]}  ·  ${items_cmd[$cursor]}" $(( cols - 4 ))
-    pmeta=$REPLY
-    draw_emit "  ${c_dim}${pmeta}${c_reset}" || return
+    if (( grok_prev )); then
+      draw_emit "  ${c_cyan}预览${c_reset}  ${c_bold}${pname}${c_reset}  ${c_dim}grok${c_reset}" || return
+    else
+      display_width "$pname"
+      pname_w=REPLY
+      _fit_right "${items_summary[$cursor]}" $(( cols - 10 - pname_w ))
+      psum=$REPLY
+      draw_emit "  ${c_cyan}预览${c_reset}  ${c_bold}${pname}${c_reset}  ${c_dim}${psum}${c_reset}" || return
+      _fit_right "${items_path[$cursor]}  ·  ${items_cmd[$cursor]}" $(( cols - 4 ))
+      pmeta=$REPLY
+      draw_emit "  ${c_dim}${pmeta}${c_reset}" || return
+    fi
     cap_lines=$draw_remain
     (( cap_lines > preview_max_lines )) && cap_lines=$preview_max_lines
     cache_key="${items_id[$cursor]}"$'\x1f'"${items_activity[$cursor]:-}"
     if [[ -n ${preview_cache[$cache_key]+x} ]]; then
       if [[ -n ${preview_cache[$cache_key]} ]]; then
         preview_lines=("${(@ps:\x1e:)preview_cache[$cache_key]}")
+        preview_heading=${preview_cache_heading[$cache_key]:-}
       else
         preview_lines=()
+        preview_heading=
       fi
     elif (( preview_defer )); then
       draw_emit "  ${c_dim}…${c_reset}" || return
@@ -2803,9 +3362,14 @@ draw() {
     else
       session_preview_lines "${items_id[$cursor]}" $cap_lines "${items_cmd[$cursor]}"
       preview_cache[$cache_key]="${(pj:\x1e:)preview_lines}"
+      preview_cache_heading[$cache_key]=$preview_heading
+    fi
+    if (( grok_prev )) && [[ -n $preview_heading ]]; then
+      _fit_head_tail "标题：${preview_heading}" $(( cols - 4 ))
+      draw_emit "  ${c_bold}${REPLY}${c_reset}" || return
     fi
     for pl in "${preview_lines[@]}"; do
-      _fit_right "$pl" $(( cols - 4 ))
+      _fit_head_tail "$pl" $(( cols - 4 ))
       draw_emit "  ${c_dim}${REPLY}${c_reset}" || break
     done
   fi
@@ -2817,7 +3381,7 @@ draw() {
 draw_settings_overlay() {
   local -i cols rows w h r c i
   local -a lines
-  local line hl
+  local line hl root
   cols=$(term_cols)
   rows=$(term_lines)
   lines=(
@@ -2825,10 +3389,26 @@ draw_settings_overlay() {
     ""
     "  打开到    $(settings_value_label target)"
     "  窗口      $(settings_value_label placement)"
-    ""
-    "  j/k 选择  Enter 切换  q 关闭"
   )
+  for root in "${project_roots[@]}"; do
+    lines+=("  项目根    $root")
+  done
+  lines+=("  ＋ 添加项目根")
+  if (( settings_input_on )); then
+    lines+=("  路径  ${settings_input_buf}█")
+    lines+=("  Enter 确定  Esc 取消")
+  fi
+  lines+=("")
+  if (( settings_input_on )); then
+    lines+=("  在浮层里输入，能看见自己打的字")
+  else
+    lines+=("  j/k 选择  Enter 切换/添加  d 删除根  q 关闭")
+  fi
   w=44
+  for line in "${lines[@]}"; do
+    display_width "$line"
+    (( REPLY + 4 > w )) && w=$(( REPLY + 4 ))
+  done
   h=$(( ${#lines} + 2 ))
   (( w > cols - 2 )) && w=$(( cols - 2 ))
   (( w < 16 )) && w=16
@@ -2844,7 +3424,9 @@ draw_settings_overlay() {
     line=${lines[$i]}
     _padw "$line" $(( w - 2 ))
     hl=0
-    if (( i == 3 && settings_cursor == 1 )) || (( i == 4 && settings_cursor == 2 )); then
+    if (( settings_input_on )); then
+      (( i == 6 + ${#project_roots} )) && hl=1
+    elif (( i == settings_cursor + 2 )); then
       hl=1
     fi
     if (( hl )); then
@@ -3193,12 +3775,6 @@ if [[ ${1:-} == --digit-selftest ]]; then
   exit $?
 fi
 
-if [[ ${1:-} == --pick-selftest ]]; then
-  . "${0:A:h}/lanjump-pick-selftest.zsh"
-  pick_selftest
-  exit $?
-fi
-
 print_workspace_names() {
   load_pinned_sessions
   load_session_snapshot
@@ -3227,6 +3803,30 @@ print_last_name() {
   (( ${#snap_names} )) || return 1
   print -r -- "${snap_names[-1]}"
 }
+
+# Newest-activity first, up to $1 names (default 5).
+print_recent_names() {
+  local -i max=${1:-5} n=0
+  local line name
+  local -a raw
+  [[ $HAS_TMUX -eq 1 ]] || return 1
+  raw=("${(@f)$(tmuxx list-sessions -F $'#{session_activity}\t#{session_name}' 2>/dev/null)}")
+  (( ${#raw} )) || return 1
+  for line in "${(@f)$(print -r -- "${(F)raw}" | sort -t $'\t' -k1,1nr)}"; do
+    [[ -n $line ]] || continue
+    name=${line#*$'\t'}
+    [[ -n $name ]] || continue
+    print -r -- "$name"
+    (( ++n >= max )) && break
+  done
+  (( n ))
+}
+
+if [[ ${1:-} == --pick-selftest ]]; then
+  . "${0:A:h}/lanjump-pick-selftest.zsh"
+  pick_selftest
+  exit $?
+fi
 
 print_session_list() {
   local line
@@ -3260,6 +3860,10 @@ if [[ ${1:-} == --print-last ]]; then
   print_last_name || exit 1
   exit 0
 fi
+if [[ ${1:-} == --print-recent ]]; then
+  print_recent_names 5 || exit 1
+  exit 0
+fi
 if [[ ${1:-} == --print-sessions ]]; then
   print_session_list
   exit 0
@@ -3276,6 +3880,7 @@ fi
 if [[ ${1:-} == --pin-session ]]; then
   name=${2:-}
   [[ -n $name ]] || exit 1
+  load_settings
   load_pinned_sessions
   load_session_snapshot
   cwd=$(resolve_session_cwd "$name")
@@ -3297,6 +3902,7 @@ if [[ ${1:-} == --new-session ]]; then
   if tmuxx has-session -t "=$name" 2>/dev/null; then
     exit 0
   fi
+  load_settings
   load_pinned_sessions
   load_session_snapshot
   cwd=$(resolve_session_cwd "$name")
@@ -3368,6 +3974,7 @@ if [[ ${1:-} == --attach ]]; then
     print -u2 "这台机器上没有 tmux。"
     exit 1
   fi
+  load_settings
   load_session_snapshot
   mark_snapshot_occupied "$name"
   remember_last_session "$name"
@@ -3386,6 +3993,30 @@ picker_boot_before_first_draw
 picker_boot_after_first_draw
 
 while true; do
+  if (( settings_on && settings_input_on )); then
+    preview_defer=0
+    settings_input_read || continue
+    case $REPLY in
+      enter)
+        settings_commit_input
+        draw
+        ;;
+      esc)
+        settings_input_on=0
+        settings_input_buf=
+        draw
+        ;;
+      backspace)
+        (( ${#settings_input_buf} )) && settings_input_buf=${settings_input_buf[1,-2]}
+        draw
+        ;;
+      char)
+        settings_input_buf+=$settings_input_char
+        draw
+        ;;
+    esac
+    continue
+  fi
   if (( preview_defer )); then
     if ! read_key $preview_wait; then
       preview_defer=0
@@ -3399,17 +4030,19 @@ while true; do
     preview_defer=0
     case $REPLY in
       up)
-        (( settings_cursor-- ))
-        (( settings_cursor < 1 )) && settings_cursor=2
+        settings_move -1
         draw
         ;;
       down)
-        (( settings_cursor++ ))
-        (( settings_cursor > 2 )) && settings_cursor=1
+        settings_move 1
         draw
         ;;
       enter)
-        cycle_setting
+        settings_enter
+        draw
+        ;;
+      d)
+        settings_delete_key
         draw
         ;;
       q|esc|settings)

@@ -30,6 +30,9 @@ if ! (( ${+functions[cli_dispatch]} )); then
   expect_contains help/list 'list [机器]' "$out"
   expect_contains help/last 'last [机器]' "$out"
   expect_contains help/go 'go [机器:]名字' "$out"
+  expect_contains help/grok '--grok' "$out"
+  expect_contains help/last-menu '最近 5 个' "$out"
+  expect_absent help/no-new '  new ' "$out"
   expect_contains help/work 'work [机器]' "$out"
   expect_contains help/pins 'pins [机器]' "$out"
   expect_contains help/settings ', 设置' "$out"
@@ -213,6 +216,10 @@ cli_list_names() {
     --print-workspace) print -r -- "${host}-work" ;;
     --print-pinned) print -r -- "${host}-pin" ;;
     --print-last) print -r -- "${host}-last" ;;
+    --print-recent)
+      print -r -- "${host}-recent1"
+      print -r -- "${host}-recent2"
+      ;;
     *) print -r -- "${host}-sess" ;;
   esac
 }
@@ -229,9 +236,61 @@ cli_open_tabs() {
   (( ${#ns} )) || return 1
 }
 
+CLI_HAS_SESSION=1
+CLI_PIN=0
+CLI_CREATE=1
+CLI_GROK_DIR=0
+TEST_PANE_CMD=zsh
+TEST_PANE_CWD=/tmp/typed-cwd
+
 cli_has_session() {
   print -r -- "HAS host=$1 session=$2" >>"$log"
+  (( CLI_HAS_SESSION ))
+}
+
+cli_ask_create() {
+  print "没有 session「${1}」。"
+  print -n "要新建并打开吗？（回车=是，其他键=否） "
+  (( CLI_CREATE ))
+}
+
+cli_ask_pin() {
+  print -n "常驻（y=是，回车=否）: "
+  (( CLI_PIN ))
+}
+
+cli_pick() {
+  print -r -- "PICK ${(j: :)@}" >>"$log"
+}
+
+cli_pick_exec() {
+  print -r -- "PICK_EXEC ${(j: :)@}" >>"$log"
+}
+
+cli_tmux() {
+  print -r -- "TMUX ${(j: :)@}" >>"$log"
+  case $1 in
+    display-message)
+      if [[ $* == *pane_current_command* ]]; then
+        print -r -- "$TEST_PANE_CMD"
+      elif [[ $* == *pane_current_path* ]]; then
+        print -r -- "$TEST_PANE_CWD"
+      fi
+      ;;
+    new-session)
+      print -r -- auto7
+      ;;
+  esac
   return 0
+}
+
+cli_cwd_has_grok_session() {
+  (( CLI_GROK_DIR ))
+}
+
+cli_recent_select() {
+  print -r -- "SELECT ${(j: :)@}" >>"$log"
+  print -r -- "$1"
 }
 
 read_log() {
@@ -323,6 +382,117 @@ fi
 expect_contains go-host-session/has 'HAS host=office session=lanjump' "$hay"
 expect_contains go-host-session/open 'OPEN host=office names=lanjump' "$hay"
 expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
+
+LANJUMP_GROK_BIN=grok
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+cli_dispatch last >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL last-menu/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains last-menu/list 'LIST host=local flag=--print-recent' "$hay"
+expect_contains last-menu/select 'SELECT local-recent1 local-recent2' "$hay"
+expect_contains last-menu/attach 'PICK_EXEC --attach local-recent1' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch go >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-auto/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-auto/tmux 'TMUX new-session' "$hay"
+expect_contains go-auto/attach 'PICK_EXEC --attach auto7' "$hay"
+expect_absent go-auto/no-tabs 'OPEN ' "$hay"
+expect_absent go-auto/no-grok 'TMUX send-keys' "$hay"
+expect_absent go-auto/no-pin 'PICK --pin-session' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch go --grok >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-auto-grok/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-auto-grok/send 'TMUX send-keys' "$hay"
+expect_contains go-auto-grok/fresh '-- grok Enter' "$hay"
+expect_absent go-auto-grok/no-c 'grok -c' "$hay"
+
+CLI_GROK_DIR=1
+: >"$log"
+st=0
+cli_dispatch go --grok >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-auto-grok-c/c 'grok -c' "$hay"
+CLI_GROK_DIR=0
+
+CLI_HAS_SESSION=0
+CLI_CREATE=1
+CLI_PIN=0
+: >"$log"
+st=0
+out=$(cli_dispatch go demo) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-missing/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-missing/ask '要新建并打开吗' "$out"
+expect_contains go-missing/pin-prompt '常驻（y=是，回车=否）' "$out"
+expect_contains go-missing/create 'PICK --new-session demo' "$hay"
+expect_absent go-missing/no-pin 'PICK --pin-session' "$hay"
+expect_contains go-missing/open 'OPEN host=local names=demo' "$hay"
+
+CLI_PIN=1
+: >"$log"
+st=0
+cli_dispatch go demo >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-missing-pin/pin 'PICK --pin-session demo' "$hay"
+CLI_PIN=0
+
+CLI_CREATE=0
+: >"$log"
+st=0
+cli_dispatch go demo >/dev/null || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-missing-cancel/status got 0 want nonzero"
+  (( fails++ ))
+fi
+CLI_CREATE=1
+
+CLI_HAS_SESSION=1
+TEST_PANE_CMD=zsh
+CLI_GROK_DIR=0
+: >"$log"
+st=0
+cli_dispatch go demo --grok >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-exist-grok/send 'TMUX send-keys' "$hay"
+expect_contains go-exist-grok/fresh '-- grok Enter' "$hay"
+expect_absent go-exist-grok/no-c 'grok -c' "$hay"
+
+TEST_PANE_CMD=grok
+: >"$log"
+st=0
+cli_dispatch go demo --grok >/dev/null || st=$?
+hay=$(read_log)
+expect_absent go-exist-already/no-send 'TMUX send-keys' "$hay"
+TEST_PANE_CMD=zsh
+
+st=0
+err=$(/bin/zsh "${0:A:h}/lanjump.zsh" new 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL new-removed/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains new-removed/msg '未知命令：new' "$err"
+expect_absent new-removed/no-hint 'lanjump go' "$err"
 
 if (( fails )); then
   print -u2 "cli-selftest: $fails failed"
