@@ -521,6 +521,17 @@ pane_is_shell() {
   [[ -z $cmd || $cmd == zsh || $cmd == bash || $cmd == sh || $cmd == fish || $cmd == dash || $cmd == login ]]
 }
 
+# Unreadable pane command is not an idle shell; do not respawn.
+pane_is_idle_shell() {
+  [[ -n ${1:-} ]] || return 1
+  pane_is_shell "$1"
+}
+
+# tmux 3.7c: session-only -t '=$name' leaves pane formats empty.
+session_pane_target() {
+  print -r -- "=${1}:."
+}
+
 last_command_resumable() {
   [[ $(short_command_name "$1") == grok ]]
 }
@@ -1448,11 +1459,12 @@ snapshot_live_sessions() {
 }
 
 mark_snapshot_occupied() {
-  local name=$1 cwd cmd prev
+  local name=$1 cwd cmd prev target
   [[ -n $name ]] || return 0
   load_session_snapshot
-  cwd=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
-  cmd=$(tmuxx display-message -p -t "=$name" '#{pane_current_command}' 2>/dev/null || true)
+  target=$(session_pane_target "$name")
+  cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
+  cmd=$(tmuxx display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
   if (( ${snap_names[(Ie)$name]} == 0 )); then
     snap_names+=("$name")
   fi
@@ -1766,13 +1778,15 @@ prompt_restore_windows() {
 }
 
 ensure_session_cwd() {
-  local name=$1 want live
+  local name=$1 want live target
   [[ -n $name ]] || return 0
-  live=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
+  target=$(session_pane_target "$name")
+  live=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
+  [[ -n $live ]] || return 0
   want=$(resolve_session_cwd "$name" "$live")
   [[ -n $want ]] || return 0
   [[ $live == "$want" ]] && return 0
-  tmuxx send-keys -t "=$name" -- "cd ${(q)want}" Enter 2>/dev/null || true
+  tmuxx send-keys -t "$target" -- "cd ${(q)want}" Enter 2>/dev/null || true
 }
 
 session_first_pane() {
@@ -1783,19 +1797,20 @@ session_first_pane() {
 }
 
 maybe_resume_last_command() {
-  local name=$1 live last line want pane_cwd pane
+  local name=$1 live last line want pane_cwd pane target
   local -a args
   [[ -n $name ]] || return 0
-  live=$(tmuxx display-message -p -t "=$name" '#{pane_current_command}' 2>/dev/null || true)
+  target=$(session_pane_target "$name")
+  live=$(tmuxx display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
   if [[ -n ${LANJUMP_DEBUG:-} ]]; then
     print -u2 "lanjump-resume enter name=$name live=${live:-empty}"
   fi
-  pane_is_shell "$live" || return 0
-  pane_cwd=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
+  pane_is_idle_shell "$live" || return 0
+  pane_cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
   want=$(resolve_session_cwd "$name" "$pane_cwd")
   (( attach_shell_only )) && {
-    if [[ -n $want && $pane_cwd != "$want" ]]; then
-      tmuxx send-keys -t "=$name" -- "cd ${(q)want}" Enter 2>/dev/null || true
+    if [[ -n $want && -n $pane_cwd && $pane_cwd != "$want" ]]; then
+      tmuxx send-keys -t "$target" -- "cd ${(q)want}" Enter 2>/dev/null || true
     fi
     return 0
   }
@@ -1804,13 +1819,13 @@ maybe_resume_last_command() {
     if [[ -n ${LANJUMP_DEBUG:-} ]]; then
       print -u2 "lanjump-resume skip name=$name last=$last want=$want"
     fi
-    if [[ -n $want && $pane_cwd != "$want" ]]; then
-      tmuxx send-keys -t "=$name" -- "cd ${(q)want}" Enter 2>/dev/null || true
+    if [[ -n $want && -n $pane_cwd && $pane_cwd != "$want" ]]; then
+      tmuxx send-keys -t "$target" -- "cd ${(q)want}" Enter 2>/dev/null || true
     fi
     return 0
   }
   pane=$(session_first_pane "$name")
-  [[ -n $pane ]] || pane="=$name:0.0"
+  [[ -n $pane ]] || pane=$target
   args=(respawn-pane -t "$pane" -k)
   [[ -n $want ]] && args+=(-c "$want")
   args+=(-e "PATH=$(resume_pane_path)")
@@ -1852,9 +1867,9 @@ attach_named_session() {
   load_session_snapshot
   remember_last_session "$name"
   if (( ask )); then
-    live=$(tmuxx display-message -p -t "=$name" '#{pane_current_command}' 2>/dev/null || true)
+    live=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_command}' 2>/dev/null || true)
     last=${snap_cmd[$name]:-}
-    if pane_is_shell "$live" && last_command_resumable "$last"; then
+    if pane_is_idle_shell "$live" && last_command_resumable "$last"; then
       restore_tty
       print
       enter_resume_prompt_text "$last"
@@ -2589,8 +2604,8 @@ toggle_session_pin() {
     tmux_set_pinned "$name" 0
     on=0
   else
-    cwd=$(tmuxx display-message -p -t "=$name" '#{pane_current_path}' 2>/dev/null || true)
-    pid=$(tmuxx display-message -p -t "=$name" '#{pane_pid}' 2>/dev/null || true)
+    cwd=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_path}' 2>/dev/null || true)
+    pid=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_pid}' 2>/dev/null || true)
     grok=$(grok_id_for_pid "$pid")
     add_pin_record "$name" "$cwd" "$grok"
     tmux_set_pinned "$name" 1
