@@ -567,6 +567,14 @@ hay=$(read_log)
 expect_contains go-auto-grok-c/c 'grok -c' "$hay"
 CLI_GROK_DIR=0
 
+TEST_PANE_CMD=
+: >"$log"
+st=0
+cli_dispatch go --grok >/dev/null || st=$?
+hay=$(read_log)
+expect_absent go-auto-unread/no-send 'TMUX send-keys' "$hay"
+TEST_PANE_CMD=zsh
+
 CLI_HAS_SESSION=1
 TEST_PANE_CMD=zsh
 CLI_GROK_DIR=0
@@ -584,6 +592,21 @@ st=0
 cli_dispatch go demo --grok >/dev/null || st=$?
 hay=$(read_log)
 expect_absent go-exist-already/no-send 'TMUX send-keys' "$hay"
+
+TEST_PANE_CMD=grok-1.0.24-mac
+: >"$log"
+st=0
+cli_dispatch go demo --grok >/dev/null || st=$?
+hay=$(read_log)
+expect_absent go-exist-grok-ver/no-send 'TMUX send-keys' "$hay"
+
+TEST_PANE_CMD=
+: >"$log"
+st=0
+cli_dispatch go demo --grok >/dev/null || st=$?
+hay=$(read_log)
+expect_absent go-exist-unread/no-send 'TMUX send-keys' "$hay"
+expect_contains go-exist-unread/pane-target '-t =demo:.' "$hay"
 TEST_PANE_CMD=zsh
 
 st=0

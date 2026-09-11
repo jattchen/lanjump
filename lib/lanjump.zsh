@@ -1590,11 +1590,13 @@ cli_start_grok() {
   target="=${session}:."
   live=$(cli_tmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
   live=${live##*/}
+  # Unreadable command is not an idle shell; do not send-keys into a live grok.
+  [[ -n $live ]] || return 0
   if [[ $live == grok || $live == grok-* ]]; then
     return 0
   fi
   case $live in
-    ''|zsh|bash|sh|fish|dash|login) ;;
+    zsh|bash|sh|fish|dash|login) ;;
     *) return 0 ;;
   esac
   pane_cwd=$(cli_tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
