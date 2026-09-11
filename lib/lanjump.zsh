@@ -1635,46 +1635,55 @@ cli_recent_select() {
   local -a names
   names=("$@")
   local -i cur=1 n=${#names} i
+  local chosen=
   (( n )) || return 1
-  if [[ ! -t 0 || ! -t 1 ]]; then
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
     print -u2 "需要交互式终端。"
     return 1
   fi
-  setup_tty
-  while true; do
-    print -n $'\e[H\e[J'
-    print -r -- "最近 session"
-    print
-    for (( i = 1; i <= n; i++ )); do
-      if (( i == cur )); then
-        print -r -- "> ${names[i]}"
-      else
-        print -r -- "  ${names[i]}"
-      fi
+  {
+    stty_orig=$(stty -g </dev/tty 2>/dev/null) || stty_orig=
+    stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
+    print -n $'\e[?25l'
+    while true; do
+      print -n $'\e[H\e[J'
+      print -r -- "最近 session"
+      print
+      for (( i = 1; i <= n; i++ )); do
+        if (( i == cur )); then
+          print -r -- "> ${names[i]}"
+        else
+          print -r -- "  ${names[i]}"
+        fi
+      done
+      print
+      print -r -- "j/k 选择  Enter 进入  q 取消"
+      read_key || continue
+      case $REPLY in
+        up)
+          (( cur-- ))
+          (( cur < 1 )) && cur=$n
+          ;;
+        down)
+          (( cur++ ))
+          (( cur > n )) && cur=1
+          ;;
+        enter)
+          chosen=${names[cur]}
+          print -n $'\e[?25h'
+          [[ -n $stty_orig ]] && stty "$stty_orig" </dev/tty 2>/dev/null
+          break
+          ;;
+        q|esc)
+          print -n $'\e[?25h'
+          [[ -n $stty_orig ]] && stty "$stty_orig" </dev/tty 2>/dev/null
+          return 1
+          ;;
+      esac
     done
-    print
-    print -r -- "j/k 选择  Enter 进入  q 取消"
-    read_key || continue
-    case $REPLY in
-      up)
-        (( cur-- ))
-        (( cur < 1 )) && cur=$n
-        ;;
-      down)
-        (( cur++ ))
-        (( cur > n )) && cur=1
-        ;;
-      enter)
-        restore_tty
-        print -r -- "${names[cur]}"
-        return 0
-        ;;
-      q|esc)
-        restore_tty
-        return 1
-        ;;
-    esac
-  done
+  } </dev/tty >/dev/tty
+  [[ -n $chosen ]] || return 1
+  print -r -- "$chosen"
 }
 
 cli_has_session() {
@@ -1813,7 +1822,8 @@ cli_dispatch() {
       cli_list_names "$host" --print-sessions
       ;;
     last)
-      names=("${(@f)$(cli_list_names "$host" --print-recent)}") || names=()
+      names=("${(@f)$(cli_list_names "$host" --print-recent)}")
+      names=("${(@)names:#}")
       if (( ! ${#names} )); then
         print -u2 "没有最近的 session。"
         return 1
