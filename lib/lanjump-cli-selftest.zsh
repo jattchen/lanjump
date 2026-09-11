@@ -104,9 +104,17 @@ cli_open_tabs() {
   (( ${#ns} )) || return 1
 }
 
+CLI_HAS_SESSION=1
+CLI_PIN=0
+
 cli_has_session() {
   print -r -- "HAS host=$1 session=$2" >>"$log"
-  return 0
+  (( CLI_HAS_SESSION ))
+}
+
+cli_ask_pin() {
+  print -n "常驻（y=是，回车=否）: "
+  (( CLI_PIN ))
 }
 
 cli_pick() {
@@ -226,23 +234,40 @@ expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
 
 LANJUMP_GROK_BIN=grok
 TEST_LAST_HOST=office
+CLI_HAS_SESSION=0
+CLI_PIN=0
 : >"$log"
 st=0
-cli_dispatch new foo --grok >/dev/null || st=$?
+out=$(cli_dispatch new foo --grok) || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL new-foo-grok/status got $st want 0"
   (( fails++ ))
 fi
+expect_contains new-foo-grok/pin-prompt '常驻（y=是，回车=否）' "$out"
 expect_contains new-foo-grok/create 'PICK --new-session foo' "$hay"
 expect_contains new-foo-grok/grok 'TMUX send-keys' "$hay"
 expect_contains new-foo-grok/pane-target '-t =foo:.' "$hay"
 expect_absent new-foo-grok/no-bare-pane '-t =foo ' "$hay"
-expect_contains new-foo-grok/grok-bin 'grok -c' "$hay"
+expect_contains new-foo-grok/fresh '-- grok Enter' "$hay"
+expect_absent new-foo-grok/no-c 'grok -c' "$hay"
 expect_absent new-foo-grok/no-resume '--resume' "$hay"
+expect_absent new-foo-grok/no-pin 'PICK --pin-session' "$hay"
 expect_contains new-foo-grok/attach 'PICK_EXEC --attach foo' "$hay"
 expect_absent new-foo-grok/no-open-tabs 'OPEN ' "$hay"
 expect_absent new-foo-grok/no-ghostty '--open-tabs' "$hay"
+
+CLI_PIN=1
+: >"$log"
+st=0
+cli_dispatch new foo --grok >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL new-foo-pin/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains new-foo-pin/pin 'PICK --pin-session foo' "$hay"
+CLI_PIN=0
 
 TEST_LAST_HOST=local
 : >"$log"
@@ -256,35 +281,38 @@ fi
 expect_contains new-auto-grok/tmux-new 'TMUX new-session' "$hay"
 expect_contains new-auto-grok/attach 'PICK_EXEC --attach auto7' "$hay"
 expect_contains new-auto-grok/grok 'TMUX send-keys' "$hay"
+expect_contains new-auto-grok/fresh '-- grok Enter' "$hay"
+expect_absent new-auto-grok/no-c 'grok -c' "$hay"
 expect_absent new-auto-grok/no-named 'PICK --new-session' "$hay"
 expect_absent new-auto-grok/no-open-tabs 'OPEN ' "$hay"
 
 : >"$log"
 st=0
-cli_dispatch new foo >/dev/null || st=$?
+out=$(cli_dispatch new foo) || st=$?
 if (( st != 0 )); then
   print -u2 "FAIL new-without-grok/status got $st want 0"
   (( fails++ ))
 fi
 hay=$(read_log)
+expect_contains new-without-grok/pin-prompt '常驻（y=是，回车=否）' "$out"
 expect_contains new-without-grok/create 'PICK --new-session foo' "$hay"
 expect_contains new-without-grok/attach 'PICK_EXEC --attach foo' "$hay"
 expect_absent new-without-grok/no-grok 'TMUX send-keys' "$hay"
 
-TEST_PANE_CWD=$HOME
+CLI_HAS_SESSION=1
 : >"$log"
 st=0
-cli_dispatch new demo --grok >/dev/null || st=$?
+cli_dispatch new foo >/dev/null || st=$?
 if (( st != 0 )); then
-  print -u2 "FAIL new-home-grok/status got $st want 0"
+  print -u2 "FAIL new-existing/status got $st want 0"
   (( fails++ ))
 fi
 hay=$(read_log)
-expect_contains new-home-grok/send 'TMUX send-keys' "$hay"
-expect_contains new-home-grok/fresh '-- grok Enter' "$hay"
-expect_absent new-home-grok/no-resume '--resume' "$hay"
-expect_absent new-home-grok/no-continue 'grok -c' "$hay"
-TEST_PANE_CWD=
+expect_contains new-existing/has 'HAS host=local session=foo' "$hay"
+expect_contains new-existing/attach 'PICK_EXEC --attach foo' "$hay"
+expect_absent new-existing/no-create 'PICK --new-session' "$hay"
+expect_absent new-existing/no-pin 'PICK --pin-session' "$hay"
+CLI_HAS_SESSION=0
 
 if (( fails )); then
   print -u2 "cli-selftest: $fails failed"

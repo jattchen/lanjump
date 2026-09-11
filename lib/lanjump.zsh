@@ -1617,7 +1617,7 @@ cli_auto_new_session() {
 
 cli_start_grok() {
   local session=$1
-  local live pane_cwd bin line target
+  local live bin target
   [[ -n $session ]] || return 1
   # tmux treats -t =name as a pane id and errors "can't find pane".
   target="=${session}:."
@@ -1630,16 +1630,26 @@ cli_start_grok() {
     ''|zsh|bash|sh|fish|dash|login) ;;
     *) return 0 ;;
   esac
-  pane_cwd=$(cli_tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
   bin=$(cli_grok_bin)
-  # New session: never --resume (that reopens some other conversation).
-  # Matching project dir → grok -c; otherwise a fresh grok in the pane cwd.
-  if [[ -n $pane_cwd && $pane_cwd != '~' && $pane_cwd != "$HOME" && $pane_cwd != "$HOME/" ]]; then
-    line="$bin -c"
+  # new --grok always starts a fresh conversation. grok -c / --resume
+  # fail or reopen something else when this directory has no session yet.
+  cli_tmux send-keys -t "$target" -- "$bin" Enter
+}
+
+cli_ask_pin() {
+  local pinans
+  print -n "常驻（y=是，回车=否）: "
+  read -r pinans </dev/tty || pinans=
+  [[ $pinans == y || $pinans == Y ]]
+}
+
+cli_pin_session() {
+  local host=$1 session=$2
+  if [[ $host == local ]]; then
+    cli_pick --pin-session "$session"
   else
-    line="$bin"
+    cli_remote_print "$host" --pin-session "$session"
   fi
-  cli_tmux send-keys -t "$target" -- "$line" Enter
 }
 
 cli_usage() {
@@ -1726,16 +1736,10 @@ cli_dispatch() {
         if [[ -n $ans ]]; then
           return 1
         fi
-        print -n "常驻（y=是，回车=否）: "
-        read -r pinans </dev/tty || pinans=
-        [[ $pinans == y || $pinans == Y ]] && pin=1
+        cli_ask_pin && pin=1
         cli_new_session "$host" "$session" || return 1
         if (( pin )); then
-          if [[ $host == local ]]; then
-            cli_pick --pin-session "$session"
-          else
-            cli_remote_print "$host" --pin-session "$session"
-          fi
+          cli_pin_session "$host" "$session"
         fi
       fi
       cli_open_tabs "$host" "$session"
@@ -1760,10 +1764,18 @@ cli_dispatch() {
       print -r -- "$session"
       ;;
     new)
-      if [[ -z $session ]]; then
-        session=$(cli_auto_new_session) || return 1
+      if [[ -n $session ]] && cli_has_session "$host" "$session"; then
+        :
       else
-        cli_new_session "$host" "$session" || return 1
+        cli_ask_pin && pin=1
+        if [[ -z $session ]]; then
+          session=$(cli_auto_new_session) || return 1
+        else
+          cli_new_session "$host" "$session" || return 1
+        fi
+        if (( pin )); then
+          cli_pin_session "$host" "$session"
+        fi
       fi
       if (( want_grok )); then
         cli_start_grok "$session" || return 1
