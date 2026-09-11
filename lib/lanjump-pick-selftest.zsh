@@ -12,7 +12,7 @@
 # resolve_session_cwd, picker_boot_before_first_draw, picker_boot_after_first_draw,
 # preview_is_grok, preview_line_is_tool, preview_line_is_model,
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
-# session_name_invalid, restore_csi_key, restore_read_key, restore_tty,
+# session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
 # resume_prompt_choice, attach_command_for, new_session_flag_invalid,
 # read_key, PENDING_KEY.
 
@@ -2312,6 +2312,20 @@ pick_selftest() {
   expect restore/csi-pgdn other "$REPLY"
   if [[ ${functions[restore_read_key]} != *restore_csi_key* ]]; then
     print -u2 "FAIL restore/read-key missing restore_csi_key got=$(printf %q "${functions[restore_read_key]}")"
+    (( fails++ ))
+  fi
+
+  # #40: restore checkbox list must match host/session lists (j up, k down).
+  restore_plain_key j
+  expect restore/j-up up "$REPLY"
+  restore_plain_key J
+  expect restore/J-up up "$REPLY"
+  restore_plain_key k
+  expect restore/k-down down "$REPLY"
+  restore_plain_key K
+  expect restore/K-down down "$REPLY"
+  if [[ ${functions[restore_read_key]} != *restore_plain_key* ]]; then
+    print -u2 "FAIL restore/read-key missing restore_plain_key got=$(printf %q "${functions[restore_read_key]}")"
     (( fails++ ))
   fi
 

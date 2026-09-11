@@ -1644,6 +1644,19 @@ restore_csi_key() {
   esac
 }
 
+# Match host/session lists: j up, k down. Arrows come from restore_csi_key.
+restore_plain_key() {
+  case ${1:-} in
+    $'\n'|$'\r') REPLY=enter ;;
+    ' ') REPLY=space ;;
+    2) REPLY=two ;;
+    q|Q) REPLY=q ;;
+    j|J) REPLY=up ;;
+    k|K) REPLY=down ;;
+    *) REPLY=other ;;
+  esac
+}
+
 restore_read_key() {
   local k k2 k3 c buf
   IFS= read -rsk1 k || return 1
@@ -1678,15 +1691,7 @@ restore_read_key() {
     REPLY=esc
     return 0
   fi
-  case $k in
-    $'\n'|$'\r') REPLY=enter ;;
-    ' ') REPLY=space ;;
-    2) REPLY=two ;;
-    q|Q) REPLY=q ;;
-    j|J) REPLY=down ;;
-    k|K) REPLY=up ;;
-    *) REPLY=other ;;
-  esac
+  restore_plain_key "$k"
 }
 
 restore_pick_toggle() {
