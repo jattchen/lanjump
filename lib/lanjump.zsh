@@ -1545,6 +1545,138 @@ cli_open_tabs() {
   fi
 }
 
+cli_tmux() {
+  local bin
+  bin="${commands[tmux]:-/usr/local/bin/tmux}"
+  "$bin" "$@"
+}
+
+cli_grok_bin() {
+  local c
+  if [[ -n ${LANJUMP_GROK_BIN:-} ]]; then
+    print -r -- "$LANJUMP_GROK_BIN"
+    return 0
+  fi
+  for c in "$HOME/.grok/bin/grok" "$HOME/.local/bin/grok"; do
+    [[ -x $c ]] && { print -r -- "$c"; return 0 }
+  done
+  (( $+commands[grok] )) && { print -r -- "${commands[grok]}"; return 0 }
+  print -r -- grok
+}
+
+cli_cwd_has_grok_session() {
+  local cwd=$1 enc dir
+  [[ -n $cwd ]] || return 1
+  enc=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$cwd" 2>/dev/null) || return 1
+  dir="$HOME/.grok/sessions/$enc"
+  [[ -d $dir ]]
+}
+
+cli_auto_new_session() {
+  local created
+  created=$(cli_tmux new-session -d -P -F '#{session_name}' -c "$PWD" 2>/dev/null) || created=
+  created=${created%%$'\n'*}
+  [[ -n $created ]] || {
+    print -u2 "无法新建 session。"
+    return 1
+  }
+  print -r -- "$created"
+}
+
+cli_start_grok() {
+  local session=$1
+  local live pane_cwd bin line target
+  [[ -n $session ]] || return 1
+  target="=${session}:."
+  live=$(cli_tmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
+  live=${live##*/}
+  if [[ $live == grok || $live == grok-* ]]; then
+    return 0
+  fi
+  case $live in
+    ''|zsh|bash|sh|fish|dash|login) ;;
+    *) return 0 ;;
+  esac
+  pane_cwd=$(cli_tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
+  bin=$(cli_grok_bin)
+  if cli_cwd_has_grok_session "$pane_cwd"; then
+    line="$bin -c"
+  else
+    line="$bin"
+  fi
+  cli_tmux send-keys -t "$target" -- "$line" Enter
+}
+
+cli_ask_create() {
+  local ans
+  print "没有 session「${1}」。"
+  print -n "要新建并打开吗？（回车=是，其他键=否） "
+  read -r ans </dev/tty || ans=
+  [[ -z $ans ]]
+}
+
+cli_ask_pin() {
+  local pinans
+  print -n "常驻（y=是，回车=否）: "
+  read -r pinans </dev/tty || pinans=
+  [[ $pinans == y || $pinans == Y ]]
+}
+
+cli_pin_session() {
+  local host=$1 session=$2
+  if [[ $host == local ]]; then
+    cli_pick --pin-session "$session"
+  else
+    cli_remote_print "$host" --pin-session "$session"
+  fi
+}
+
+cli_recent_select() {
+  local -a names
+  names=("$@")
+  local -i cur=1 n=${#names} i
+  (( n )) || return 1
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    print -u2 "需要交互式终端。"
+    return 1
+  fi
+  setup_tty
+  while true; do
+    print -n $'\e[H\e[J'
+    print -r -- "最近 session"
+    print
+    for (( i = 1; i <= n; i++ )); do
+      if (( i == cur )); then
+        print -r -- "> ${names[i]}"
+      else
+        print -r -- "  ${names[i]}"
+      fi
+    done
+    print
+    print -r -- "j/k 选择  Enter 进入  q 取消"
+    read_key || continue
+    case $REPLY in
+      up)
+        (( cur-- ))
+        (( cur < 1 )) && cur=$n
+        ;;
+      down)
+        (( cur++ ))
+        (( cur > n )) && cur=1
+        ;;
+      enter)
+        restore_tty
+        print -r -- "${names[cur]}"
+        return 0
+        ;;
+      q|esc)
+        restore_tty
+        return 1
+        ;;
+    esac
+  done
+}
+
 cli_has_session() {
   local host=$1 session=$2
   if [[ $host == local ]]; then
@@ -1591,8 +1723,8 @@ cli_usage() {
   print -r -- '  （无命令）        打开主机列表，再选 tmux session'
   print -r -- '  help              显示本说明'
   print -r -- '  list [机器]       列出 session'
-  print -r -- '  last [机器]       显示最近进入的 session'
-  print -r -- '  go [机器:]名字    打开最近或指定 session'
+  print -r -- '  last [机器]       最近 5 个 session，选一个进入'
+  print -r -- '  go [机器:]名字 [--grok]  打开；不写名字则本机自动新建；--grok 再开 grok'
   print -r -- '  work [机器]       打开工作区'
   print -r -- '  pins [机器]       打开常驻'
   print -r -- '  upgrade           升级到最新版本'
@@ -1606,13 +1738,14 @@ cli_usage() {
 cli_dispatch() {
   local cmd=$1
   shift
-  local host session spec ans pinans
-  local -i shell=0 pin=0
+  local host session spec
+  local -i shell=0 pin=0 want_grok=0
   local -a extra names
   extra=()
   while (( $# )); do
     case $1 in
       --shell) shell=1 ;;
+      --grok) want_grok=1 ;;
       *) extra+=("$1") ;;
     esac
     shift
@@ -1648,30 +1781,23 @@ cli_dispatch() {
       ;;
     go)
       if [[ -z $session ]]; then
-        session=$(cli_list_names "$host" --print-last) || session=
-      fi
-      if [[ -z $session ]]; then
-        print -u2 "没有最近的 session。"
-        return 1
+        session=$(cli_auto_new_session) || return 1
+        if (( want_grok )); then
+          cli_start_grok "$session" || return 1
+        fi
+        cli_attach_one local "$session" 0
+        return
       fi
       if ! cli_has_session "$host" "$session"; then
-        print "没有 session「${session}」。"
-        print -n "要新建并打开吗？（回车=是，其他键=否） "
-        read -r ans </dev/tty || ans=
-        if [[ -n $ans ]]; then
-          return 1
-        fi
-        print -n "常驻（y=是，回车=否）: "
-        read -r pinans </dev/tty || pinans=
-        [[ $pinans == y || $pinans == Y ]] && pin=1
+        cli_ask_create "$session" || return 1
+        cli_ask_pin && pin=1
         cli_new_session "$host" "$session" || return 1
         if (( pin )); then
-          if [[ $host == local ]]; then
-            cli_pick --pin-session "$session"
-          else
-            cli_remote_print "$host" --pin-session "$session"
-          fi
+          cli_pin_session "$host" "$session"
         fi
+      fi
+      if (( want_grok )); then
+        cli_start_grok "$session" || return 1
       fi
       cli_open_tabs "$host" "$session"
       ;;
@@ -1687,12 +1813,13 @@ cli_dispatch() {
       cli_list_names "$host" --print-sessions
       ;;
     last)
-      session=$(cli_list_names "$host" --print-last) || session=
-      if [[ -z $session ]]; then
+      names=("${(@f)$(cli_list_names "$host" --print-recent)}") || names=()
+      if (( ! ${#names} )); then
         print -u2 "没有最近的 session。"
         return 1
       fi
-      print -r -- "$session"
+      session=$(cli_recent_select "${names[@]}") || return 1
+      cli_attach_one "$host" "$session" 0
       ;;
     *)
       return 1

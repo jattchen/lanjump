@@ -1856,6 +1856,26 @@ pick_selftest() {
     command "$TMUX_BIN" "$@" </dev/null
   }
 
+  tmuxx() {
+    if [[ $1 == list-sessions ]]; then
+      print -r -- $'100\toldest'
+      print -r -- $'300\tnewest'
+      print -r -- $'200\tmiddle'
+      return 0
+    fi
+    return 1
+  }
+  HAS_TMUX=1
+  got=$(print_recent_names 5)
+  expect recent/order $'newest\nmiddle\noldest' "$got"
+  got=$(print_recent_names 2)
+  expect recent/limit $'newest\nmiddle' "$got"
+  tmuxx() { return 1 }
+  if print_recent_names 5 >/dev/null; then
+    print -u2 "FAIL recent/empty listed names"
+    (( fails++ ))
+  fi
+
   if session_name_invalid ''; then
     print -u2 "FAIL name/empty auto-name rejected"
     (( fails++ ))
