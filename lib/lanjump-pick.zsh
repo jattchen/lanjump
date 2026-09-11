@@ -65,8 +65,12 @@ attach_shell_only=0
 ghostty_close_others=0
 open_target=auto
 open_placement=window
+typeset -a project_roots
 settings_on=0
 settings_cursor=1
+settings_input_on=0
+settings_input_buf=
+settings_input_char=
 loading=0
 stty_orig=
 PENDING_KEY=""
@@ -195,6 +199,7 @@ run_session_snapshot() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   tmux_server_running || return 0
   snapshot_recently_written && return 0
+  load_settings
   snapshot_live_sessions
 }
 
@@ -525,12 +530,28 @@ cwd_is_home() {
   [[ -z $p || $p == '~' || $p == "$HOME" || $p == "$HOME/" ]]
 }
 
+expand_project_root() {
+  local p=$1
+  case "$p" in
+    '~') REPLY=$HOME ;;
+    '~/'*) REPLY="$HOME/${p#"~/"}" ;;
+    *) REPLY=$p ;;
+  esac
+}
+
 session_project_dir() {
-  local n=$1 d
+  local n=$1 root d
   [[ -n $n ]] || return 1
-  d="$HOME/Documents/projects/$n"
-  [[ -d $d ]] || return 1
-  print -r -- "$d"
+  for root in "${project_roots[@]}"; do
+    expand_project_root "$root"
+    root=$REPLY
+    [[ -n $root ]] || continue
+    d="$root/$n"
+    [[ -d "$d" ]] || continue
+    print -r -- "$d"
+    return 0
+  done
+  return 1
 }
 
 resolve_session_cwd() {
@@ -1974,44 +1995,63 @@ settings_file() {
   REPLY="$HOME/Library/Application Support/lanjump/settings"
 }
 
+default_project_roots() {
+  project_roots=()
+  [[ -d $HOME/Documents/projects ]] && project_roots=("$HOME/Documents/projects")
+}
+
 load_settings() {
   local file line key val
+  local -i saw_project_root=0
   open_target=auto
   open_placement=window
+  project_roots=()
   settings_file
   file=$REPLY
-  [[ -f $file ]] || return 0
-  while IFS= read -r line || [[ -n $line ]]; do
-    [[ -z $line || $line == '#'* ]] && continue
-    key=${line%% *}
-    if [[ $line == *' '* ]]; then
-      val=${line#* }
-    else
-      val=
-    fi
-    case $key in
-      open_target)
-        case $val in
-          auto|ghostty|terminal|current) open_target=$val ;;
-        esac
-        ;;
-      open_placement)
-        case $val in
-          window|tab) open_placement=$val ;;
-        esac
-        ;;
-    esac
-  done <"$file"
+  if [[ -f $file ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ -z $line || $line == '#'* ]] && continue
+      key=${line%% *}
+      if [[ $line == *' '* ]]; then
+        val=${line#* }
+      else
+        val=
+      fi
+      case $key in
+        open_target)
+          case $val in
+            auto|ghostty|terminal|current) open_target=$val ;;
+          esac
+          ;;
+        open_placement)
+          case $val in
+            window|tab) open_placement=$val ;;
+          esac
+          ;;
+        project_root)
+          val=${val##[[:space:]]#}
+          val=${val%%[[:space:]]#}
+          [[ -n $val ]] || continue
+          saw_project_root=1
+          project_roots+=("$val")
+          ;;
+      esac
+    done <"$file"
+  fi
+  (( saw_project_root )) || default_project_roots
 }
 
 save_settings() {
-  local file dir
+  local file dir root
   settings_file
   file=$REPLY
   dir=${file:h}
   mkdir -p "$dir"
   print -r -- "open_target ${open_target}" >"$file"
   print -r -- "open_placement ${open_placement}" >>"$file"
+  for root in "${project_roots[@]}"; do
+    print -r -- "project_root ${root}" >>"$file"
+  done
 }
 
 settings_value_label() {
@@ -2052,6 +2092,93 @@ cycle_setting() {
       ;;
   esac
   save_settings
+}
+
+settings_n_rows() {
+  REPLY=$(( 3 + ${#project_roots} ))
+}
+
+settings_move() {
+  local -i delta=$1 n
+  settings_n_rows
+  n=$REPLY
+  (( n < 1 )) && return
+  (( settings_cursor += delta ))
+  if (( settings_cursor < 1 )); then
+    settings_cursor=$n
+  elif (( settings_cursor > n )); then
+    settings_cursor=1
+  fi
+}
+
+settings_remove_root() {
+  local -i idx=$1 n
+  (( idx >= 1 && idx <= ${#project_roots} )) || return 1
+  project_roots[idx]=()
+  save_settings
+  settings_n_rows
+  n=$REPLY
+  (( settings_cursor > n )) && settings_cursor=$n
+}
+
+# d removes the selected root. Enter cycles 打开到/窗口 or starts overlay input on ＋.
+settings_enter() {
+  local -i n=${#project_roots}
+  case $settings_cursor in
+    1|2) cycle_setting ;;
+    *)
+      if (( settings_cursor == 3 + n )); then
+        settings_input_on=1
+        settings_input_buf=
+      fi
+      ;;
+  esac
+}
+
+settings_delete_key() {
+  local -i n=${#project_roots}
+  if (( settings_cursor >= 3 && settings_cursor < 3 + n )); then
+    settings_remove_root $(( settings_cursor - 2 ))
+  fi
+}
+
+settings_commit_input() {
+  local path=$settings_input_buf
+  settings_input_on=0
+  settings_input_buf=
+  path=${path##[[:space:]]#}
+  path=${path%%[[:space:]]#}
+  [[ -n $path ]] || return 0
+  if [[ "$path" != /* && "$path" != '~' && "$path" != '~/'* ]]; then
+    path="$PWD/$path"
+  fi
+  project_roots+=("$path")
+  save_settings
+  settings_cursor=$(( 2 + ${#project_roots} ))
+}
+
+# Raw-mode line editor for the settings overlay. REPLY=enter|esc|backspace|char.
+settings_input_read() {
+  local k k2 c
+  IFS= read -rsk1 k || return 1
+  if [[ $k == $'\e' ]]; then
+    IFS= read -rsk1 -t 0.2 k2 || { REPLY=esc; return 0 }
+    if [[ $k2 == '[' || $k2 == 'O' ]]; then
+      while IFS= read -rsk1 -t 0.2 c; do
+        [[ $c == [A-Za-z~] ]] && break
+      done
+    fi
+    REPLY=esc
+    return 0
+  fi
+  case $k in
+    $'\n'|$'\r') REPLY=enter ;;
+    $'\x7f'|$'\b') REPLY=backspace ;;
+    *)
+      REPLY=char
+      settings_input_char=$k
+      ;;
+  esac
 }
 
 effective_open_target() {
@@ -3254,7 +3381,7 @@ draw() {
 draw_settings_overlay() {
   local -i cols rows w h r c i
   local -a lines
-  local line hl
+  local line hl root
   cols=$(term_cols)
   rows=$(term_lines)
   lines=(
@@ -3262,10 +3389,26 @@ draw_settings_overlay() {
     ""
     "  打开到    $(settings_value_label target)"
     "  窗口      $(settings_value_label placement)"
-    ""
-    "  j/k 选择  Enter 切换  q 关闭"
   )
+  for root in "${project_roots[@]}"; do
+    lines+=("  项目根    $root")
+  done
+  lines+=("  ＋ 添加项目根")
+  if (( settings_input_on )); then
+    lines+=("  路径  ${settings_input_buf}█")
+    lines+=("  Enter 确定  Esc 取消")
+  fi
+  lines+=("")
+  if (( settings_input_on )); then
+    lines+=("  在浮层里输入，能看见自己打的字")
+  else
+    lines+=("  j/k 选择  Enter 切换/添加  d 删除根  q 关闭")
+  fi
   w=44
+  for line in "${lines[@]}"; do
+    display_width "$line"
+    (( REPLY + 4 > w )) && w=$(( REPLY + 4 ))
+  done
   h=$(( ${#lines} + 2 ))
   (( w > cols - 2 )) && w=$(( cols - 2 ))
   (( w < 16 )) && w=16
@@ -3281,7 +3424,9 @@ draw_settings_overlay() {
     line=${lines[$i]}
     _padw "$line" $(( w - 2 ))
     hl=0
-    if (( i == 3 && settings_cursor == 1 )) || (( i == 4 && settings_cursor == 2 )); then
+    if (( settings_input_on )); then
+      (( i == 6 + ${#project_roots} )) && hl=1
+    elif (( i == settings_cursor + 2 )); then
       hl=1
     fi
     if (( hl )); then
@@ -3662,7 +3807,7 @@ print_last_name() {
 # Newest-activity first, up to $1 names (default 5).
 print_recent_names() {
   local -i max=${1:-5} n=0
-  local line act name
+  local line name
   local -a raw
   [[ $HAS_TMUX -eq 1 ]] || return 1
   raw=("${(@f)$(tmuxx list-sessions -F $'#{session_activity}\t#{session_name}' 2>/dev/null)}")
@@ -3735,6 +3880,7 @@ fi
 if [[ ${1:-} == --pin-session ]]; then
   name=${2:-}
   [[ -n $name ]] || exit 1
+  load_settings
   load_pinned_sessions
   load_session_snapshot
   cwd=$(resolve_session_cwd "$name")
@@ -3756,6 +3902,7 @@ if [[ ${1:-} == --new-session ]]; then
   if tmuxx has-session -t "=$name" 2>/dev/null; then
     exit 0
   fi
+  load_settings
   load_pinned_sessions
   load_session_snapshot
   cwd=$(resolve_session_cwd "$name")
@@ -3827,6 +3974,7 @@ if [[ ${1:-} == --attach ]]; then
     print -u2 "这台机器上没有 tmux。"
     exit 1
   fi
+  load_settings
   load_session_snapshot
   mark_snapshot_occupied "$name"
   remember_last_session "$name"
@@ -3845,6 +3993,30 @@ picker_boot_before_first_draw
 picker_boot_after_first_draw
 
 while true; do
+  if (( settings_on && settings_input_on )); then
+    preview_defer=0
+    settings_input_read || continue
+    case $REPLY in
+      enter)
+        settings_commit_input
+        draw
+        ;;
+      esc)
+        settings_input_on=0
+        settings_input_buf=
+        draw
+        ;;
+      backspace)
+        (( ${#settings_input_buf} )) && settings_input_buf=${settings_input_buf[1,-2]}
+        draw
+        ;;
+      char)
+        settings_input_buf+=$settings_input_char
+        draw
+        ;;
+    esac
+    continue
+  fi
   if (( preview_defer )); then
     if ! read_key $preview_wait; then
       preview_defer=0
@@ -3858,17 +4030,19 @@ while true; do
     preview_defer=0
     case $REPLY in
       up)
-        (( settings_cursor-- ))
-        (( settings_cursor < 1 )) && settings_cursor=2
+        settings_move -1
         draw
         ;;
       down)
-        (( settings_cursor++ ))
-        (( settings_cursor > 2 )) && settings_cursor=1
+        settings_move 1
         draw
         ;;
       enter)
-        cycle_setting
+        settings_enter
+        draw
+        ;;
+      d)
+        settings_delete_key
         draw
         ;;
       q|esc|settings)
