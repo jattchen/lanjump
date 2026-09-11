@@ -91,13 +91,140 @@ if ! (( ${+functions[cli_dispatch]} )); then
   exec /bin/zsh "$MAIN" --cli-selftest
 fi
 
-# Drive shipped cli_dispatch. Stub list/open so host selection is
-# visible; do not exercise cli_open_tabs remote vs local.
+# Drive shipped cli_open_tabs / go / work / pins. Stub SSH and the local
+# picker so a remote open cannot attach or resume a local same-name session.
 tmpdir=$(mktemp -d) || exit 1
 log=$tmpdir/log
-: >"$log"
+fake_picker=$tmpdir/pick
+export LANJUMP_CLI_TEST_LOG=$log
 trap 'rm -rf "$tmpdir"; restore_tty 2>/dev/null || true' EXIT
 
+cat >"$fake_picker" <<'EOF'
+emulate -L zsh
+log=${LANJUMP_CLI_TEST_LOG:?}
+print -r -- "LOCAL_PICK host=${LANJUMP_ATTACH_HOST:-} argv=${(j: :)${(q)@}}" >>"$log"
+case ${1:-} in
+  --print-workspace)
+    print -r -- lanjump
+    print -r -- other
+    ;;
+  --print-pinned|--print-last)
+    print -r -- lanjump
+    ;;
+  --has-session)
+    ;;
+  --open-tabs|--attach)
+    print -r -- "LOCAL_RESUME ${(j: :)${@[2,-1]}}" >>"$log"
+    print -r -- "LOCAL_ATTACH ${(j: :)${@[2,-1]}}" >>"$log"
+    ;;
+esac
+exit 0
+EOF
+
+: >"$log"
+h_alias=(studio)
+h_user=(mac)
+h_hostname=(studio.local)
+h_ip=(10.0.0.2)
+h_mac=('')
+h_last=('0')
+
+picker_path() {
+  print -r -- "$fake_picker"
+}
+
+setup_access() {
+  return 0
+}
+
+sync_picker() {
+  return 0
+}
+
+ssh_tty() {
+  print -r -- "REMOTE_SSH ${(j: :)${(q)@}}" >>"$LANJUMP_CLI_TEST_LOG"
+  return 0
+}
+
+ssh() {
+  print -r -- "SSH ${(j: :)${(q)@}}" >>"$LANJUMP_CLI_TEST_LOG"
+  if [[ $* == *--print-workspace* ]]; then
+    print -r -- lanjump
+    print -r -- other
+  elif [[ $* == *--print-pinned* || $* == *--print-last* ]]; then
+    print -r -- lanjump
+  fi
+  return 0
+}
+
+read_log() {
+  [[ -f $LANJUMP_CLI_TEST_LOG ]] || return
+  print -r -- "$(<"$LANJUMP_CLI_TEST_LOG")"
+}
+
+assert_remote_open() {
+  local label=$1 hay=$2 session=$3
+  expect_contains "$label/ssh" REMOTE_SSH "$hay"
+  expect_contains "$label/pick" lanjump-pick "$hay"
+  expect_contains "$label/session" "$session" "$hay"
+  if [[ $hay != *--open-tabs* && $hay != *--attach* ]]; then
+    print -u2 "FAIL $label/flag missing --open-tabs or --attach got=$(printf %q "$hay")"
+    (( fails++ ))
+  fi
+  expect_absent "$label/no-local-pick" LOCAL_PICK "$hay"
+  expect_absent "$label/no-local-attach" LOCAL_ATTACH "$hay"
+  expect_absent "$label/no-local-resume" LOCAL_RESUME "$hay"
+}
+
+assert_local_open() {
+  local label=$1 hay=$2 session=$3
+  expect_contains "$label/pick" LOCAL_PICK "$hay"
+  expect_contains "$label/tabs" --open-tabs "$hay"
+  expect_contains "$label/session" "$session" "$hay"
+  expect_absent "$label/no-attach-host" 'host=studio' "$hay"
+  expect_absent "$label/no-ssh" REMOTE_SSH "$hay"
+}
+
+: >"$log"
+cli_open_tabs studio lanjump
+assert_remote_open remote/open-tabs "$(read_log)" lanjump
+
+: >"$log"
+cli_open_tabs local lanjump
+assert_local_open local/open-tabs "$(read_log)" lanjump
+
+default_cli_host() {
+  print -r -- studio
+}
+
+: >"$log"
+cli_dispatch go studio:lanjump
+assert_remote_open remote/go "$(read_log)" lanjump
+
+: >"$log"
+cli_dispatch work
+assert_remote_open remote/work "$(read_log)" lanjump
+expect_contains remote/work-other other "$(read_log)"
+
+: >"$log"
+cli_dispatch pins
+assert_remote_open remote/pins "$(read_log)" lanjump
+
+default_cli_host() {
+  print -r -- local
+}
+
+: >"$log"
+cli_dispatch go lanjump
+assert_local_open local/go "$(read_log)" lanjump
+
+: >"$log"
+cli_dispatch work
+assert_local_open local/work "$(read_log)" lanjump
+expect_contains local/work-other other "$(read_log)"
+
+# Host routing for work/pins (issue 44): stub list/open so the chosen
+# machine is visible without going through SSH.
 TEST_LAST_HOST=local
 CLI_HAS_SESSION=1
 typeset -a CLI_TTY_REPLIES
@@ -474,4 +601,3 @@ if (( fails )); then
 fi
 print 'ok cli'
 exit 0
-

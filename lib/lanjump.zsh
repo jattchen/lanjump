@@ -1541,7 +1541,7 @@ cli_open_tabs() {
   if [[ $host == local ]]; then
     cli_pick "${args[@]}"
   else
-    LANJUMP_ATTACH_HOST=$host cli_pick "${args[@]}"
+    cli_remote_pick "$host" "${args[@]}"
   fi
 }
 
