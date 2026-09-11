@@ -13,12 +13,14 @@
 # preview_is_grok, preview_line_is_tool, preview_line_is_model,
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
 # session_name_invalid, restore_csi_key, restore_read_key, restore_tty,
-# resume_prompt_choice, attach_command_for, new_session_flag_invalid.
+# resume_prompt_choice, attach_command_for, new_session_flag_invalid,
+# read_key, PENDING_KEY.
 
 pick_selftest() {
   local -i fails=0
   local got
   zmodload zsh/datetime || return 1
+  zmodload zsh/system || return 1
 
   expect() {
     local label=$1 want=$2
@@ -2222,6 +2224,81 @@ pick_selftest() {
     (( fails++ ))
   fi
   expect name/cli-flag-colon "名称不能包含冒号或点。" "$err"
+
+  # #41 / #64: CSI leftovers (PageDown/Home/End/Delete/CSI-u) must not be Esc/q.
+  expect_key() {
+    local label=$1 want=$2 seq=$3
+    local leftover=""
+    PENDING_KEY=""
+    {
+      if read_key; then
+        got=$REPLY
+      else
+        got=EOF
+      fi
+      sysread leftover || leftover=""
+    } < <(print -n -- "$seq")
+    expect "$label" "$want" "$got"
+    if [[ -n $leftover ]]; then
+      print -u2 "FAIL $label leftover=$(printf %q "$leftover")"
+      (( fails++ ))
+    fi
+  }
+
+  expect_key key/arrow-up up $'\e[A'
+  expect_key key/arrow-down down $'\e[B'
+  expect_key key/ss3-up up $'\eOA'
+  expect_key key/pagedown other $'\e[6~'
+  expect_key key/pageup other $'\e[5~'
+  expect_key key/home other $'\e[H'
+  expect_key key/end other $'\e[F'
+  expect_key key/home-1 other $'\e[1~'
+  expect_key key/end-4 other $'\e[4~'
+  expect_key key/delete other $'\e[3~'
+  expect_key key/csi-u-s-enter other $'\e[13;2u'
+  expect_key key/q q q
+  expect_key key/esc esc $'\e'
+
+  local k1=EOF k2=EOF
+  PENDING_KEY=""
+  {
+    read_key && k1=$REPLY
+    read_key && k2=$REPLY
+  } < <(print -n $'\e[6~\e[A')
+  expect key/pagedown-then-up-1 other "$k1"
+  expect key/pagedown-then-up-2 up "$k2"
+
+  local -a loop_keys
+  local loop_quit=0 k
+  loop_keys=()
+  PENDING_KEY=""
+  {
+    while true; do
+      read_key || break
+      loop_keys+=("$REPLY")
+      case $REPLY in
+        q|esc)
+          loop_quit=1
+          break
+          ;;
+      esac
+    done
+  } < <(print -n $'\e[6~\e[H\e[F\e[3~\e[13;2uq')
+  expect key/loop-quit 1 "$loop_quit"
+  if (( ${#loop_keys} != 6 )); then
+    print -u2 "FAIL key/loop-keys got=${loop_keys[*]} want=5 others then q"
+    (( fails++ ))
+  elif [[ ${loop_keys[-1]} != q ]]; then
+    print -u2 "FAIL key/loop-last got=$(printf %q "${loop_keys[-1]}") want=q"
+    (( fails++ ))
+  fi
+  for k in "${loop_keys[1,-2]}"; do
+    if [[ $k == esc || $k == q ]]; then
+      print -u2 "FAIL key/loop-csi treated as quit got=${loop_keys[*]}"
+      (( fails++ ))
+      break
+    fi
+  done
 
   restore_csi_key A
   expect restore/csi-up up "$REPLY"
