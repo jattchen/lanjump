@@ -1051,6 +1051,26 @@ read_byte_timeout() {
   return 0
 }
 
+# Read one byte into REPLY. Optional timeout in seconds.
+# No timeout: block. Tty uses read -k; pipes use sysread.
+read_byte() {
+  local timeout=${1-}
+  local buf=""
+  if [[ -n $timeout ]]; then
+    read_byte_timeout $timeout
+    return $?
+  fi
+  if [[ -t 0 ]]; then
+    IFS= read -rsk1 buf || return 1
+    REPLY=$buf
+    return 0
+  fi
+  zmodload zsh/system 2>/dev/null || return 1
+  sysread -s 1 buf || return 1
+  REPLY=$buf
+  return 0
+}
+
 # Read extra digits while the value is still a prefix of a larger index.
 # Timeout / Enter keep the current value. Esc or any other key cancel
 # (other key is replayed via PENDING_KEY).
@@ -1073,24 +1093,36 @@ collect_index_digits() {
 }
 
 read_key() {
-  local k k2 k3
+  local k k2 k3 c key
   if [[ -n $PENDING_KEY ]]; then
     k=$PENDING_KEY
     PENDING_KEY=""
   else
-    IFS= read -rsk1 k || return 1
+    read_byte || return 1
+    k=$REPLY
   fi
   if [[ $k == $'\e' ]]; then
-    IFS= read -rsk1 -t 0.2 k2 || { REPLY=esc; return 0 }
+    read_byte 0.2 || { REPLY=esc; return 0 }
+    k2=$REPLY
     if [[ $k2 == '[' || $k2 == 'O' ]]; then
-      IFS= read -rsk1 -t 0.2 k3 || { REPLY=esc; return 0 }
+      read_byte 0.2 || { REPLY=esc; return 0 }
+      k3=$REPLY
       case $k3 in
         A) REPLY=up ;;
         B) REPLY=down ;;
         C) REPLY=right ;;
         D) REPLY=left ;;
-        *) REPLY=esc ;;
+        *) REPLY=other ;;
       esac
+      # Drain CSI params so leftover bytes are not a new Esc/q.
+      if [[ $k3 == [0-9] ]]; then
+        key=$REPLY
+        while read_byte 0.2; do
+          c=$REPLY
+          [[ $c == [A-Za-z~] ]] && break
+        done
+        REPLY=$key
+      fi
       return 0
     fi
     REPLY=esc
