@@ -6,6 +6,7 @@
 # session_delete_needs_pin_warning, pin_delete_warning_text,
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
+# maybe_restore_sessions, print_pinned_names, print_workspace_names,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
@@ -1319,6 +1320,108 @@ pick_selftest() {
   }
   if ! should_restore_sessions; then
     print -u2 "FAIL restore/gate reboot should restore"
+    (( fails++ ))
+  fi
+
+  # #80: one live pin + one missing pin must recreate only the missing pin.
+  # Full restore still skips when anything restoreable is live, so a killed
+  # unpinned workspace session stays gone and the window prompt stays closed.
+  setup_partial_pins() {
+    : >"$tmux_log"
+    did_restore=0
+    snap_names=(ws-live ws-gone)
+    snap_cwd=()
+    snap_occupied=()
+    snap_workspace=()
+    snap_cmd=()
+    snap_attached=()
+    snap_cwd[ws-live]=/tmp/ws-live
+    snap_cwd[ws-gone]=/tmp/ws-gone
+    snap_occupied[ws-live]=1
+    snap_occupied[ws-gone]=1
+    snap_workspace[ws-live]=1
+    snap_workspace[ws-gone]=1
+    snap_attached[ws-live]=$EPOCHSECONDS
+    snap_attached[ws-gone]=$EPOCHSECONDS
+    save_session_snapshot
+    print -r -- $'name lj-pin-keep\ncwd /tmp/lj-pin-keep\n\nname lj-pin-gone\ncwd /tmp/lj-pin-gone\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    tmuxx() {
+      print -r -- "$*" >>"$tmux_log"
+      case $1 in
+        has-session)
+          [[ $2 == -t && ( $3 == '=lj-pin-keep' || $3 == '=ws-live' ) ]] && return 0
+          return 1
+          ;;
+        list-sessions)
+          if [[ $* == *-F* ]]; then
+            print -r -- $'lj-pin-keep\x1f/tmp/lj-pin-keep\x1f0\x1fzsh'
+            print -r -- $'ws-live\x1f/tmp/ws-live\x1f1\x1fzsh'
+          fi
+          return 0
+          ;;
+        *) return 0 ;;
+      esac
+    }
+  }
+
+  setup_partial_pins
+  load_pinned_sessions
+  load_session_snapshot
+  if should_restore_sessions; then
+    print -u2 "FAIL restore/gate partial pin still live should skip full restore"
+    (( fails++ ))
+  fi
+
+  setup_partial_pins
+  maybe_restore_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
+    print -u2 "FAIL pin/restore-partial-list missing lj-pin-gone got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s lj-pin-keep'* ]]; then
+    print -u2 "FAIL pin/restore-partial-list recreated live pin got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s ws-live'* ]]; then
+    print -u2 "FAIL pin/restore-partial-list recreated live workspace got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
+    print -u2 "FAIL pin/restore-partial-list restored unpinned workspace got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if (( did_restore )); then
+    print -u2 "FAIL pin/restore-partial-list opened restore prompt did_restore=$did_restore"
+    (( fails++ ))
+  fi
+
+  setup_partial_pins
+  got=$(print_pinned_names)
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
+    print -u2 "FAIL pin/restore-partial-pins missing lj-pin-gone got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s lj-pin-keep'* ]]; then
+    print -u2 "FAIL pin/restore-partial-pins recreated live pin got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  expect pin/restore-partial-pins-names $'lj-pin-keep\nlj-pin-gone' "$got"
+
+  setup_partial_pins
+  got=$(print_workspace_names)
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
+    print -u2 "FAIL pin/restore-partial-work missing lj-pin-gone got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s lj-pin-keep'* ]]; then
+    print -u2 "FAIL pin/restore-partial-work recreated live pin got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
+    print -u2 "FAIL pin/restore-partial-work restored unpinned workspace got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
