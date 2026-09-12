@@ -1793,6 +1793,7 @@ build_restore_pick() {
   for n in "${pinned_names[@]}"; do
     [[ -n $n ]] || continue
     numeric_session_name "$n" && continue
+    lanjump_foreign_session "$n" && continue
     is_pin[$n]=1
     pins+=("$n")
   done
@@ -2986,6 +2987,7 @@ toggle_session_pin() {
     tmux_set_pinned "$name" 0
     on=0
   else
+    lanjump_foreign_session "$name" && return
     ensure_pinnable_session_name "$name" || return
     name=$REPLY
     cwd=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_path}' 2>/dev/null || true)
@@ -4327,6 +4329,7 @@ print_pinned_names() {
   for n in "${pinned_names[@]}"; do
     [[ -n $n ]] || continue
     numeric_session_name "$n" && continue
+    lanjump_foreign_session "$n" && continue
     print -r -- "$n"
   done
 }
