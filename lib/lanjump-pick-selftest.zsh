@@ -1657,7 +1657,7 @@ pick_selftest() {
   }
   maybe_resume_last_command idle-grok
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'respawn-pane -t %1 -k'* ]]; then
+  if [[ $restore_log != *'respawn-pane -t =idle-grok:. -k'* ]]; then
     print -u2 "FAIL resume/send missing respawn-pane got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
@@ -1865,6 +1865,46 @@ pick_selftest() {
   restore_log=$(<"$tmux_log")
   if [[ $restore_log == *'respawn-pane'* || $restore_log == *'send-keys'* ]]; then
     print -u2 "FAIL resume/unread-command mutated pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # #87: idle current pane vs first pane in a split. Resume must not respawn %1.
+  : >"$tmux_log"
+  snap_cmd[split-idle]=grok-1.0.24-mac
+  snap_cwd[split-idle]=/proj/lanjump
+  attach_shell_only=0
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- /proj/lanjump
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes)
+        print -r -- '%1'
+        print -r -- '%2'
+        return 0
+        ;;
+      respawn-pane|send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command split-idle
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'respawn-pane -t %1 '* ]]; then
+    print -u2 "FAIL resume/split-idle killed first pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'respawn-pane -t =split-idle:. -k'* ]]; then
+    print -u2 "FAIL resume/split-idle missing current-pane respawn got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'grok -c'* ]]; then
+    print -u2 "FAIL resume/split-idle missing grok -c got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
