@@ -292,6 +292,20 @@ rewrite_and_write(int fd, const unsigned char *buf, size_t n)
 	return flush_out(fd, out, &o);
 }
 
+/* Lone Esc is held so a following CSI can be rewritten. Emit it on idle/EOF.
+ * Do not flush a partial CSI as a fake Esc.
+ */
+static int
+flush_pending_esc(int fd)
+{
+	static const unsigned char esc = 0x1b;
+
+	if (rw_st != ST_ESC)
+		return 0;
+	rw_st = ST_NORM;
+	return write_all(fd, &esc, 1);
+}
+
 static void
 on_winch(int sig)
 {
@@ -317,6 +331,7 @@ main(int argc, char **argv)
 	struct pollfd fds[2];
 	unsigned char buf[512];
 	int status = 0;
+	int nready;
 
 	if (argc >= 2 && strcmp(argv[1], "--selftest") == 0) {
 		printf("ok shift=%d\n", shift_down() ? 1 : 0);
@@ -330,7 +345,9 @@ main(int argc, char **argv)
 			if (rewrite_and_write(STDOUT_FILENO, rbuf, (size_t)n) < 0)
 				return 1;
 		}
-		return n < 0 ? 1 : 0;
+		if (n < 0)
+			return 1;
+		return flush_pending_esc(STDOUT_FILENO) < 0 ? 1 : 0;
 	}
 	if (argc < 2) {
 		fprintf(stderr,
@@ -391,10 +408,16 @@ main(int argc, char **argv)
 		fds[0].events = POLLIN;
 		fds[1].fd = master_fd;
 		fds[1].events = POLLIN;
-		if (poll(fds, 2, 200) < 0) {
+		nready = poll(fds, 2, 200);
+		if (nready < 0) {
 			if (errno == EINTR)
 				continue;
 			break;
+		}
+		if (nready == 0) {
+			if (flush_pending_esc(master_fd) < 0)
+				break;
+			continue;
 		}
 
 		if (fds[0].revents & POLLIN) {

@@ -179,6 +179,15 @@ def _rewrite(data):
     return bytes(out)
 
 
+def _flush_pending_esc():
+    """Emit a held lone Esc. Partial CSI stays buffered."""
+    global _rw_st
+    if _rw_st != ST_ESC:
+        return b""
+    _rw_st = ST_NORM
+    return b"\x1b"
+
+
 def _winsize(fd):
     try:
         return fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8)
@@ -201,6 +210,9 @@ def main(argv):
         while True:
             data = os.read(sys.stdin.fileno(), 512)
             if not data:
+                pending = _flush_pending_esc()
+                if pending:
+                    os.write(sys.stdout.fileno(), pending)
                 return 0
             os.write(sys.stdout.fileno(), _rewrite(data))
         return 0
@@ -269,6 +281,14 @@ def main(argv):
             try:
                 ready, _, _ = select.select([in_fd, master], [], [], 0.2)
             except InterruptedError:
+                continue
+            if not ready:
+                pending = _flush_pending_esc()
+                if pending:
+                    try:
+                        os.write(master, pending)
+                    except OSError:
+                        break
                 continue
             if in_fd in ready:
                 try:
