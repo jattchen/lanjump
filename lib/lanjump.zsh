@@ -1582,7 +1582,7 @@ cli_remote_print() {
   local idx user hostname ip target
   idx=$(find_host_index "$alias") || {
     print -u2 "没有保存的机器「${alias}」。"
-    return 1
+    return 2
   }
   user=${h_user[$idx]}
   hostname=${h_hostname[$idx]}
@@ -1590,11 +1590,11 @@ cli_remote_print() {
   target=$(target_for "$hostname" "$ip")
   if ! setup_access "$user" "$target"; then
     print -u2 "无法登录 ${user}@${target}。"
-    return 1
+    return 2
   fi
   if ! sync_picker "$target" "$user"; then
     print -u2 "无法把 tmux 选择界面同步到对方。"
-    return 1
+    return 2
   fi
   local remote_cmd
   remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
@@ -1916,7 +1916,7 @@ cli_dispatch() {
   local cmd=$1
   shift
   local host session spec ans pinans
-  local -i shell=0 pin=0 want_grok=0
+  local -i shell=0 pin=0 want_grok=0 has_st=0
   local -a extra names
   extra=()
   while (( $# )); do
@@ -1982,7 +1982,13 @@ cli_dispatch() {
         cli_attach_one local "$session" $(( want_grok || shell ))
         return
       fi
-      if ! cli_has_session "$host" "$session"; then
+      has_st=0
+      cli_has_session "$host" "$session" || has_st=$?
+      if (( has_st )); then
+        # #175: remote connect/login/sync failure is not a missing session.
+        if [[ $host != local ]] && (( has_st != 1 )); then
+          return $has_st
+        fi
         print "没有 session「${session}」。"
         print -n "要新建并打开吗？（回车或 y=是，其他键=否） "
         cli_tty_read ans
