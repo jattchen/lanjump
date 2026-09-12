@@ -1542,9 +1542,19 @@ pick_selftest() {
   # #80: one live pin + one missing pin must recreate only the missing pin.
   # Full restore still skips when anything restoreable is live, so a killed
   # unpinned workspace session stays gone and the window prompt stays closed.
+  local -A mock_live
+  mock_live_from_new_session() {
+    local -a args
+    args=("$@")
+    local idx=${args[(I)-s]}
+    (( idx && idx < $#args )) && mock_live[${args[idx+1]}]=1
+  }
   setup_partial_pins() {
     : >"$tmux_log"
     did_restore=0
+    mock_live=()
+    mock_live[lj-pin-keep]=1
+    mock_live[ws-live]=1
     snap_names=(ws-live ws-gone)
     snap_cwd=()
     snap_occupied=()
@@ -1565,8 +1575,13 @@ pick_selftest() {
       print -r -- "$*" >>"$tmux_log"
       case $1 in
         has-session)
-          [[ $2 == -t && ( $3 == '=lj-pin-keep' || $3 == '=ws-live' ) ]] && return 0
+          [[ $2 == -t ]] || return 1
+          (( ${mock_live[${3#=}]:-0} )) && return 0
           return 1
+          ;;
+        new-session)
+          mock_live_from_new_session "$@"
+          return 0
           ;;
         list-sessions)
           if [[ $* == *-F* ]]; then
@@ -1625,6 +1640,15 @@ pick_selftest() {
   fi
   expect pin/restore-partial-pins-names $'lj-pin-keep\nlj-pin-gone' "$got"
 
+  if [[ ${functions[print_workspace_names]} != *should_restore_sessions* ]]; then
+    print -u2 "FAIL work/print missing should_restore_sessions got=$(printf %q "${functions[print_workspace_names]}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[print_workspace_names]} != *restore_saved_sessions* ]]; then
+    print -u2 "FAIL work/print missing restore_saved_sessions got=$(printf %q "${functions[print_workspace_names]}")"
+    (( fails++ ))
+  fi
+
   setup_partial_pins
   got=$(print_workspace_names)
   restore_log=$(<"$tmux_log")
@@ -1640,6 +1664,62 @@ pick_selftest() {
     print -u2 "FAIL pin/restore-partial-work restored unpinned workspace got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
+  if [[ $got != *lj-pin-keep* ]]; then
+    print -u2 "FAIL pin/restore-partial-work missing live pin got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got != *lj-pin-gone* ]]; then
+    print -u2 "FAIL pin/restore-partial-work missing restored pin got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got != *ws-live* ]]; then
+    print -u2 "FAIL pin/restore-partial-work missing live workspace got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got == *ws-gone* ]]; then
+    print -u2 "FAIL pin/restore-partial-work listed killed unpinned workspace got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+
+  # #107: kill-server / empty list restores unpinned workspace names and prints them.
+  : >"$tmux_log"
+  mock_live=()
+  did_restore=0
+  snap_names=(ws-empty)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[ws-empty]=/tmp/ws-empty
+  snap_occupied[ws-empty]=1
+  snap_workspace[ws-empty]=1
+  snap_attached[ws-empty]=$EPOCHSECONDS
+  save_session_snapshot
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions) return 1 ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  got=$(print_workspace_names)
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s ws-empty -c /tmp/ws-empty'* ]]; then
+    print -u2 "FAIL work/print-empty missing ws-empty new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  expect work/print-empty-names ws-empty "$got"
 
   unset SSH_CONNECTION SSH_CLIENT SSH_TTY
   LANJUMP_GHOSTTY_APP="$testhome/Ghostty.app"
