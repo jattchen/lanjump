@@ -1521,6 +1521,8 @@ cli_remote_pick() {
   fi
   local remote_cmd
   remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
+  remote_cmd+="; unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM"
+  remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
   remote_cmd+="; exec /bin/zsh \"\$HOME/.local/bin/lanjump-pick\""
   local a
   for a in "$@"; do
