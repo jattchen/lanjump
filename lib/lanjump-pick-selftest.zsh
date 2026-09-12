@@ -2605,6 +2605,7 @@ pick_selftest() {
   TEST_GROK_DIR=0
   TEST_PANE_CMD=zsh
   TEST_PANE_CWD=/tmp/typed-cwd
+  TEST_PANE_LIST=
   cwd_has_grok_session() { (( TEST_GROK_DIR )); }
   tmuxx() {
     print -r -- "$*" >>"$grok_log"
@@ -2616,7 +2617,10 @@ pick_selftest() {
           print -r -- "$TEST_PANE_CWD"
         fi
         ;;
-      send-keys) return 0 ;;
+      list-panes)
+        [[ -n ${TEST_PANE_LIST:-} ]] && print -r -- "$TEST_PANE_LIST"
+        ;;
+      send-keys|select-window|select-pane) return 0 ;;
       *) return 0 ;;
     esac
   }
@@ -2674,6 +2678,53 @@ pick_selftest() {
     (( fails++ ))
   fi
   TEST_PANE_CMD=zsh
+
+  # #82: another window already runs grok; jump there, do not start a second grok.
+  TEST_PANE_LIST=$'%1\tzsh\n%2\tgrok'
+  : >"$grok_log"
+  start_grok_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL grok/start-other-window sent keys into idle shell got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'list-panes -s'* ]]; then
+    print -u2 "FAIL grok/start-other-window missing session-wide list-panes got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'select-window -t %2'* ]]; then
+    print -u2 "FAIL grok/start-other-window missing select-window grok pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  TEST_PANE_LIST=$'%1\tzsh\n%2\tgrok-1.0.24-mac'
+  : >"$grok_log"
+  start_grok_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL grok/start-other-ver sent keys into idle shell got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'select-window -t %2'* ]]; then
+    print -u2 "FAIL grok/start-other-ver missing select-window grok pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  TEST_PANE_CMD=
+  TEST_PANE_LIST=$'%1\t\n%2\tgrok'
+  : >"$grok_log"
+  start_grok_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL grok/start-unread-other sent keys got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'select-window -t %2'* ]]; then
+    print -u2 "FAIL grok/start-unread-other missing select-window grok pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  TEST_PANE_CMD=zsh
+  TEST_PANE_LIST=
 
   if pick_needs_tty --start-grok; then
     print -u2 "FAIL grok/start-no-tty --start-grok still needs tty"

@@ -1635,7 +1635,8 @@ cli_auto_new_session() {
 
 cli_start_grok() {
   local host=$1 session=$2
-  local live pane_cwd bin line target
+  local live pane_cwd bin line target grok_pane pane_line pane_id pane_cmd
+  local -a panes
   [[ -n $session ]] || return 1
   if [[ $host != local ]]; then
     cli_remote_print "$host" --start-grok "$session"
@@ -1644,11 +1645,28 @@ cli_start_grok() {
   target="=${session}:."
   live=$(cli_tmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
   live=${live##*/}
-  # Unreadable command is not an idle shell; do not send-keys into a live grok.
-  [[ -n $live ]] || return 0
   if [[ $live == grok || $live == grok-* ]]; then
     return 0
   fi
+  grok_pane=
+  panes=("${(@f)$(cli_tmux list-panes -s -t "=$session" -F $'#{pane_id}\t#{pane_current_command}' 2>/dev/null)}")
+  for pane_line in "${panes[@]}"; do
+    [[ -n $pane_line ]] || continue
+    pane_id=${pane_line%%$'\t'*}
+    pane_cmd=${pane_line#*$'\t'}
+    pane_cmd=${pane_cmd##*/}
+    if [[ $pane_cmd == grok || $pane_cmd == grok-* ]]; then
+      grok_pane=$pane_id
+      break
+    fi
+  done
+  if [[ -n $grok_pane ]]; then
+    cli_tmux select-window -t "$grok_pane" 2>/dev/null || true
+    cli_tmux select-pane -t "$grok_pane" 2>/dev/null || true
+    return 0
+  fi
+  # Unreadable command is not an idle shell; do not send-keys into a live grok.
+  [[ -n $live ]] || return 0
   case $live in
     zsh|bash|sh|fish|dash|login) ;;
     *) return 0 ;;
