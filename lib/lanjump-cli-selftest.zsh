@@ -775,6 +775,66 @@ expect_contains go-exist-unread-other/select 'select-window -t %2' "$hay"
 TEST_PANE_CMD=zsh
 TEST_PANE_LIST=
 
+# #85: unprefixed attach is always local (Ghostty / `lanjump attach name`).
+# go <name> still follows last host. Prefixed attach host:name still honors host.
+CLI_HAS_SESSION=1
+TEST_LAST_HOST=office
+: >"$log"
+st=0
+cli_dispatch attach lj85-local >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL attach-unprefixed-from-remote/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains attach-unprefixed-from-remote/attach 'PICK_EXEC --attach lj85-local' "$hay"
+expect_contains attach-unprefixed-from-remote/last 'LAST host=local' "$hay"
+expect_absent attach-unprefixed-from-remote/no-remote 'REMOTE_PICK' "$hay"
+expect_absent attach-unprefixed-from-remote/not-office 'LAST host=office' "$hay"
+
+TEST_LAST_HOST=office
+: >"$log"
+st=0
+cli_dispatch attach --shell lj85-local >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL attach-shell-unprefixed-from-remote/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains attach-shell-unprefixed-from-remote/attach 'PICK_EXEC --attach --shell lj85-local' "$hay"
+expect_absent attach-shell-unprefixed-from-remote/no-remote 'REMOTE_PICK' "$hay"
+
+TEST_LAST_HOST=office
+: >"$log"
+st=0
+cli_dispatch attach office:lj85-local >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL attach-prefixed-remote/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains attach-prefixed-remote/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains attach-prefixed-remote/attach-flag '--attach' "$hay"
+expect_contains attach-prefixed-remote/session lj85-local "$hay"
+expect_contains attach-prefixed-remote/last 'LAST host=office' "$hay"
+expect_absent attach-prefixed-remote/no-local 'PICK_EXEC' "$hay"
+
+TEST_LAST_HOST=office
+: >"$log"
+st=0
+cli_dispatch go lj85-local >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-unprefixed-from-remote/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-unprefixed-from-remote/has 'HAS host=office session=lj85-local' "$hay"
+expect_contains go-unprefixed-from-remote/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains go-unprefixed-from-remote/session lj85-local "$hay"
+expect_contains go-unprefixed-from-remote/last 'LAST host=office' "$hay"
+expect_absent go-unprefixed-from-remote/no-local 'PICK_EXEC' "$hay"
+TEST_LAST_HOST=local
+
 st=0
 err=$(/bin/zsh "${0:A:h}/lanjump.zsh" new 2>&1) || st=$?
 if (( st == 0 )); then

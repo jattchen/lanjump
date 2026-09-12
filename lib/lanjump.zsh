@@ -1866,6 +1866,10 @@ cli_dispatch() {
           session=${spec#*:}
         else
           session=$spec
+          # #85: unprefixed attach is local; go still follows last host.
+          if [[ $cmd == attach ]]; then
+            host=local
+          fi
         fi
       fi
       ;;
