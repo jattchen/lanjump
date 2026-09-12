@@ -200,6 +200,7 @@ run_session_snapshot() {
   tmux_server_running || return 0
   snapshot_recently_written && return 0
   load_settings
+  load_pinned_sessions
   snapshot_live_sessions
 }
 
@@ -1564,6 +1565,8 @@ snapshot_live_sessions() {
     cmd=${f[4]}
     [[ -n $name ]] || continue
     snap_names+=("$name")
+    # resolve skips $HOME; keep the previous recorded cwd across that skip.
+    snap_cwd[$name]=${prev_cwd[$name]:-}
     snap_cwd[$name]=$(resolve_session_cwd "$name" "${cwd:-${prev_cwd[$name]:-}}")
     snap_occupied[$name]=$att
     if pane_is_shell "$cmd" && last_command_resumable "${prev_cmd[$name]:-}"; then
