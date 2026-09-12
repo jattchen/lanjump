@@ -1459,6 +1459,34 @@ drop_snap_record() {
   unset "snap_attached[$name]"
 }
 
+rename_snap_record() {
+  local old=$1 new=$2
+  local -i i
+  sanitize_pin_field "$old"
+  old=$REPLY
+  sanitize_pin_field "$new"
+  new=$REPLY
+  [[ -n $old && -n $new && $old != "$new" ]] || return 0
+  load_session_snapshot
+  for (( i = 1; i <= ${#snap_names}; i++ )); do
+    if [[ ${snap_names[$i]} == "$old" ]]; then
+      snap_names[$i]=$new
+      snap_cwd[$new]=${snap_cwd[$old]:-}
+      snap_cmd[$new]=${snap_cmd[$old]:-}
+      snap_occupied[$new]=${snap_occupied[$old]:-}
+      snap_workspace[$new]=${snap_workspace[$old]:-}
+      snap_attached[$new]=${snap_attached[$old]:-}
+      unset "snap_cwd[$old]"
+      unset "snap_cmd[$old]"
+      unset "snap_occupied[$old]"
+      unset "snap_workspace[$old]"
+      unset "snap_attached[$old]"
+      save_session_snapshot
+      return 0
+    fi
+  done
+}
+
 forget_killed_session() {
   local name=$1
   sanitize_pin_field "$name"
@@ -3975,6 +4003,7 @@ prompt_rename() {
     return
   }
   rename_pin_record "$old" "$name"
+  rename_snap_record "$old" "$name"
   setup_tty
   load_items "$name"
   draw
