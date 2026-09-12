@@ -824,6 +824,7 @@ expect_contains go-host-session/attach 'REMOTE_PICK host=office' "$hay"
 expect_contains go-host-session/attach-flag '--attach' "$hay"
 expect_contains go-host-session/session lanjump "$hay"
 expect_contains go-host-session/last 'LAST host=office' "$hay"
+expect_contains go-host-session/last-before-attach $'LAST host=office\nREMOTE_PICK' "$hay"
 expect_absent go-host-session/no-shell '--shell' "$hay"
 expect_absent go-host-session/no-tabs --open-tabs "$hay"
 expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
@@ -1030,6 +1031,7 @@ expect_contains last-host/attach 'REMOTE_PICK host=office' "$hay"
 expect_contains last-host/attach-flag '--attach' "$hay"
 expect_contains last-host/session office-recent1 "$hay"
 expect_contains last-host/last 'LAST host=office' "$hay"
+expect_contains last-host/last-before-attach $'LAST host=office\nREMOTE_PICK' "$hay"
 expect_absent last-host/not-local 'LAST host=local' "$hay"
 expect_absent last-host/not-local-list 'LIST host=local' "$hay"
 TEST_LAST_HOST=local
@@ -1264,6 +1266,7 @@ expect_contains attach-prefixed-remote/attach 'REMOTE_PICK host=office' "$hay"
 expect_contains attach-prefixed-remote/attach-flag '--attach' "$hay"
 expect_contains attach-prefixed-remote/session lj85-local "$hay"
 expect_contains attach-prefixed-remote/last 'LAST host=office' "$hay"
+expect_contains attach-prefixed-remote/last-before-attach $'LAST host=office\nREMOTE_PICK' "$hay"
 expect_absent attach-prefixed-remote/no-local 'PICK_EXEC' "$hay"
 
 TEST_LAST_HOST=office
@@ -1280,6 +1283,71 @@ expect_contains go-unprefixed-from-remote/attach 'REMOTE_PICK host=office' "$hay
 expect_contains go-unprefixed-from-remote/session lj85-local "$hay"
 expect_contains go-unprefixed-from-remote/last 'LAST host=office' "$hay"
 expect_absent go-unprefixed-from-remote/no-local 'PICK_EXEC' "$hay"
+TEST_LAST_HOST=local
+
+# #168: remote go/attach/last must write last_target before attach blocks.
+# Host-list Enter already marks before SSH; CLI used to wait until SSH returns.
+dispatch_src=${functions[cli_dispatch]}
+if [[ $dispatch_src == *'[[ $host == local ]] && mark_last'* ]]; then
+  print -u2 "FAIL mark-last-before-attach/src first mark_last still local-only"
+  (( fails++ ))
+fi
+unset dispatch_src
+
+_lj_save_mark_last=$functions[mark_last]
+_lj_save_cli_attach_one=$functions[cli_attach_one]
+h_alias+=(studio)
+h_user+=(mac)
+h_hostname+=(studio.local)
+h_ip+=(10.0.0.3)
+h_mac+=('')
+h_last+=('0')
+mark_last() {
+  print -r -- "$1" >"$LAST_FILE"
+  print -r -- "LAST host=$1" >>"$log"
+}
+cli_attach_one() {
+  print -r -- "ATTACH_DURING last=$(read_last) host=$1 session=$2" >>"$log"
+}
+
+CLI_HAS_SESSION=1
+TEST_LAST_HOST=office
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+cli_dispatch go studio:demo >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-remote-mark-before-attach/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=demo' "$hay"
+
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+cli_dispatch attach studio:demo >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL attach-remote-mark-before-attach/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains attach-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=demo' "$hay"
+
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+cli_dispatch last studio >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL last-remote-mark-before-attach/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains last-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=studio-recent1' "$hay"
+
+functions[mark_last]=$_lj_save_mark_last
+functions[cli_attach_one]=$_lj_save_cli_attach_one
+unset _lj_save_mark_last _lj_save_cli_attach_one
 TEST_LAST_HOST=local
 
 st=0
