@@ -253,6 +253,29 @@ apply_last_cursor() {
   cursor=1
 }
 
+# Host alias, or local/scan/quit. Scan inserts must reselect this, not a row number.
+list_item_key() {
+  local i=$1
+  (( i >= 1 && i <= ${#items_kind} )) || return 1
+  case ${items_kind[$i]} in
+    host) print -r -- "host:${items_alias[$i]}" ;;
+    local|scan|quit) print -r -- "${items_kind[$i]}" ;;
+    *) return 1 ;;
+  esac
+}
+
+restore_list_cursor() {
+  local want=$1 j n=${#items_kind} key
+  [[ -n $want ]] || return
+  for (( j = 1; j <= n; j++ )); do
+    key=$(list_item_key $j) || continue
+    if [[ $key == "$want" ]]; then
+      cursor=$j
+      return
+    fi
+  done
+}
+
 picker_path() {
   if [[ -f $PICKER ]]; then
     print -r -- "$PICKER"
@@ -826,6 +849,10 @@ merge_seen_by_hostkey() {
 }
 
 do_scan() {
+  local keep alias hostname ip mac
+  local i n
+  local -i extra=0
+  keep=$(list_item_key $cursor) || keep=
   loading=1
   restore_tty
   print
@@ -838,7 +865,6 @@ do_scan() {
   fi
   print "正在扫描 Bonjour SSH 和 ${PREFIX}.0/24 的 22 端口…"
   s_alias=() s_host=() s_ip=() s_mac=()
-  local alias hostname ip mac
   while IFS=$'\t' read -r alias hostname ip mac; do
     [[ -n $alias || -n $ip ]] || continue
     [[ -z $alias ]] && alias=${hostname:-$ip}
@@ -853,12 +879,12 @@ do_scan() {
   save_hosts
   load_hosts
   build_items
-  local i n=${#s_alias}
-  local -i extra=0
+  n=${#s_alias}
   for (( i = 1; i <= n; i++ )); do
     add_discovered "${s_alias[$i]}" "${s_host[$i]}" "${s_ip[$i]}" "${s_mac[$i]}"
     mark_online "${s_ip[$i]}" "${s_mac[$i]}" "${s_host[$i]}"
   done
+  restore_list_cursor "$keep"
   n=${#items_kind}
   extra=0
   for (( i = 1; i <= n; i++ )); do

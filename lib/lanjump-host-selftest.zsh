@@ -149,6 +149,92 @@ host_selftest() {
     fi
   done
 
+  # #112: scan inserts new hosts before 本机/扫描/退出; keep the same item, not the old row.
+  scan_keep_fixture() {
+    items_kind=(host local scan quit)
+    items_alias=(nas 进入本机 '扫描局域网…' 退出)
+    items_user=(mac '' '' '')
+    items_hostname=(nas.local '' '' '')
+    items_ip=(192.168.1.8 '' '' '')
+    items_mac=('aa:bb:cc:dd:ee:01' '' '' '')
+    items_status=('已保存' '' '' '')
+    items_saved=(1 '' '' '')
+    h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_last=()
+    MYIPS=(127.0.0.1)
+    MYIP=""
+  }
+  scan_keep_insert() {
+    local keep n_before
+    keep=$(list_item_key $cursor) || keep=
+    n_before=${#items_kind}
+    add_discovered pi pi.local 192.168.1.50 aa:bb:cc:dd:ee:50
+    restore_list_cursor "$keep"
+    if (( ${#items_kind} != n_before + 1 )); then
+      print -u2 "FAIL host/scan/insert-count got=${#items_kind} want=$((n_before + 1))"
+      (( fails++ ))
+    fi
+    if [[ ${items_kind[2]} != host || ${items_alias[2]} != pi ]]; then
+      print -u2 "FAIL host/scan/insert-before-actions got=${items_kind[2]}:${items_alias[2]}"
+      (( fails++ ))
+    fi
+  }
+
+  scan_keep_fixture
+  cursor=2
+  scan_keep_insert
+  expect host/scan/keep-local-kind local "${items_kind[$cursor]}"
+  expect host/scan/keep-local-alias 进入本机 "${items_alias[$cursor]}"
+
+  scan_keep_fixture
+  cursor=3
+  scan_keep_insert
+  expect host/scan/keep-scan-kind scan "${items_kind[$cursor]}"
+  expect host/scan/keep-scan-alias '扫描局域网…' "${items_alias[$cursor]}"
+
+  scan_keep_fixture
+  cursor=4
+  scan_keep_insert
+  expect host/scan/keep-quit-kind quit "${items_kind[$cursor]}"
+  expect host/scan/keep-quit-alias 退出 "${items_alias[$cursor]}"
+
+  scan_keep_fixture
+  cursor=1
+  scan_keep_insert
+  expect host/scan/keep-host-kind host "${items_kind[$cursor]}"
+  expect host/scan/keep-host-alias nas "${items_alias[$cursor]}"
+
+  # Rebuild drops an unsaved 新发现 row; restore must use the pre-rebuild identity.
+  items_kind=(host host local scan quit)
+  items_alias=(nas pi 进入本机 '扫描局域网…' 退出)
+  items_user=(mac '' '' '' '')
+  items_hostname=(nas.local pi.local '' '' '')
+  items_ip=(192.168.1.8 192.168.1.50 '' '' '')
+  items_mac=('aa:bb:cc:dd:ee:01' 'aa:bb:cc:dd:ee:50' '' '' '')
+  items_status=('已保存' 新发现 '' '' '')
+  items_saved=(1 '' '' '' '')
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_last=()
+  MYIPS=(127.0.0.1)
+  MYIP=""
+  cursor=2
+  keep=$(list_item_key $cursor) || keep=
+  items_kind=(host local scan quit)
+  items_alias=(nas 进入本机 '扫描局域网…' 退出)
+  items_user=(mac '' '' '')
+  items_hostname=(nas.local '' '' '')
+  items_ip=(192.168.1.8 '' '' '')
+  items_mac=('aa:bb:cc:dd:ee:01' '' '' '')
+  items_status=('已保存' '' '' '')
+  items_saved=(1 '' '' '')
+  add_discovered pi pi.local 192.168.1.50 aa:bb:cc:dd:ee:50
+  restore_list_cursor "$keep"
+  expect host/scan/keep-discovered-kind host "${items_kind[$cursor]}"
+  expect host/scan/keep-discovered-alias pi "${items_alias[$cursor]}"
+
+  if [[ ${functions[do_scan]} != *list_item_key* || ${functions[do_scan]} != *restore_list_cursor* ]]; then
+    print -u2 "FAIL host/scan/do_scan missing list_item_key/restore_list_cursor"
+    (( fails++ ))
+  fi
+
   if (( fails )); then
     print -u2 "host-selftest: $fails failed"
     return 1
