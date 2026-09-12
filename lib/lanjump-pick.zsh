@@ -1405,6 +1405,23 @@ ensure_pinnable_session_name() {
   REPLY=$new
 }
 
+# CLI --pin-session: rename leftover 0/1, pin the new name, print it (#149).
+pin_named_session() {
+  local name=$1 cwd
+  REPLY=
+  [[ -n $name ]] || return 1
+  load_settings
+  load_pinned_sessions
+  load_session_snapshot
+  ensure_pinnable_session_name "$name" || return 1
+  name=$REPLY
+  cwd=$(resolve_session_cwd "$name")
+  add_pin_record "$name" "${cwd:-$PWD}" ""
+  tmux_set_pinned "$name" 1
+  REPLY=$name
+  print -r -- "$name"
+}
+
 lanjump_foreign_session() {
   [[ -n ${1:-} && $1 == bmx-* ]]
 }
@@ -4373,14 +4390,7 @@ if [[ ${1:-} == --start-grok ]]; then
 fi
 
 if [[ ${1:-} == --pin-session ]]; then
-  name=${2:-}
-  [[ -n $name ]] || exit 1
-  load_settings
-  load_pinned_sessions
-  load_session_snapshot
-  cwd=$(resolve_session_cwd "$name")
-  add_pin_record "$name" "${cwd:-$PWD}" ""
-  tmux_set_pinned "$name" 1
+  pin_named_session "${2:-}" || exit 1
   exit 0
 fi
 

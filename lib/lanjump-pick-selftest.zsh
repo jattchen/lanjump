@@ -22,7 +22,7 @@
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
 # resume_prompt_choice, attach_command_for, new_session_flag_invalid, prompt_new,
 # prompt_new_pin_cwd, create_named_session, unique_non_numeric_session_name,
-# ensure_pinnable_session_name, toggle_session_pin, read_key, settings_input_read,
+# ensure_pinnable_session_name, pin_named_session, toggle_session_pin, read_key, settings_input_read,
 # PENDING_KEY.
 
 _pick_src_file=${0:A:h}/lanjump-pick.zsh
@@ -4215,6 +4215,84 @@ pick_selftest() {
   if [[ $restore_log == *rename-session* ]]; then
     print -u2 "FAIL pin/p-named renamed non-numeric got=$(printf %q "$restore_log")"
     (( fails++ ))
+  fi
+
+  # #149: CLI --pin-session on numeric 0 renames then pins, prints the new name.
+  pin_flag_src=$(awk '
+    /\[\[ \$\{1:-\} == --pin-session \]\]/ {p=1}
+    p {print}
+    p && /^fi$/ {exit}
+  ' "$_pick_src_file")
+  if [[ $pin_flag_src != *pin_named_session* && $pin_flag_src != *ensure_pinnable_session_name* ]]; then
+    print -u2 "FAIL pin/cli-flag missing ensure_pinnable_session_name"
+    (( fails++ ))
+  fi
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session) return 1 ;;
+      display-message)
+        print -r -- /tmp/cli-zero-pane
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  : >"$tmux_log"
+  if (( ! ${+functions[pin_named_session]} )); then
+    print -u2 "FAIL pin/cli-numeric missing pin_named_session"
+    (( fails++ ))
+  else
+    out=$(pin_named_session 0)
+    load_pinned_sessions
+    created=${pinned_names[1]:-}
+    if [[ -z $created ]]; then
+      print -u2 "FAIL pin/cli-numeric missing pin record"
+      (( fails++ ))
+    fi
+    if numeric_session_name "$created"; then
+      print -u2 "FAIL pin/cli-numeric still numeric got=$(printf %q "$created")"
+      (( fails++ ))
+    fi
+    if [[ $created == *:* || $created == *.* || $created == *' '* ]]; then
+      print -u2 "FAIL pin/cli-numeric invalid name got=$(printf %q "$created")"
+      (( fails++ ))
+    fi
+    expect pin/cli-numeric-stdout "$created" "$out"
+    restore_log=$(<"$tmux_log")
+    if [[ $restore_log != *'rename-session -t =0 '* ]]; then
+      print -u2 "FAIL pin/cli-numeric-rename got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    : >"$tmux_log"
+    restore_pinned_sessions
+    restore_log=$(<"$tmux_log")
+    if [[ -n $created && $restore_log != *'new-session -d -s '"$created"* ]]; then
+      print -u2 "FAIL pin/cli-numeric-restore got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+  fi
+
+  # Named --pin-session still uses the given name and prints it.
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  : >"$tmux_log"
+  if (( ${+functions[pin_named_session]} )); then
+    out=$(pin_named_session keep)
+    load_pinned_sessions
+    expect pin/cli-named keep "${pinned_names[1]:-}"
+    expect pin/cli-named-stdout keep "$out"
+    restore_log=$(<"$tmux_log")
+    if [[ $restore_log == *rename-session* ]]; then
+      print -u2 "FAIL pin/cli-named renamed non-numeric got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
   fi
   cd "$oldpwd"
   functions -c _pn_restore_tty restore_tty
