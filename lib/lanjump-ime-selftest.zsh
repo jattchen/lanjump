@@ -192,6 +192,18 @@ ime_selftest() {
       (( fails++ ))
     fi
     rm -f "$tmp/ime"
+
+    rm -f "$tmp/ran"
+    unset SSH_CONNECTION SSH_CLIENT SSH_TTY
+    ime_switched=0
+    maybe_switch_ime
+    toggle_ime
+    rm -f "$tmp/ran"
+    toggle_ime
+    if [[ ! -f $tmp/ran ]]; then
+      print -u2 "FAIL toggle_ime off then on should run helper again"
+      (( fails++ ))
+    fi
   fi
 
   items_kind=("host") items_alias=("box") items_user=("mac")
