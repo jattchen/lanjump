@@ -8,6 +8,7 @@
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
+# has_named_session,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
@@ -1720,6 +1721,86 @@ pick_selftest() {
     (( fails++ ))
   fi
   expect work/print-empty-names ws-empty "$got"
+
+  # #120: go --has-session must restore like work/print before answering.
+  if [[ ${functions[has_named_session]:-} != *should_restore_sessions* ]]; then
+    print -u2 "FAIL has-session/print missing should_restore_sessions got=$(printf %q "${functions[has_named_session]:-}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[has_named_session]:-} != *restore_saved_sessions* ]]; then
+    print -u2 "FAIL has-session/print missing restore_saved_sessions got=$(printf %q "${functions[has_named_session]:-}")"
+    (( fails++ ))
+  fi
+
+  # kill-server / no live sessions: restore every restoreable workspace name.
+  : >"$tmux_log"
+  mock_live=()
+  did_restore=0
+  snap_names=(demo other)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[demo]=/tmp/demo
+  snap_cwd[other]=/tmp/other
+  snap_occupied[demo]=1
+  snap_occupied[other]=1
+  snap_workspace[demo]=1
+  snap_workspace[other]=1
+  snap_attached[demo]=$EPOCHSECONDS
+  snap_attached[other]=$EPOCHSECONDS
+  save_session_snapshot
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions) return 1 ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  st=0
+  has_named_session demo || st=$?
+  restore_log=$(<"$tmux_log")
+  if (( st != 0 )); then
+    print -u2 "FAIL has-session/empty-demo status got=$st want 0"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
+    print -u2 "FAIL has-session/empty-demo missing demo new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-session -d -s other -c /tmp/other'* ]]; then
+    print -u2 "FAIL has-session/empty-demo skipped other new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # #80/#120: anything restoreable already live skips full restore.
+  setup_partial_pins
+  st=0
+  has_named_session ws-gone || st=$?
+  restore_log=$(<"$tmux_log")
+  if (( st == 0 )); then
+    print -u2 "FAIL has-session/partial-gone status got=0 want nonzero"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
+    print -u2 "FAIL has-session/partial-gone restored unpinned workspace got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
+    print -u2 "FAIL has-session/partial-gone missing lj-pin-gone got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
 
   unset SSH_CONNECTION SSH_CLIENT SSH_TTY
   LANJUMP_GHOSTTY_APP="$testhome/Ghostty.app"

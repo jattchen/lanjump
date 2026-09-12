@@ -4071,6 +4071,21 @@ print_workspace_names() {
   done
 }
 
+# Restore before has-session so go name matches work/print (#80 / #120).
+has_named_session() {
+  local name=${1:-}
+  [[ -n $name ]] || return 1
+  [[ $HAS_TMUX -eq 1 ]] || return 1
+  load_pinned_sessions
+  load_session_snapshot
+  if should_restore_sessions; then
+    restore_saved_sessions
+  else
+    restore_pinned_sessions
+  fi
+  tmuxx has-session -t "=$name" 2>/dev/null
+}
+
 print_pinned_names() {
   load_pinned_sessions
   restore_pinned_sessions
@@ -4156,10 +4171,7 @@ if [[ ${1:-} == --print-sessions ]]; then
 fi
 
 if [[ ${1:-} == --has-session ]]; then
-  name=${2:-}
-  [[ -n $name ]] || exit 1
-  [[ $HAS_TMUX -eq 1 ]] || exit 1
-  tmuxx has-session -t "=$name" 2>/dev/null
+  has_named_session "${2:-}"
   exit $?
 fi
 
