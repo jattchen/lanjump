@@ -4909,6 +4909,102 @@ pick_selftest() {
   fi
   rm -f "$grok_log"
 
+  # #173: Apple Terminal color prep must not disable RGB for other clients.
+  local color_dir color_log color_got
+  local color_term_program=${TERM_PROGRAM-}
+  local color_term_program_version=${TERM_PROGRAM_VERSION-}
+  local color_term=${TERM-}
+  local color_colorterm=${COLORTERM-}
+  local -i color_prepared=$prepared_color color_has_tmux=$HAS_TMUX
+  color_dir=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-color.XXXXXX") || return 1
+  color_log=$color_dir/tmux.log
+  HAS_TMUX=1
+  tmuxx() {
+    print -r -- "$*" >>"$color_log"
+    case $1 in
+      show-options)
+        print -r -- tmux-256color
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+
+  : >"$color_log"
+  prepared_color=0
+  TERM_PROGRAM=Apple_Terminal
+  TERM_PROGRAM_VERSION=440
+  TERM=xterm-256color
+  unset COLORTERM
+  tmux_prepare_color
+  color_got=$(<"$color_log")
+  if [[ $color_got == *'*:RGB@'* ]]; then
+    print -u2 "FAIL color/apple-no-star-rgb got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got == *'-g TERM_PROGRAM Apple_Terminal'* ]]; then
+    print -u2 "FAIL color/apple-no-global-term-program got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got == *'-gu terminal-features'* ]]; then
+    print -u2 "FAIL color/apple-no-unset-features got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+
+  : >"$color_log"
+  prepared_color=0
+  TERM_PROGRAM=ghostty
+  TERM=xterm-ghostty
+  COLORTERM=truecolor
+  tmux_prepare_color
+  color_got=$(<"$color_log")
+  if [[ $color_got != *xterm-ghostty:RGB* ]]; then
+    print -u2 "FAIL color/ghostty-rgb missing xterm-ghostty:RGB got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got != *xterm-ghostty:Tc* ]]; then
+    print -u2 "FAIL color/ghostty-tc missing xterm-ghostty:Tc got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got == *'*:RGB'* ]]; then
+    print -u2 "FAIL color/ghostty-no-star-rgb got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+
+  if [[ ${functions[tmux_prepare_color]} == *'*:RGB@'* ]]; then
+    print -u2 "FAIL color/src-no-star-rgb tmux_prepare_color still has *:RGB@"
+    (( fails++ ))
+  fi
+
+  if [[ -n $color_term_program ]]; then
+    TERM_PROGRAM=$color_term_program
+  else
+    unset TERM_PROGRAM
+  fi
+  if [[ -n $color_term_program_version ]]; then
+    TERM_PROGRAM_VERSION=$color_term_program_version
+  else
+    unset TERM_PROGRAM_VERSION
+  fi
+  if [[ -n $color_term ]]; then
+    TERM=$color_term
+  else
+    unset TERM
+  fi
+  if [[ -n $color_colorterm ]]; then
+    COLORTERM=$color_colorterm
+  else
+    unset COLORTERM
+  fi
+  prepared_color=$color_prepared
+  HAS_TMUX=$color_has_tmux
+  rm -rf "$color_dir"
+  unset -f tmuxx
+  tmuxx() {
+    [[ -n $TMUX_BIN ]] || return 1
+    command "$TMUX_BIN" "$@" </dev/null
+  }
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1
