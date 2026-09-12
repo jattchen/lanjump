@@ -430,6 +430,38 @@ expect_contains remote/go-grok/ssh-print SSH "$hay"
 expect_absent remote/go-grok/no-local-tmux LOCAL_TMUX "$hay"
 unfunction cli_tmux
 
+# #175: remote has-session connect/sync failure is not "missing" (status 1).
+st=0
+err=$(cli_has_session nosuchhost demo 2>&1) || st=$?
+if (( st == 0 || st == 1 )); then
+  print -u2 "FAIL has-session-unknown/status got $st want not 0 or 1"
+  (( fails++ ))
+fi
+expect_contains has-session-unknown/msg '没有保存的机器「nosuchhost」。' "$err"
+
+_lj_save_access=$functions[setup_access]
+_lj_save_sync=$functions[sync_picker]
+setup_access() { return 1 }
+st=0
+err=$(cli_has_session studio demo 2>&1) || st=$?
+if (( st == 0 || st == 1 )); then
+  print -u2 "FAIL has-session-login/status got $st want not 0 or 1"
+  (( fails++ ))
+fi
+expect_contains has-session-login/msg '无法登录' "$err"
+functions[setup_access]=$_lj_save_access
+
+sync_picker() { return 1 }
+st=0
+err=$(cli_has_session studio demo 2>&1) || st=$?
+if (( st == 0 || st == 1 )); then
+  print -u2 "FAIL has-session-sync/status got $st want not 0 or 1"
+  (( fails++ ))
+fi
+expect_contains has-session-sync/msg '无法把 tmux 选择界面同步到对方。' "$err"
+functions[sync_picker]=$_lj_save_sync
+unset _lj_save_access _lj_save_sync
+
 : >"$log"
 cli_dispatch work
 assert_remote_open remote/work "$(read_log)" lanjump
@@ -561,6 +593,7 @@ cli_remote_print() {
 }
 
 CLI_HAS_SESSION=1
+CLI_HAS_CONNECT=1
 CLI_PIN=0
 CLI_CREATE=1
 CLI_GROK_DIR=0
@@ -570,6 +603,17 @@ TEST_PANE_LIST=
 
 cli_has_session() {
   print -r -- "HAS host=$1 session=$2" >>"$log"
+  # #175: unknown/unreachable remote is not a missing session (status 1).
+  if [[ $1 != local ]]; then
+    if ! find_host_index "$1" >/dev/null; then
+      print -u2 "没有保存的机器「${1}」。"
+      return 2
+    fi
+    if (( ${CLI_HAS_CONNECT:-1} == 0 )); then
+      print -u2 "无法登录 ${1}."
+      return 2
+    fi
+  fi
   (( CLI_HAS_SESSION ))
 }
 
@@ -997,6 +1041,61 @@ hay=$(read_log)
 expect_absent go-create-n/no-new 'NEW ' "$hay"
 expect_absent go-create-n/no-open 'OPEN ' "$hay"
 expect_absent go-create-n/no-last 'LAST ' "$hay"
+
+# #175: prefixed go must not treat connect/sync failure as a missing session.
+# Local go missingname still prompts (go-create-y / go-create-n above).
+CLI_HAS_SESSION=0
+CLI_HAS_CONNECT=1
+CLI_TTY_REPLIES=(y '')
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+out=$(cli_dispatch go nosuchhost:demo 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-unknown-host/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-unknown-host/msg '没有保存的机器「nosuchhost」。' "$out"
+expect_absent go-unknown-host/no-prompt '要新建并打开吗' "$out"
+expect_absent go-unknown-host/no-session-msg '没有 session「demo」' "$out"
+hay=$(read_log)
+expect_absent go-unknown-host/no-new 'NEW ' "$hay"
+expect_absent go-unknown-host/no-last 'LAST ' "$hay"
+expect_absent go-unknown-host/no-remote-new '--new-session' "$hay"
+
+CLI_HAS_SESSION=0
+CLI_HAS_CONNECT=0
+CLI_TTY_REPLIES=(y '')
+: >"$log"
+st=0
+out=$(cli_dispatch go office:demo 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-login-fail/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-login-fail/msg '无法登录' "$out"
+expect_absent go-login-fail/no-prompt '要新建并打开吗' "$out"
+expect_absent go-login-fail/no-session-msg '没有 session「demo」' "$out"
+hay=$(read_log)
+expect_absent go-login-fail/no-new 'NEW ' "$hay"
+expect_absent go-login-fail/no-last 'LAST ' "$hay"
+expect_absent go-login-fail/no-remote-new '--new-session' "$hay"
+CLI_HAS_CONNECT=1
+
+# Stubbed reachable remote, session actually missing: still prompt.
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=(n)
+: >"$log"
+st=0
+out=$(cli_dispatch go office:demo) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-remote-missing/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-remote-missing/prompt '回车或 y=是' "$out"
+expect_contains go-remote-missing/session-msg '没有 session「demo」' "$out"
+hay=$(read_log)
+expect_absent go-remote-missing/no-new 'NEW ' "$hay"
 
 CLI_HAS_SESSION=1
 CLI_TTY_REPLIES=()
