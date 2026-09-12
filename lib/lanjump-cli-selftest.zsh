@@ -205,6 +205,14 @@ assert_local_attach() {
   expect_absent "$label/no-ssh" REMOTE_SSH "$hay"
 }
 
+expect_eq() {
+  local label=$1 want=$2 got=$3
+  if [[ $got != "$want" ]]; then
+    print -u2 "FAIL $label got=$(printf %q "$got") want=$(printf %q "$want")"
+    (( fails++ ))
+  fi
+}
+
 : >"$log"
 cli_open_tabs studio lanjump
 assert_remote_open remote/open-tabs "$(read_log)" lanjump
@@ -212,6 +220,85 @@ assert_remote_open remote/open-tabs "$(read_log)" lanjump
 : >"$log"
 cli_open_tabs local lanjump
 assert_local_open local/open-tabs "$(read_log)" lanjump
+
+# #90: forgetting the last remote must not leave that alias as CLI default.
+LAST_FILE=$tmpdir/last_target
+print -r -- studio >"$LAST_FILE"
+expect_eq default-host/present studio "$(default_cli_host)"
+
+h_alias=()
+h_user=()
+h_hostname=()
+h_ip=()
+h_mac=()
+h_last=()
+expect_eq default-host/forgotten local "$(default_cli_host)"
+
+print -r -- local >"$LAST_FILE"
+expect_eq default-host/local local "$(default_cli_host)"
+
+print -r -- host >"$LAST_FILE"
+expect_eq default-host/sentinel local "$(default_cli_host)"
+
+rm -f "$LAST_FILE"
+expect_eq default-host/missing local "$(default_cli_host)"
+
+print -r -- studio >"$LAST_FILE"
+: >"$log"
+st=0
+err=$(cli_dispatch list 2>&1) || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL list-forgotten/status got $st want 0"
+  (( fails++ ))
+fi
+expect_absent list-forgotten/no-missing '没有保存的机器' "$err"
+expect_eq list-forgotten/last local "$(read_last)"
+
+_lj_save_restore_tty=$functions[restore_tty]
+_lj_save_setup_tty=$functions[setup_tty]
+_lj_save_forget_saved=$functions[forget_saved]
+_lj_save_load_hosts=$functions[load_hosts]
+_lj_save_build_items=$functions[build_items]
+_lj_save_cli_tty_read=$functions[cli_tty_read]
+restore_tty() { : }
+setup_tty() { : }
+forget_saved() { : }
+load_hosts() { : }
+build_items() { : }
+items_kind=(host)
+items_alias=(studio)
+items_saved=(1)
+
+print -r -- studio >"$LAST_FILE"
+cli_tty_read() { printf -v $1 y }
+forget_item 1 >/dev/null
+expect_eq forget-last/cleared local "$(read_last)"
+
+print -r -- office >"$LAST_FILE"
+cli_tty_read() { printf -v $1 y }
+forget_item 1 >/dev/null
+expect_eq forget-last/other office "$(read_last)"
+
+print -r -- studio >"$LAST_FILE"
+cli_tty_read() { printf -v $1 n }
+forget_item 1 >/dev/null
+expect_eq forget-last/cancel studio "$(read_last)"
+
+functions[restore_tty]=$_lj_save_restore_tty
+functions[setup_tty]=$_lj_save_setup_tty
+functions[forget_saved]=$_lj_save_forget_saved
+functions[load_hosts]=$_lj_save_load_hosts
+functions[build_items]=$_lj_save_build_items
+functions[cli_tty_read]=$_lj_save_cli_tty_read
+unset _lj_save_restore_tty _lj_save_setup_tty _lj_save_forget_saved
+unset _lj_save_load_hosts _lj_save_build_items _lj_save_cli_tty_read
+
+h_alias=(studio)
+h_user=(mac)
+h_hostname=(studio.local)
+h_ip=(10.0.0.2)
+h_mac=('')
+h_last=('0')
 
 default_cli_host() {
   print -r -- studio
