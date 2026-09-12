@@ -72,6 +72,7 @@ settings_input_on=0
 settings_input_buf=
 settings_input_char=
 loading=0
+list_active=0
 stty_orig=
 PENDING_KEY=""
 digit_wait=0.5
@@ -261,6 +262,7 @@ tmux_prepare_color() {
 }
 
 restore_tty() {
+  list_active=0
   print -n $'\e[?25h\e[?1000l\e[?1006l'
   [[ -n ${stty_orig:-} ]] && stty "$stty_orig" 2>/dev/null || stty sane 2>/dev/null
 }
@@ -269,15 +271,24 @@ setup_tty() {
   stty_orig=$(stty -g)
   stty -echo -icanon min 1 time 0
   print -n '\e[?25l'
+  list_active=1
 }
 
 on_exit() {
   restore_tty
 }
+
+# WINCH: session list draw only while the list is on screen.
+draw_on_winch() {
+  (( list_active )) || return 0
+  [[ $loading -eq 1 ]] && return 0
+  draw
+}
+
 if pick_needs_tty "${1:-}" && [[ ${1:-} != --attach ]]; then
   trap on_exit EXIT
   trap 'restore_tty; exit 130' INT
-  trap '[[ $loading -eq 1 ]] || draw' WINCH
+  trap draw_on_winch WINCH
 fi
 
 term_cols() {
@@ -2011,7 +2022,7 @@ prompt_restore_windows() {
     esac
   done
   print -n $'\e[?1000l\e[?1006l'
-  trap '[[ $loading -eq 1 ]] || draw' WINCH
+  trap draw_on_winch WINCH
   restore_tty
   print -n $'\e[H\e[J'
 }
