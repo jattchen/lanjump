@@ -465,6 +465,24 @@ fi
 expect_contains last/restore-gate should_restore_sessions "$recent_src"
 expect_contains last/restore-saved restore_saved_sessions "$recent_src"
 
+# #124: --attach must restore like go/--has-session before attaching.
+attach_src=
+ensure_src=
+if [[ -f $pick_file ]]; then
+  attach_src=$(awk '
+    /\[\[ \$\{1:-\} == --attach \]\]/ {p=1}
+    p {print}
+    p && /^picker_boot_before_first_draw/ {exit}
+  ' "$pick_file")
+  ensure_src=$(awk '
+    /^ensure_named_session_for_attach\(\)/ {p=1}
+    p {print}
+    p && /^}/ {exit}
+  ' "$pick_file")
+fi
+expect_contains attach/restore-call ensure_named_session_for_attach "$attach_src"
+expect_contains attach/ensure-has has_named_session "$ensure_src"
+
 cli_new_session() {
   print -r -- "NEW host=$1 session=$2" >>"$log"
   return 0

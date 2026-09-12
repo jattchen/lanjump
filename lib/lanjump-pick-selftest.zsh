@@ -8,7 +8,7 @@
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
-# has_named_session, print_recent_names,
+# has_named_session, ensure_named_session_for_attach, print_recent_names,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
@@ -19,6 +19,8 @@
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
 # resume_prompt_choice, attach_command_for, new_session_flag_invalid, prompt_new,
 # create_named_session, read_key, settings_input_read, PENDING_KEY.
+
+_pick_src_file=${0:A:h}/lanjump-pick.zsh
 
 pick_selftest() {
   local -i fails=0
@@ -1799,6 +1801,98 @@ pick_selftest() {
   fi
   if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
     print -u2 "FAIL has-session/partial-gone missing lj-pin-gone got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # #124: --attach must restore like go/--has-session before attaching.
+  attach_src=
+  if [[ -f ${_pick_src_file:-} ]]; then
+    attach_src=$(awk '
+      /\[\[ \$\{1:-\} == --attach \]\]/ {p=1}
+      p {print}
+      p && /^picker_boot_before_first_draw/ {exit}
+    ' "$_pick_src_file")
+  fi
+  if [[ $attach_src != *has_named_session* && $attach_src != *ensure_named_session_for_attach* && $attach_src != *restore_saved_sessions* ]]; then
+    print -u2 "FAIL attach/handler missing restore gate got=$(printf %q "$attach_src")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[ensure_named_session_for_attach]:-} != *has_named_session* ]]; then
+    print -u2 "FAIL attach/ensure missing has_named_session got=$(printf %q "${functions[ensure_named_session_for_attach]:-}")"
+    (( fails++ ))
+  fi
+
+  # kill-server / no live sessions: attach restore recreates snapshot names.
+  : >"$tmux_log"
+  mock_live=()
+  did_restore=0
+  snap_names=(demo other)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[demo]=/tmp/demo
+  snap_cwd[other]=/tmp/other
+  snap_occupied[demo]=1
+  snap_occupied[other]=1
+  snap_workspace[demo]=1
+  snap_workspace[other]=1
+  snap_attached[demo]=$EPOCHSECONDS
+  snap_attached[other]=$EPOCHSECONDS
+  save_session_snapshot
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions) return 1 ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  st=0
+  err=$(ensure_named_session_for_attach demo 2>&1) || st=$?
+  restore_log=$(<"$tmux_log")
+  if (( st != 0 )); then
+    print -u2 "FAIL attach/empty-demo status got=$st want 0 err=$(printf %q "$err")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
+    print -u2 "FAIL attach/empty-demo missing demo new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-session -d -s other -c /tmp/other'* ]]; then
+    print -u2 "FAIL attach/empty-demo skipped other new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # #80/#124: anything restoreable already live skips full restore.
+  setup_partial_pins
+  st=0
+  err=$(ensure_named_session_for_attach ws-gone 2>&1) || st=$?
+  restore_log=$(<"$tmux_log")
+  if (( st == 0 )); then
+    print -u2 "FAIL attach/partial-gone status got=0 want nonzero"
+    (( fails++ ))
+  fi
+  if [[ $err != *'没有 session「ws-gone」。'* ]]; then
+    print -u2 "FAIL attach/partial-gone error got=$(printf %q "$err")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
+    print -u2 "FAIL attach/partial-gone restored unpinned workspace got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
+    print -u2 "FAIL attach/partial-gone missing lj-pin-gone got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
