@@ -4039,11 +4039,16 @@ fi
 print_workspace_names() {
   load_pinned_sessions
   load_session_snapshot
-  restore_pinned_sessions
+  if should_restore_sessions; then
+    restore_saved_sessions
+  else
+    restore_pinned_sessions
+  fi
   collect_restore_names
   collect_ghostty_session_names
   local n
   for n in "${ghostty_names[@]}"; do
+    tmuxx has-session -t "=$n" 2>/dev/null || continue
     print -r -- "$n"
   done
 }
