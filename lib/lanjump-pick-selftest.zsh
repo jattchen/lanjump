@@ -1633,6 +1633,16 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #137: pins/--print-pinned must restore like work/list before listing pins.
+  if [[ ${functions[print_pinned_names]:-} != *should_restore_sessions* ]]; then
+    print -u2 "FAIL pin/print missing should_restore_sessions got=$(printf %q "${functions[print_pinned_names]:-}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[print_pinned_names]:-} != *restore_saved_sessions* ]]; then
+    print -u2 "FAIL pin/print missing restore_saved_sessions got=$(printf %q "${functions[print_pinned_names]:-}")"
+    (( fails++ ))
+  fi
+
   setup_partial_pins
   got=$(print_pinned_names)
   restore_log=$(<"$tmux_log")
@@ -1644,7 +1654,67 @@ pick_selftest() {
     print -u2 "FAIL pin/restore-partial-pins recreated live pin got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
+  if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
+    print -u2 "FAIL pin/restore-partial-pins restored unpinned workspace got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
   expect pin/restore-partial-pins-names $'lj-pin-keep\nlj-pin-gone' "$got"
+
+  # #137: kill-server / empty tmux restores pin keep and unpinned demo, prints only keep.
+  : >"$tmux_log"
+  mock_live=()
+  did_restore=0
+  snap_names=(keep demo)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[keep]=/tmp/keep
+  snap_cwd[demo]=/tmp/demo
+  snap_occupied[keep]=1
+  snap_occupied[demo]=1
+  snap_workspace[keep]=1
+  snap_workspace[demo]=1
+  snap_attached[keep]=$EPOCHSECONDS
+  snap_attached[demo]=$EPOCHSECONDS
+  save_session_snapshot
+  print -r -- $'name keep\ncwd /tmp/keep\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions) return 1 ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  got=$(print_pinned_names)
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s keep -c /tmp/keep'* ]]; then
+    print -u2 "FAIL pin/print-empty missing keep new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
+    print -u2 "FAIL pin/print-empty missing demo new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $got != *keep* ]]; then
+    print -u2 "FAIL pin/print-empty missing keep got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got == *demo* ]]; then
+    print -u2 "FAIL pin/print-empty listed unpinned workspace got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  expect pin/print-empty-names keep "$got"
 
   if [[ ${functions[print_workspace_names]} != *should_restore_sessions* ]]; then
     print -u2 "FAIL work/print missing should_restore_sessions got=$(printf %q "${functions[print_workspace_names]}")"
