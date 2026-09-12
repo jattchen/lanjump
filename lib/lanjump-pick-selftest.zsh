@@ -2196,6 +2196,64 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # Ordinary attach (go without --grok / list enter) must jump, not respawn.
+  functions -c mark_snapshot_occupied _st105_mark
+  functions -c load_session_snapshot _st105_load
+  functions -c remember_last_session _st105_remember
+  functions -c restore_tty _st105_restore
+  functions -c tmux_tty _st105_tmux_tty
+  functions -c snapshot_live_sessions _st105_snap
+  functions -c effective_open_target _st105_eot
+  mark_snapshot_occupied() { : }
+  load_session_snapshot() { : }
+  remember_last_session() { : }
+  restore_tty() { : }
+  tmux_tty() { print -r -- "tmux_tty $*" >>"$tmux_log"; }
+  snapshot_live_sessions() { : }
+  effective_open_target() { print -r -- current; }
+  : >"$tmux_log"
+  snap_cmd[jump-grok]=grok-1.0.24-mac
+  snap_cwd[jump-grok]=/proj/lanjump
+  attach_shell_only=0
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- /proj/lanjump
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes)
+        print -r -- $'%1\tzsh\n%2\tgrok'
+        return 0
+        ;;
+      respawn-pane|send-keys|select-window|select-pane|attach-session) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  attach_named_session jump-grok 0 0
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'select-window -t %2'* ]]; then
+    print -u2 "FAIL resume/attach-jump-live-grok missing select-window grok pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'respawn-pane'* ]]; then
+    print -u2 "FAIL resume/attach-jump-live-grok still respawned idle pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  functions -c _st105_mark mark_snapshot_occupied
+  functions -c _st105_load load_session_snapshot
+  functions -c _st105_remember remember_last_session
+  functions -c _st105_restore restore_tty
+  functions -c _st105_tmux_tty tmux_tty
+  functions -c _st105_snap snapshot_live_sessions
+  functions -c _st105_eot effective_open_target
+  unset -f _st105_mark _st105_load _st105_remember _st105_restore \
+    _st105_tmux_tty _st105_snap _st105_eot
+
   : >"$tmux_log"
   snap_cwd[reattach-cwd]=/proj/lanjump
   tmuxx() {
