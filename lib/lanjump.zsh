@@ -1917,7 +1917,10 @@ cli_dispatch() {
         return 1
       fi
       session=$(cli_recent_select "${names[@]}") || return 1
-      cli_attach_one "$host" "$session" 0
+      # Local attach execs the picker; write last_target first.
+      [[ $host == local ]] && mark_last "$host"
+      cli_attach_one "$host" "$session" 0 || return 1
+      mark_last "$host"
       ;;
     *)
       return 1
