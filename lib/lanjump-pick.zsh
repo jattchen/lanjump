@@ -153,15 +153,27 @@ tmux_prepare_keys() {
   prepared_keys=1
 }
 
+snapshot_pick_bin() {
+  if [[ -n ${LANJUMP_PICK_BIN:-} ]]; then
+    print -r -- "$LANJUMP_PICK_BIN"
+  elif [[ -f $HOME/.local/bin/lanjump-pick ]]; then
+    print -r -- "$HOME/.local/bin/lanjump-pick"
+  else
+    print -r -- "$HOME/Library/Application Support/lanjump/lanjump-pick.zsh"
+  fi
+}
+
 snapshot_hook_shell() {
   local pick
-  pick=${LANJUMP_PICK_BIN:-$HOME/Library/Application Support/lanjump/lanjump-pick.zsh}
+  pick=$(snapshot_pick_bin)
   print -r -- "/bin/zsh $(printf %q "$pick") --snapshot >/dev/null 2>&1"
 }
 
 tmux_install_snapshot_hooks() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  local inner pick sr iv hook
+  local inner pick sr iv hook tick quoted_pick app_pat
+  pick=$(snapshot_pick_bin)
+  quoted_pick=$(printf %q "$pick")
   inner=$(snapshot_hook_shell)
   for hook in \
     'client-attached[91]' \
@@ -173,10 +185,17 @@ tmux_install_snapshot_hooks() {
     tmuxx set-hook -gu "$hook" 2>/dev/null || true
   done
   tmuxx set-hook -g 'client-detached[91]' "run-shell -b $(printf %q "$inner")" 2>/dev/null || true
-  pick=${LANJUMP_PICK_BIN:-$HOME/Library/Application Support/lanjump/lanjump-pick.zsh}
+  tick="#(/bin/zsh $quoted_pick --snapshot;)"
   sr=$(tmuxx show-options -gv status-right 2>/dev/null || true)
-  if [[ $sr != *lanjump-pick.zsh* ]]; then
-    tmuxx set-option -ag status-right "#(/bin/zsh $(printf %q "$pick") --snapshot;)" 2>/dev/null || true
+  # Remote pick has no .zsh; replace a leftover Application Support tick.
+  app_pat='(#b)(*)\#\(/bin/zsh*lanjump-pick.zsh*--snapshot;\)(*)'
+  if [[ $sr == *"$tick"* ]]; then
+    :
+  elif [[ $pick != *lanjump-pick.zsh && $sr == $~app_pat ]]; then
+    sr="${match[1]}$tick${match[2]}"
+    tmuxx set-option -g status-right "$sr" 2>/dev/null || true
+  elif [[ $sr != *lanjump-pick.zsh* && $sr != *"$quoted_pick"* ]]; then
+    tmuxx set-option -ag status-right "$tick" 2>/dev/null || true
   fi
   iv=$(tmuxx show-options -gv status-interval 2>/dev/null || true)
   if [[ $iv != [0-9]## ]] || (( iv == 0 || iv > 5 )); then

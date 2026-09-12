@@ -1378,6 +1378,7 @@ connect_item() {
   remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
   remote_cmd+="; unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM"
   remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
+  remote_cmd+="; export LANJUMP_PICK_BIN=\$HOME/.local/bin/lanjump-pick"
   remote_cmd+="; exec /bin/zsh \"\$HOME/.local/bin/lanjump-pick\""
   ssh_tty -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
     "$remote_cmd"
@@ -1565,6 +1566,7 @@ cli_remote_pick() {
   remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
   remote_cmd+="; unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM"
   remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
+  remote_cmd+="; export LANJUMP_PICK_BIN=\$HOME/.local/bin/lanjump-pick"
   remote_cmd+="; exec /bin/zsh \"\$HOME/.local/bin/lanjump-pick\""
   local a
   for a in "$@"; do
