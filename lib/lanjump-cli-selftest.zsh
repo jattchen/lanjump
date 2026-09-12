@@ -221,6 +221,21 @@ default_cli_host() {
 cli_dispatch go studio:lanjump
 assert_remote_open remote/go "$(read_log)" lanjump
 
+# #70: real cli_remote_print path. Stub local tmux so a miss cannot
+# send-keys into a same-named local session.
+cli_tmux() {
+  print -r -- "LOCAL_TMUX ${(j: :)@}" >>"$LANJUMP_CLI_TEST_LOG"
+  return 0
+}
+: >"$log"
+cli_dispatch go studio:lanjump --grok
+hay=$(read_log)
+assert_remote_open remote/go-grok "$hay" lanjump
+expect_contains remote/go-grok/start --start-grok "$hay"
+expect_contains remote/go-grok/ssh-print SSH "$hay"
+expect_absent remote/go-grok/no-local-tmux LOCAL_TMUX "$hay"
+unfunction cli_tmux
+
 : >"$log"
 cli_dispatch work
 assert_remote_open remote/work "$(read_log)" lanjump
@@ -297,6 +312,10 @@ cli_open_tabs() {
 
 cli_remote_pick() {
   print -r -- "REMOTE_PICK host=$1 argv=${(j: :)${@[2,-1]}}" >>"$log"
+}
+
+cli_remote_print() {
+  print -r -- "REMOTE_PRINT host=$1 argv=${(j: :)${@[2,-1]}}" >>"$log"
 }
 
 CLI_HAS_SESSION=1
@@ -485,6 +504,28 @@ expect_contains go-host-session/session lanjump "$hay"
 expect_contains go-host-session/last 'LAST host=office' "$hay"
 expect_absent go-host-session/no-tabs --open-tabs "$hay"
 expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
+
+# #70: --grok on host:session must start grok on that host, not local tmux.
+LANJUMP_GROK_BIN=grok
+TEST_PANE_CMD=zsh
+CLI_HAS_SESSION=1
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+cli_dispatch go office:demo --grok >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-host-grok/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-host-grok/has 'HAS host=office session=demo' "$hay"
+expect_contains go-host-grok/remote 'REMOTE_PRINT host=office argv=--start-grok demo' "$hay"
+expect_contains go-host-grok/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains go-host-grok/attach-flag '--attach' "$hay"
+expect_contains go-host-grok/last 'LAST host=office' "$hay"
+expect_absent go-host-grok/no-local-tmux 'TMUX ' "$hay"
+expect_absent go-host-grok/no-local-pick 'PICK --start-grok' "$hay"
+expect_absent go-host-grok/not-local-open 'OPEN host=local' "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
