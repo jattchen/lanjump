@@ -10,6 +10,7 @@
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
 # has_named_session, ensure_named_session_for_attach, print_recent_names,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
+# terminal_osascript_for_sessions,
 # attaching_remote_host, attach_spec_for, attach_command_for, open_named_tabs,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
@@ -2109,6 +2110,35 @@ pick_selftest() {
     print -u2 "FAIL ghostty/script missing attach sysmtn got=$(printf %q "$script")"
     (( fails++ ))
   fi
+  # #127: Terminal `do script` returns a tab; later sessions must target that tab's window.
+  script=$(terminal_osascript_for_sessions a b)
+  if [[ $script != *'/Users/mac/.local/bin/lanjump attach a'* ]]; then
+    print -u2 "FAIL terminal/script missing attach a got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'/Users/mac/.local/bin/lanjump attach b'* ]]; then
+    print -u2 "FAIL terminal/script missing attach b got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script == *'set win to do script'* && $script == *'do script'*' in win'* ]]; then
+    print -u2 "FAIL terminal/script later do script targets the first tab got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'window of'* ]]; then
+    print -u2 "FAIL terminal/script missing window of for later tabs got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  script=$(terminal_osascript_for_sessions a)
+  if [[ $script != *'/Users/mac/.local/bin/lanjump attach a'* ]]; then
+    print -u2 "FAIL terminal/script-one missing attach a got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  case $script in
+    *'do script'*'do script'*)
+      print -u2 "FAIL terminal/script-one extra do script got=$(printf %q "$script")"
+      (( fails++ ))
+      ;;
+  esac
   expect attach/spec-local lanjump "$(attach_spec_for lanjump)"
   if attaching_remote_host; then
     print -u2 "FAIL attach/remote-host-empty should be local"
