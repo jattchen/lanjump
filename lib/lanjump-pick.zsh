@@ -2541,11 +2541,14 @@ terminal_osascript_for_sessions() {
   cmd=$(attach_command_for "$first")
   print -r -- 'tell application "Terminal"'
   print -r -- '  activate'
-  print -r -- "  set win to do script \"${cmd}\""
-  for n in "$@"; do
-    cmd=$(attach_command_for "$n")
-    print -r -- "  do script \"${cmd}\" in win"
-  done
+  print -r -- "  set t to do script \"${cmd}\""
+  if (( $# )); then
+    print -r -- '  set w to window of t'
+    for n in "$@"; do
+      cmd=$(attach_command_for "$n")
+      print -r -- "  do script \"${cmd}\" in w"
+    done
+  fi
   print -r -- 'end tell'
 }
 
