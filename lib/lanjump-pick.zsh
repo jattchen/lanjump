@@ -1325,7 +1325,24 @@ if sid:
 restore_pinned_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   load_pinned_sessions
-  restore_saved_sessions
+  local name cwd
+  for name in "${pinned_names[@]}"; do
+    [[ -n $name ]] || continue
+    numeric_session_name "$name" && continue
+    lanjump_foreign_session "$name" && continue
+    if tmuxx has-session -t "=$name" 2>/dev/null; then
+      tmux_set_pinned "$name" 1
+      continue
+    fi
+    cwd=$(resolve_session_cwd "$name")
+    if [[ -n $cwd ]]; then
+      tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || \
+        tmuxx new-session -d -s "$name" 2>/dev/null || continue
+    else
+      tmuxx new-session -d -s "$name" 2>/dev/null || continue
+    fi
+    tmux_set_pinned "$name" 1
+  done
 }
 
 numeric_session_name() {
@@ -2562,6 +2579,8 @@ maybe_restore_sessions() {
   if should_restore_sessions; then
     restore_saved_sessions
     did_restore=1
+  else
+    restore_pinned_sessions
   fi
   if tmux_server_running; then
     tmux_install_snapshot_hooks
@@ -3925,6 +3944,7 @@ fi
 print_workspace_names() {
   load_pinned_sessions
   load_session_snapshot
+  restore_pinned_sessions
   collect_restore_names
   collect_ghostty_session_names
   local n
@@ -3935,6 +3955,7 @@ print_workspace_names() {
 
 print_pinned_names() {
   load_pinned_sessions
+  restore_pinned_sessions
   local n
   for n in "${pinned_names[@]}"; do
     [[ -n $n ]] || continue
