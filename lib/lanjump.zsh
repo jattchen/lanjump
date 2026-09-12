@@ -1614,7 +1614,8 @@ cli_pick() {
     print -u2 "本机 tmux 选择界面不存在。请重新安装：lanjump upgrade"
     return 1
   fi
-  /bin/zsh "$picker" "$@"
+  # Function-level VAR=val is not exported to this child on all zsh.
+  LANJUMP_ATTACH_HOST=${LANJUMP_ATTACH_HOST:-} /bin/zsh "$picker" "$@"
 }
 
 cli_pick_exec() {
