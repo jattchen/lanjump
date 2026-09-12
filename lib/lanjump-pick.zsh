@@ -604,11 +604,30 @@ cwd_has_grok_session() {
   [[ -d $dir ]]
 }
 
+# If any pane in the session is grok, select that window/pane.
+select_live_grok_pane() {
+  local session=$1 pane_line pane_id pane_cmd
+  local -a panes
+  [[ -n $session ]] || return 1
+  panes=("${(@f)$(tmuxx list-panes -s -t "=$session" -F $'#{pane_id}\t#{pane_current_command}' 2>/dev/null)}")
+  for pane_line in "${panes[@]}"; do
+    [[ -n $pane_line ]] || continue
+    pane_id=${pane_line%%$'\t'*}
+    pane_cmd=${pane_line#*$'\t'}
+    pane_cmd=${pane_cmd##*/}
+    if [[ $pane_cmd == grok || $pane_cmd == grok-* ]]; then
+      tmuxx select-window -t "$pane_id" 2>/dev/null || true
+      tmuxx select-pane -t "$pane_id" 2>/dev/null || true
+      return 0
+    fi
+  done
+  return 1
+}
+
 # go --grok: jump to an already-open grok pane, else type grok into an idle shell.
 start_grok_session() {
   local session=$1
-  local live pane_cwd bin line target grok_pane pane_line pane_id pane_cmd
-  local -a panes
+  local live pane_cwd bin line target
   [[ -n $session ]] || return 1
   [[ $HAS_TMUX -eq 1 ]] || return 1
   target=$(session_pane_target "$session")
@@ -617,23 +636,7 @@ start_grok_session() {
   if [[ $live == grok || $live == grok-* ]]; then
     return 0
   fi
-  grok_pane=
-  panes=("${(@f)$(tmuxx list-panes -s -t "=$session" -F $'#{pane_id}\t#{pane_current_command}' 2>/dev/null)}")
-  for pane_line in "${panes[@]}"; do
-    [[ -n $pane_line ]] || continue
-    pane_id=${pane_line%%$'\t'*}
-    pane_cmd=${pane_line#*$'\t'}
-    pane_cmd=${pane_cmd##*/}
-    if [[ $pane_cmd == grok || $pane_cmd == grok-* ]]; then
-      grok_pane=$pane_id
-      break
-    fi
-  done
-  if [[ -n $grok_pane ]]; then
-    tmuxx select-window -t "$grok_pane" 2>/dev/null || true
-    tmuxx select-pane -t "$grok_pane" 2>/dev/null || true
-    return 0
-  fi
+  select_live_grok_pane "$session" && return 0
   # Unreadable command is not an idle shell; do not send-keys into a live grok.
   [[ -n $live ]] || return 0
   case $live in
@@ -1961,6 +1964,8 @@ maybe_resume_last_command() {
     fi
     return 0
   }
+  # Live grok elsewhere in the session: jump there instead of respawning this idle pane.
+  select_live_grok_pane "$name" && return 0
   args=(respawn-pane -t "$target" -k)
   [[ -n $want ]] && args+=(-c "$want")
   args+=(-e "PATH=$(resume_pane_path)")
@@ -2004,7 +2009,7 @@ attach_named_session() {
   if (( ask )); then
     live=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_command}' 2>/dev/null || true)
     last=${snap_cmd[$name]:-}
-    if pane_is_idle_shell "$live" && last_command_resumable "$last"; then
+    if pane_is_idle_shell "$live" && last_command_resumable "$last" && ! select_live_grok_pane "$name"; then
       restore_tty
       print
       enter_resume_prompt_text "$last"

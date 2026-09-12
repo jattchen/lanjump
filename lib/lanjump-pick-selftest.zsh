@@ -2124,6 +2124,78 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #105: idle current pane, grok still running in another window. Jump there; do not respawn.
+  : >"$tmux_log"
+  snap_cmd[jump-grok]=grok-1.0.24-mac
+  snap_cwd[jump-grok]=/proj/lanjump
+  attach_shell_only=0
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- /proj/lanjump
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes)
+        print -r -- $'%1\tzsh\n%2\tgrok'
+        return 0
+        ;;
+      respawn-pane|send-keys|select-window|select-pane) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command jump-grok
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'list-panes -s'* ]]; then
+    print -u2 "FAIL resume/jump-live-grok missing session-wide list-panes got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'select-window -t %2'* ]]; then
+    print -u2 "FAIL resume/jump-live-grok missing select-window grok pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'respawn-pane'* ]]; then
+    print -u2 "FAIL resume/jump-live-grok still respawned idle pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  : >"$tmux_log"
+  snap_cmd[jump-grok-ver]=grok-1.0.24-mac
+  snap_cwd[jump-grok-ver]=/proj/lanjump
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- /proj/lanjump
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes)
+        print -r -- $'%1\tzsh\n%2\tgrok-1.0.24-mac'
+        return 0
+        ;;
+      respawn-pane|send-keys|select-window|select-pane) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  maybe_resume_last_command jump-grok-ver
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'select-window -t %2'* ]]; then
+    print -u2 "FAIL resume/jump-live-grok-ver missing select-window grok pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'respawn-pane'* ]]; then
+    print -u2 "FAIL resume/jump-live-grok-ver still respawned idle pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
   : >"$tmux_log"
   snap_cwd[reattach-cwd]=/proj/lanjump
   tmuxx() {
@@ -3021,6 +3093,10 @@ pick_selftest() {
   fi
   if [[ ${functions[attach_named_session]} != *pane_is_idle_shell* ]]; then
     print -u2 "FAIL resume/attach missing pane_is_idle_shell got=$(printf %q "${functions[attach_named_session]}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[attach_named_session]} != *'! select_live_grok_pane'* ]]; then
+    print -u2 "FAIL resume/attach prompt not gated on live grok pane got=$(printf %q "${functions[attach_named_session]}")"
     (( fails++ ))
   fi
   if [[ ${functions[attach_named_session]} != *session_pane_target* ]]; then
