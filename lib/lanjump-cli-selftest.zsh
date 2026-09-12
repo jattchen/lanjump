@@ -176,6 +176,9 @@ case ${1:-} in
     ;;
   --has-session)
     ;;
+  --print-sessions)
+    print -r -- "${LANJUMP_ATTACH_HOST:-}"
+    ;;
   --open-tabs|--attach)
     print -r -- "LOCAL_RESUME ${(j: :)${@[2,-1]}}" >>"$log"
     print -r -- "LOCAL_ATTACH ${(j: :)${@[2,-1]}}" >>"$log"
@@ -435,6 +438,16 @@ expect_contains remote/work-other other "$(read_log)"
 : >"$log"
 cli_dispatch pins
 assert_remote_open remote/pins "$(read_log)" lanjump
+
+# #166: zsh prefix-assignment on a function is not exported to /bin/zsh
+# inside cli_pick. The child picker must see LANJUMP_ATTACH_HOST.
+src_pick=${functions[cli_pick]}
+if [[ $src_pick != *export\ LANJUMP_ATTACH_HOST* && $src_pick != *LANJUMP_ATTACH_HOST*/bin/zsh* ]]; then
+  print -u2 "FAIL attach-host/cli-pick-src missing LANJUMP_ATTACH_HOST on /bin/zsh got=$(printf %q "$src_pick")"
+  (( fails++ ))
+fi
+got=$(LANJUMP_ATTACH_HOST=studio cli_pick --print-sessions)
+expect_eq attach-host/child-pick studio "$got"
 
 # #84: Ghostty on this Mac opens one local window per remote name.
 ghostty_restore_available() { return 0 }
