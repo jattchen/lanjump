@@ -1955,8 +1955,9 @@ cli_dispatch() {
           cli_start_grok local "$session" || return 1
         fi
         # Local attach execs the picker; write last_target first.
+        # --grok already started/selected grok; --shell skips maybe_resume.
         mark_last local
-        cli_attach_one local "$session" 0
+        cli_attach_one local "$session" $want_grok
         return
       fi
       if ! cli_has_session "$host" "$session"; then
@@ -1980,8 +1981,9 @@ cli_dispatch() {
         cli_start_grok "$host" "$session" || return 1
       fi
       # Local attach execs the picker; write last_target first.
+      # --grok already started/selected grok; --shell skips maybe_resume.
       [[ $host == local ]] && mark_last "$host"
-      cli_attach_one "$host" "$session" 0 || return 1
+      cli_attach_one "$host" "$session" $want_grok || return 1
       mark_last "$host"
       ;;
     work)
