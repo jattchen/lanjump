@@ -2629,6 +2629,21 @@ ghostty_osascript_for_sessions() {
   (( $# )) || return 1
   first=$1
   shift
+  if (( ghostty_close_others )); then
+    # #170: welcome and home-cwd sessions both title ~; snapshot SE ids first.
+    print -r -- 'tell application "Ghostty"'
+    print -r -- '  activate'
+    print -r -- 'end tell'
+    print -r -- 'delay 0.3'
+    print -r -- 'tell application "System Events"'
+    print -r -- '  tell process "Ghostty"'
+    print -r -- '    set preexistingSE to {}'
+    print -r -- '    try'
+    print -r -- '      if (count of windows) > 0 then set preexistingSE to (id of every window) as list'
+    print -r -- '    end try'
+    print -r -- '  end tell'
+    print -r -- 'end tell'
+  fi
   print -r -- 'tell application "Ghostty"'
   if (( ghostty_close_others )); then
     print -r -- '  set preexisting to {}'
@@ -2664,6 +2679,17 @@ ghostty_osascript_for_sessions() {
   fi
   print -r -- '  activate'
   print -r -- 'end tell'
+  if (( ghostty_close_others )); then
+    print -r -- 'tell application "System Events"'
+    print -r -- '  tell process "Ghostty"'
+    print -r -- '    repeat with i in preexistingSE'
+    print -r -- '      try'
+    print -r -- '        perform action "AXPress" of (first button of (first window whose id is i) whose subrole is "AXCloseButton")'
+    print -r -- '      end try'
+    print -r -- '    end repeat'
+    print -r -- '  end tell'
+    print -r -- 'end tell'
+  fi
 }
 
 terminal_osascript_for_sessions() {
@@ -2760,21 +2786,6 @@ open_ghostty_session_tabs() {
     print -u2 "无法打开 Ghostty${err:+：${err}}"
     return 1
   }
-  if (( ghostty_close_others )); then
-    /usr/bin/osascript <<'APPLESCRIPT' 2>/dev/null || true
-tell application "System Events"
-  tell process "Ghostty"
-    repeat with w in windows
-      try
-        if name of w is "~" then
-          perform action "AXPress" of (first button of w whose subrole is "AXCloseButton")
-        end if
-      end try
-    end repeat
-  end tell
-end tell
-APPLESCRIPT
-  fi
 }
 
 open_terminal_session_tabs() {

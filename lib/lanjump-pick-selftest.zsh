@@ -3458,6 +3458,28 @@ pick_selftest() {
     print -u2 "FAIL ghostty/close-others uses saving no which Ghostty rejects got=$(printf %q "$script")"
     (( fails++ ))
   fi
+  # #170: Ghostty welcome titles ~; a home-cwd session does too. Close only
+  # windows that existed before open, never every window named ~.
+  if [[ $script == *'name of w is "~"'* || $script == *'if name of w is "~"'* ]]; then
+    print -u2 "FAIL ghostty/close-home-title generated script closes leftover windows by title ~ got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[open_ghostty_session_tabs]} == *'name of w is "~"'* || ${functions[open_ghostty_session_tabs]} == *'if name of w is "~"'* ]]; then
+    print -u2 "FAIL ghostty/close-home-title leftover close uses window title ~"
+    (( fails++ ))
+  fi
+  if [[ $script != *'id of every window'* ]]; then
+    print -u2 "FAIL ghostty/close-home-title missing before-open window id snapshot got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'System Events'* || $script != *'preexistingSE'* || $script != *'first window whose id is i'* ]]; then
+    print -u2 "FAIL ghostty/close-home-title leftover close missing System Events before-set ids got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ ${script%%new window*} != *'preexistingSE'* || ${script%%new window*} != *'id of every window'* ]]; then
+    print -u2 "FAIL ghostty/close-home-title System Events id snapshot is not before new window got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
   print -r -- "$script" >"$testhome/ghostty.applescript"
   if ! /usr/bin/osacompile -o "$testhome/ghostty.scpt" "$testhome/ghostty.applescript" 2>"$testhome/osacompile.err"; then
     print -u2 "FAIL ghostty/script-compile $(<"$testhome/osacompile.err") got=$(printf %q "$script")"
