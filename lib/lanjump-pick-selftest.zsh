@@ -20,6 +20,7 @@
 # preview_is_grok, preview_line_is_tool, preview_line_is_model,
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
+# draw_on_winch,
 # resume_prompt_choice, attach_command_for, new_session_flag_invalid, prompt_new,
 # prompt_new_pin_cwd, create_named_session, unique_non_numeric_session_name,
 # ensure_pinnable_session_name, pin_named_session, toggle_session_pin, read_key, settings_input_read,
@@ -4534,6 +4535,49 @@ pick_selftest() {
   if [[ ${functions[restore_tty]} != *1000l* || ${functions[restore_tty]} != *1006l* ]]; then
     print -u2 "FAIL restore/tty-mouse missing 1000l/1006l got=$(printf %q "${functions[restore_tty]}")"
     (( fails++ ))
+  fi
+
+  # #155: WINCH must not redraw the session list over a cooked prompt.
+  # --pick-selftest skips the load-time WINCH trap; call the handler.
+  if grep -F -q "|| draw' WINCH" "$_pick_src_file"; then
+    print -u2 "FAIL pick-winch/source-trap WINCH still draws list"
+    (( fails++ ))
+  fi
+  if ! (( ${+functions[draw_on_winch]} )); then
+    print -u2 "FAIL pick-winch/draw_on_winch missing"
+    (( fails++ ))
+  else
+    _pw_save_draw=$functions[draw]
+    _pw_save_stty_orig=${stty_orig:-}
+    _pw_winch_draws=0
+    draw() { ((_pw_winch_draws++)) }
+    stty() { : }
+    loading=0
+    restore_tty >/dev/null
+    draw_on_winch
+    if (( _pw_winch_draws )); then
+      print -u2 "FAIL pick-winch/prompt draw called"
+      (( fails++ ))
+    fi
+    setup_tty >/dev/null
+    draw_on_winch
+    if (( _pw_winch_draws != 1 )); then
+      print -u2 "FAIL pick-winch/list skipped draw got=$_pw_winch_draws"
+      (( fails++ ))
+    fi
+    _pw_winch_draws=0
+    loading=1
+    draw_on_winch
+    if (( _pw_winch_draws )); then
+      print -u2 "FAIL pick-winch/loading draw called"
+      (( fails++ ))
+    fi
+    functions[draw]=$_pw_save_draw
+    unset -f stty
+    loading=0
+    list_active=0
+    stty_orig=$_pw_save_stty_orig
+    unset _pw_save_draw _pw_save_stty_orig _pw_winch_draws
   fi
 
   attach_shell_only=1
