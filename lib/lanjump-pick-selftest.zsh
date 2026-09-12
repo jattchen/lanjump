@@ -10,6 +10,7 @@
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
 # has_named_session, ensure_named_session_for_attach, print_recent_names,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
+# attaching_remote_host, attach_spec_for, attach_command_for,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
 # picker_open_mode, restore_pick_finish,
@@ -2108,6 +2109,38 @@ pick_selftest() {
     print -u2 "FAIL ghostty/script missing attach sysmtn got=$(printf %q "$script")"
     (( fails++ ))
   fi
+  expect attach/spec-local lanjump "$(attach_spec_for lanjump)"
+  if attaching_remote_host; then
+    print -u2 "FAIL attach/remote-host-empty should be local"
+    (( fails++ ))
+  fi
+  LANJUMP_ATTACH_HOST=studio
+  expect attach/spec-remote 'studio:lanjump' "$(attach_spec_for lanjump)"
+  if ! attaching_remote_host; then
+    print -u2 "FAIL attach/remote-host-studio should be remote"
+    (( fails++ ))
+  fi
+  got=$(attach_command_for lanjump)
+  if [[ $got != *'/Users/mac/.local/bin/lanjump attach studio:lanjump'* ]]; then
+    print -u2 "FAIL attach/host-cmd missing studio:lanjump got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  script=$(ghostty_osascript_for_sessions lanjump sysmtn)
+  if [[ $script != *'/Users/mac/.local/bin/lanjump attach studio:lanjump'* ]]; then
+    print -u2 "FAIL ghostty/host-script missing attach studio:lanjump got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'/Users/mac/.local/bin/lanjump attach studio:sysmtn'* ]]; then
+    print -u2 "FAIL ghostty/host-script missing attach studio:sysmtn got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  LANJUMP_ATTACH_HOST=local
+  expect attach/spec-host-local lanjump "$(attach_spec_for lanjump)"
+  if attaching_remote_host; then
+    print -u2 "FAIL attach/remote-host-local should be local"
+    (( fails++ ))
+  fi
+  unset LANJUMP_ATTACH_HOST
 
   if pane_is_shell ''; then
     :

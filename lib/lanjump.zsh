@@ -1614,6 +1614,17 @@ cli_pick_exec() {
   exec /bin/zsh "$picker" "$@"
 }
 
+# Same checks as pick.zsh: this Mac can open Ghostty/Terminal windows.
+ghostty_restore_available() {
+  local_keyboard || return 1
+  [[ -d ${LANJUMP_GHOSTTY_APP:-/Applications/Ghostty.app} ]]
+}
+
+terminal_restore_available() {
+  local_keyboard || return 1
+  [[ -d /System/Applications/Utilities/Terminal.app || -d /Applications/Utilities/Terminal.app ]]
+}
+
 cli_open_tabs() {
   local host=$1 x
   shift
@@ -1631,6 +1642,9 @@ cli_open_tabs() {
   args+=("${ns[@]}")
   if [[ $host == local ]]; then
     cli_pick "${args[@]}"
+  elif ghostty_restore_available || terminal_restore_available; then
+    # Local Ghostty/Terminal: one window per name, each attach host:name.
+    LANJUMP_ATTACH_HOST=$host cli_pick "${args[@]}"
   else
     cli_remote_pick "$host" "${args[@]}"
   fi

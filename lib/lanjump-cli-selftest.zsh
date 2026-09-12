@@ -206,6 +206,21 @@ assert_local_attach() {
   expect_absent "$label/no-ssh" REMOTE_SSH "$hay"
 }
 
+# #84: remote names open on this Mac via local --open-tabs + LANJUMP_ATTACH_HOST.
+assert_remote_local_tabs() {
+  local label=$1 hay=$2
+  shift 2
+  expect_contains "$label/pick" LOCAL_PICK "$hay"
+  expect_contains "$label/host" 'host=studio' "$hay"
+  expect_contains "$label/tabs" --open-tabs "$hay"
+  local n
+  for n in "$@"; do
+    expect_contains "$label/name-$n" "$n" "$hay"
+  done
+  expect_absent "$label/no-ssh" REMOTE_SSH "$hay"
+  expect_absent "$label/no-remote-open" 'REMOTE_CMD' "$hay"
+}
+
 expect_eq() {
   local label=$1 want=$2 got=$3
   if [[ $got != "$want" ]]; then
@@ -213,6 +228,10 @@ expect_eq() {
     (( fails++ ))
   fi
 }
+
+# Phone SSH / no local Ghostty or Terminal: keep remote --open-tabs (first only).
+ghostty_restore_available() { return 1 }
+terminal_restore_available() { return 1 }
 
 : >"$log"
 cli_open_tabs studio lanjump
@@ -352,6 +371,36 @@ expect_contains remote/work-other other "$(read_log)"
 : >"$log"
 cli_dispatch pins
 assert_remote_open remote/pins "$(read_log)" lanjump
+
+# #84: Ghostty on this Mac opens one local window per remote name.
+ghostty_restore_available() { return 0 }
+terminal_restore_available() { return 1 }
+: >"$log"
+cli_open_tabs studio a b
+assert_remote_local_tabs remote-ghostty/open-tabs "$(read_log)" a b
+
+: >"$log"
+cli_dispatch work
+hay=$(read_log)
+assert_remote_local_tabs remote-ghostty/work "$hay" lanjump other
+expect_contains remote-ghostty/work-print SSH "$hay"
+expect_contains remote-ghostty/work-print-ws --print-workspace "$hay"
+
+: >"$log"
+cli_dispatch pins
+hay=$(read_log)
+assert_remote_local_tabs remote-ghostty/pins "$hay" lanjump
+expect_contains remote-ghostty/pins-print SSH "$hay"
+expect_contains remote-ghostty/pins-print-pin --print-pinned "$hay"
+
+ghostty_restore_available() { return 1 }
+terminal_restore_available() { return 0 }
+: >"$log"
+cli_open_tabs studio a b
+assert_remote_local_tabs remote-terminal/open-tabs "$(read_log)" a b
+
+ghostty_restore_available() { return 1 }
+terminal_restore_available() { return 1 }
 
 default_cli_host() {
   print -r -- local
