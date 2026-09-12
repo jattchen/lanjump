@@ -229,8 +229,15 @@ save_self_installer
 
 cp -f "$ROOT/lib/lanjump.zsh" "$APP/lanjump.zsh"
 cp -f "$ROOT/lib/lanjump-pick.zsh" "$APP/lanjump-pick.zsh"
-cp -f "$ROOT/bin/lanjump-ghostty-attach" "$APP/lanjump-ghostty-attach"
-chmod 755 "$APP/lanjump.zsh" "$APP/lanjump-pick.zsh" "$APP/lanjump-ghostty-attach"
+if [[ -f $ROOT/bin/lanjump-ghostty-attach ]]; then
+  cp -f "$ROOT/bin/lanjump-ghostty-attach" "$APP/lanjump-ghostty-attach"
+fi
+if [[ -f $APP/lanjump-ghostty-attach ]]; then
+  cp -f "$APP/lanjump-ghostty-attach" "$BIN_DIR/lanjump-ghostty-attach"
+  chmod 755 "$APP/lanjump-ghostty-attach" "$BIN_DIR/lanjump-ghostty-attach"
+  xattr -d com.apple.quarantine "$BIN_DIR/lanjump-ghostty-attach" 2>/dev/null || true
+fi
+chmod 755 "$APP/lanjump.zsh" "$APP/lanjump-pick.zsh"
 
 cp -f "$ROOT/lib/lanjump-keys.py" "$APP/lanjump-keys.py"
 chmod 755 "$APP/lanjump-keys.py"

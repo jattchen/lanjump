@@ -45,6 +45,9 @@ fi
 if ! grep -q 'INSTALLER=' "$fakehome/.local/bin/lanjump"; then
   fail "installed launcher has no local upgrade"
 fi
+if [[ ! -x "$fakehome/.local/bin/lanjump-ghostty-attach" ]]; then
+  fail "missing ~/.local/bin/lanjump-ghostty-attach"
+fi
 local_sha=$(git -C "$ROOT" rev-parse HEAD)
 if [[ $(<"$fakehome/Library/Application Support/lanjump/version") != "$local_sha" ]]; then
   fail "install did not record repo revision"
@@ -64,6 +67,7 @@ fi
 oldpkg=$(mktemp -d)
 mkdir -p "$oldpkg/lanjump-main"/{bin,lib,src}
 cp "$ROOT/bin/lanjump.command" "$oldpkg/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$oldpkg/lanjump-main/bin/"
 cp "$ROOT/lib/"* "$oldpkg/lanjump-main/lib/"
 cp "$ROOT/src/lanjump-keys.c" "$oldpkg/lanjump-main/src/"
 cat >"$oldpkg/lanjump-main/bin/lanjump" <<'EOF'
