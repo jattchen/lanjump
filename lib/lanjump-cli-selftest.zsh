@@ -550,7 +550,8 @@ cli_list_names() {
   print -r -- "LIST host=$host flag=$flag" >>"$log"
   if [[ $host != local ]] && ! find_host_index "$host" >/dev/null; then
     print -u2 "没有保存的机器「${host}」。"
-    return 1
+    # Match cli_remote_print: unknown/connect is 2; picker empty list is 1.
+    return 2
   fi
   if [[ $host != local ]] && (( ${CLI_HAS_CONNECT:-1} == 0 )); then
     print -u2 "无法登录 ${host}."
@@ -562,7 +563,7 @@ cli_list_names() {
     --print-last) print -r -- "${host}-last" ;;
     --print-recent)
       if (( ${CLI_RECENT_EMPTY:-0} )); then
-        return 0
+        return 1
       fi
       print -r -- "${host}-recent1"
       print -r -- "${host}-recent2"
@@ -1173,6 +1174,7 @@ expect_absent last-login-fail/no-last 'LAST ' "$hay"
 expect_absent last-login-fail/no-select 'SELECT ' "$hay"
 CLI_HAS_CONNECT=1
 
+# #182: product --print-recent exits 1 on a successful empty list.
 CLI_RECENT_EMPTY=1
 : >"$log"
 st=0
@@ -1186,6 +1188,19 @@ hay=$(read_log)
 expect_contains last-empty-recent/list 'LIST host=office flag=--print-recent' "$hay"
 expect_absent last-empty-recent/no-last 'LAST ' "$hay"
 expect_absent last-empty-recent/no-select 'SELECT ' "$hay"
+
+: >"$log"
+st=0
+out=$(cli_dispatch last 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL last-empty-recent-local/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains last-empty-recent-local/msg '没有最近的 session。' "$out"
+hay=$(read_log)
+expect_contains last-empty-recent-local/list 'LIST host=local flag=--print-recent' "$hay"
+expect_absent last-empty-recent-local/no-last 'LAST ' "$hay"
+expect_absent last-empty-recent-local/no-select 'SELECT ' "$hay"
 CLI_RECENT_EMPTY=0
 
 : >"$log"

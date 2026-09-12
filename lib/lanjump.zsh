@@ -2029,7 +2029,10 @@ cli_dispatch() {
       mark_last "$host"
       ;;
     last)
-      names=("${(@f)$(cli_list_names "$host" --print-recent)}") || return $?
+      has_st=0
+      names=("${(@f)$(cli_list_names "$host" --print-recent)}") || has_st=$?
+      # #178: connect/login/sync/unknown is 2. #182: picker empty list is 1.
+      (( has_st && has_st != 1 )) && return $has_st
       names=("${(@)names:#}")
       if (( ! ${#names} )); then
         print -u2 "没有最近的 session。"
