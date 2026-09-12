@@ -36,6 +36,9 @@ if ! (( ${+functions[cli_dispatch]} )); then
   expect_contains help/work 'work [机器]' "$out"
   expect_contains help/pins 'pins [机器]' "$out"
   expect_contains help/settings ', 设置' "$out"
+  expect_contains help/enter-current 'Enter 当前窗口' "$out"
+  expect_contains help/t-window 't 新窗口' "$out"
+  expect_absent help/no-current-default '当前窗口）。' "$out"
 
   out=$(/bin/zsh "$MAIN" --help)
   expect_contains help/long-opt '用法：lanjump' "$out"
@@ -133,6 +136,13 @@ picker_path() {
   print -r -- "$fake_picker"
 }
 
+# go/last attach via cli_pick_exec; do not exec so later cases can run.
+cli_pick_exec() {
+  local picker
+  picker=$(picker_path)
+  /bin/zsh "$picker" "$@"
+}
+
 setup_access() {
   return 0
 }
@@ -185,6 +195,16 @@ assert_local_open() {
   expect_absent "$label/no-ssh" REMOTE_SSH "$hay"
 }
 
+assert_local_attach() {
+  local label=$1 hay=$2 session=$3
+  expect_contains "$label/pick" LOCAL_PICK "$hay"
+  expect_contains "$label/attach" --attach "$hay"
+  expect_contains "$label/session" "$session" "$hay"
+  expect_absent "$label/no-tabs" --open-tabs "$hay"
+  expect_absent "$label/no-attach-host" 'host=studio' "$hay"
+  expect_absent "$label/no-ssh" REMOTE_SSH "$hay"
+}
+
 : >"$log"
 cli_open_tabs studio lanjump
 assert_remote_open remote/open-tabs "$(read_log)" lanjump
@@ -216,7 +236,7 @@ default_cli_host() {
 
 : >"$log"
 cli_dispatch go lanjump
-assert_local_open local/go "$(read_log)" lanjump
+assert_local_attach local/go "$(read_log)" lanjump
 
 : >"$log"
 cli_dispatch work
@@ -273,6 +293,10 @@ cli_open_tabs() {
   done
   print -r -- "OPEN host=$host names=${(j:,:)ns}" >>"$log"
   (( ${#ns} )) || return 1
+}
+
+cli_remote_pick() {
+  print -r -- "REMOTE_PICK host=$1 argv=${(j: :)${@[2,-1]}}" >>"$log"
 }
 
 CLI_HAS_SESSION=1
@@ -455,8 +479,11 @@ if (( st != 0 )); then
   (( fails++ ))
 fi
 expect_contains go-host-session/has 'HAS host=office session=lanjump' "$hay"
-expect_contains go-host-session/open 'OPEN host=office names=lanjump' "$hay"
+expect_contains go-host-session/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains go-host-session/attach-flag '--attach' "$hay"
+expect_contains go-host-session/session lanjump "$hay"
 expect_contains go-host-session/last 'LAST host=office' "$hay"
+expect_absent go-host-session/no-tabs --open-tabs "$hay"
 expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
 
 TEST_LAST_HOST=local
@@ -469,8 +496,9 @@ if (( st != 0 )); then
   (( fails++ ))
 fi
 expect_contains go-local/has 'HAS host=local session=lanjump' "$hay"
-expect_contains go-local/open 'OPEN host=local names=lanjump' "$hay"
+expect_contains go-local/attach 'PICK_EXEC --attach lanjump' "$hay"
 expect_contains go-local/last 'LAST host=local' "$hay"
+expect_absent go-local/no-open 'OPEN ' "$hay"
 
 CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=(y '')
@@ -486,8 +514,9 @@ expect_contains go-create-y/prompt '回车或 y=是' "$out"
 expect_contains go-create-y/pin '常驻（y=是，回车=否）' "$out"
 hay=$(read_log)
 expect_contains go-create-y/new 'NEW host=local session=dummytest' "$hay"
-expect_contains go-create-y/open 'OPEN host=local names=dummytest' "$hay"
+expect_contains go-create-y/attach 'PICK_EXEC --attach dummytest' "$hay"
 expect_contains go-create-y/last 'LAST host=local' "$hay"
+expect_absent go-create-y/no-open 'OPEN ' "$hay"
 
 CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=('' '')
@@ -500,8 +529,9 @@ if (( st != 0 )); then
 fi
 hay=$(read_log)
 expect_contains go-create-empty/new 'NEW host=local session=dummytest' "$hay"
-expect_contains go-create-empty/open 'OPEN host=local names=dummytest' "$hay"
+expect_contains go-create-empty/attach 'PICK_EXEC --attach dummytest' "$hay"
 expect_contains go-create-empty/last 'LAST host=local' "$hay"
+expect_absent go-create-empty/no-open 'OPEN ' "$hay"
 
 CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=(n)

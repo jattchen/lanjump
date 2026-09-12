@@ -1774,7 +1774,7 @@ cli_usage() {
   print -r -- '  update            同 upgrade'
   print
   print -r -- '机器省略时用上次进入的那台。'
-  print -r -- '打开方式可在 tmux 列表按 , 设置（Ghostty / 系统终端 / 当前窗口）。'
+  print -r -- '列表 Enter 当前窗口进入，t 新窗口。新窗口用 Ghostty 还是系统终端可在列表按 , 设置。'
   print -r -- '主机列表按 i 开关打开时切英文输入法（默认开；手机 SSH 进来时不切）。'
 }
 
@@ -1868,7 +1868,7 @@ cli_dispatch() {
       if (( want_grok )); then
         cli_start_grok "$session" || return 1
       fi
-      cli_open_tabs "$host" "$session" || return 1
+      cli_attach_one "$host" "$session" 0 || return 1
       mark_last "$host"
       ;;
     work)

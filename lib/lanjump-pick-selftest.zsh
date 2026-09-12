@@ -9,6 +9,7 @@
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
+# picker_open_mode, restore_pick_finish,
 # resolve_session_cwd, picker_boot_before_first_draw, picker_boot_after_first_draw,
 # preview_is_grok, preview_line_is_tool, preview_line_is_model,
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
@@ -1863,13 +1864,13 @@ pick_selftest() {
   expect settings/default-target auto "$open_target"
   expect settings/default-placement window "$open_placement"
 
-  open_target=current
+  open_target=ghostty
   open_placement=tab
   save_settings
   open_target=auto
   open_placement=window
   load_settings
-  expect settings/roundtrip-target current "$open_target"
+  expect settings/roundtrip-target ghostty "$open_target"
   expect settings/roundtrip-placement tab "$open_placement"
 
   print -r -- $'open_target nope\nopen_placement sideways\n' >"$HOME/Library/Application Support/lanjump/settings"
@@ -1878,8 +1879,10 @@ pick_selftest() {
   expect settings/bad-placement window "$open_placement"
 
   expect settings/label-auto '自动（Ghostty 优先）' "$(settings_value_label target)"
-  open_target=current
-  expect settings/label-current 当前窗口 "$(settings_value_label target)"
+  open_target=ghostty
+  expect settings/label-ghostty Ghostty "$(settings_value_label target)"
+  open_target=terminal
+  expect settings/label-terminal 系统终端 "$(settings_value_label target)"
   open_placement=tab
   expect settings/label-tab 已有窗口加标签 "$(settings_value_label placement)"
 
@@ -1887,6 +1890,17 @@ pick_selftest() {
   open_target=auto
   cycle_setting
   expect settings/cycle-target ghostty "$open_target"
+  cycle_setting
+  expect settings/cycle-target-terminal terminal "$open_target"
+  cycle_setting
+  expect settings/cycle-target-auto auto "$open_target"
+  if [[ $open_target == current ]]; then
+    print -u2 "FAIL settings/cycle-no-current got current"
+    (( fails++ ))
+  fi
+  print -r -- $'open_target current\nopen_placement window\n' >"$HOME/Library/Application Support/lanjump/settings"
+  load_settings
+  expect settings/legacy-current-is-auto auto "$open_target"
   settings_cursor=2
   open_placement=window
   cycle_setting
@@ -2009,7 +2023,25 @@ pick_selftest() {
     print -u2 "FAIL settings/overlay-roots missing listed roots got=$(printf %q "$plain")"
     (( fails++ ))
   fi
+  if [[ $plain != *新窗口* ]]; then
+    print -u2 "FAIL settings/overlay-new-window missing 新窗口 got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
+  if [[ $plain == *当前窗口* ]]; then
+    print -u2 "FAIL settings/overlay-no-current still 当前窗口 got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
   settings_on=0
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'t 新窗口'* ]]; then
+    print -u2 "FAIL help/t-window missing t 新窗口 got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
+  if [[ $plain != *'Enter 进入'* ]]; then
+    print -u2 "FAIL help/enter missing Enter 进入 got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
   project_roots=()
   open_target=auto
   open_placement=window
@@ -2018,14 +2050,32 @@ pick_selftest() {
   unset SSH_CONNECTION SSH_CLIENT SSH_TTY
   LANJUMP_GHOSTTY_APP="$testhome/Ghostty.app"
   mkdir -p "$LANJUMP_GHOSTTY_APP"
-  expect open/auto-ghostty ghostty "$(effective_open_target 1)"
-  open_target=current
-  expect open/force-current current "$(effective_open_target 1)"
+  expect open/enter-one current "$(picker_open_mode 1 enter)"
+  expect open/enter-one-default current "$(effective_open_target 1)"
+  expect open/t-one ghostty "$(picker_open_mode 1 t)"
+  expect open/auto-ghostty ghostty "$(effective_open_target 1 1)"
+  expect open/enter-multi ghostty "$(picker_open_mode 2 enter)"
+  expect open/t-multi ghostty "$(picker_open_mode 2 t)"
+  expect open/s-enter-one current "$(picker_open_mode 1 s-enter)"
   open_target=ghostty
   LANJUMP_GHOSTTY_APP="$testhome/missing-Ghostty.app"
-  expect open/ghostty-missing current "$(effective_open_target 1)"
+  expect open/ghostty-missing current "$(effective_open_target 1 1)"
   open_target=auto
   expect open/auto-one-no-ghostty current "$(effective_open_target 1)"
+  if terminal_restore_available; then
+    expect open/t-one-no-ghostty-uses-terminal terminal "$(picker_open_mode 1 t)"
+    expect open/enter-multi-no-ghostty terminal "$(picker_open_mode 2 enter)"
+  else
+    expect open/t-one-no-ghostty-no-terminal current "$(picker_open_mode 1 t)"
+    expect open/enter-multi-no-ghostty current "$(picker_open_mode 2 enter)"
+  fi
+  LANJUMP_GHOSTTY_APP="$testhome/Ghostty.app"
+  mkdir -p "$LANJUMP_GHOSTTY_APP"
+  SSH_CONNECTION=1
+  expect open/ssh-enter current "$(picker_open_mode 1 enter)"
+  expect open/ssh-t current "$(picker_open_mode 1 t)"
+  expect open/ssh-multi current "$(picker_open_mode 2 enter)"
+  unset SSH_CONNECTION
 
   open_placement=tab
   ghostty_close_others=0
@@ -2256,6 +2306,9 @@ pick_selftest() {
   expect_key key/end-4 other $'\e[4~'
   expect_key key/delete other $'\e[3~'
   expect_key key/csi-u-s-enter other $'\e[13;2u'
+  expect_key key/t t t
+  expect_key key/T t T
+  expect_key key/enter enter $'\r'
   expect_key key/q q q
   expect_key key/esc esc $'\e'
 
@@ -2324,10 +2377,48 @@ pick_selftest() {
   expect restore/k-down down "$REPLY"
   restore_plain_key K
   expect restore/K-down down "$REPLY"
+  restore_plain_key t
+  expect restore/t t "$REPLY"
+  restore_plain_key T
+  expect restore/T t "$REPLY"
+  restore_plain_key $'\r'
+  expect restore/cr-enter enter "$REPLY"
+  restore_plain_key $'\n'
+  expect restore/lf-enter enter "$REPLY"
   if [[ ${functions[restore_read_key]} != *restore_plain_key* ]]; then
     print -u2 "FAIL restore/read-key missing restore_plain_key got=$(printf %q "${functions[restore_read_key]}")"
     (( fails++ ))
   fi
+  if [[ ${functions[restore_plain_key]} == *S-Enter* || ${functions[read_key]} == *S-Enter* ]]; then
+    print -u2 "FAIL key/s-enter-not-new-window Shift+Enter must stay Grok newline"
+    (( fails++ ))
+  fi
+  if [[ ${functions[tmux_prepare_keys]} != *'bind-key -n S-Enter send-keys Escape Enter'* ]]; then
+    print -u2 "FAIL key/tmux-s-enter missing Escape Enter bind got=$(printf %q "${functions[tmux_prepare_keys]}")"
+    (( fails++ ))
+  fi
+
+  restore_pick_kind=(item item)
+  restore_pick_name=(one two)
+  restore_pick_checked=(1 0)
+  restore_pick_finish enter
+  expect restore/finish-enter-one attach "$restore_pick_action"
+  expect restore/finish-enter-one-name one "${ghostty_names[*]}"
+  restore_pick_finish t
+  expect restore/finish-t-one resume "$restore_pick_action"
+  restore_pick_checked=(1 1)
+  restore_pick_finish enter
+  expect restore/finish-enter-multi resume "$restore_pick_action"
+  expect restore/finish-enter-multi-names 'one two' "${ghostty_names[*]}"
+  restore_pick_finish t
+  expect restore/finish-t-multi resume "$restore_pick_action"
+  restore_pick_finish two
+  expect restore/finish-two shell "$restore_pick_action"
+  restore_pick_checked=(0 0)
+  restore_pick_finish enter
+  expect restore/finish-none skip "$restore_pick_action"
+  restore_pick_finish t
+  expect restore/finish-t-none skip "$restore_pick_action"
 
   if [[ ${functions[restore_tty]} != *1000l* || ${functions[restore_tty]} != *1006l* ]]; then
     print -u2 "FAIL restore/tty-mouse missing 1000l/1006l got=$(printf %q "${functions[restore_tty]}")"
@@ -2392,6 +2483,14 @@ pick_selftest() {
   fi
   if [[ ${functions[attach_named_session]} != *session_pane_target* ]]; then
     print -u2 "FAIL resume/attach missing session_pane_target got=$(printf %q "${functions[attach_named_session]}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[attach_named_session]} == *'改在当前窗口进入'* ]]; then
+    print -u2 "FAIL open/no-fallback-prompt attach_named_session still prompts"
+    (( fails++ ))
+  fi
+  if [[ ${functions[attach_named_session]} != *want_new* ]]; then
+    print -u2 "FAIL open/attach-want-new missing want_new got=$(printf %q "${functions[attach_named_session]}")"
     (( fails++ ))
   fi
 
