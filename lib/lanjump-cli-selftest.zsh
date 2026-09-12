@@ -541,6 +541,25 @@ expect_contains go-local/attach 'PICK_EXEC --attach lanjump' "$hay"
 expect_contains go-local/last 'LAST host=local' "$hay"
 expect_absent go-local/no-open 'OPEN ' "$hay"
 
+# #78: named go local:session records last host even when previous last was remote.
+# Local attach execs the picker, so last_target must be written first.
+TEST_LAST_HOST=office
+CLI_HAS_SESSION=1
+: >"$log"
+st=0
+cli_dispatch go local:lanjump >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-local-from-remote/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-local-from-remote/has 'HAS host=local session=lanjump' "$hay"
+expect_contains go-local-from-remote/attach 'PICK_EXEC --attach lanjump' "$hay"
+expect_contains go-local-from-remote/last 'LAST host=local' "$hay"
+expect_contains go-local-from-remote/last-before-exec $'LAST host=local\nPICK_EXEC' "$hay"
+expect_absent go-local-from-remote/not-office 'LAST host=office' "$hay"
+TEST_LAST_HOST=local
+
 CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=(y '')
 TEST_LAST_HOST=local

@@ -1892,6 +1892,8 @@ cli_dispatch() {
       if (( want_grok )); then
         cli_start_grok "$host" "$session" || return 1
       fi
+      # Local attach execs the picker; write last_target first.
+      [[ $host == local ]] && mark_last "$host"
       cli_attach_one "$host" "$session" 0 || return 1
       mark_last "$host"
       ;;
