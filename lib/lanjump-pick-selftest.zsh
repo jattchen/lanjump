@@ -20,7 +20,7 @@
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
 # resume_prompt_choice, attach_command_for, new_session_flag_invalid, prompt_new,
-# create_named_session, read_key, settings_input_read, PENDING_KEY.
+# prompt_new_pin_cwd, create_named_session, read_key, settings_input_read, PENDING_KEY.
 
 _pick_src_file=${0:A:h}/lanjump-pick.zsh
 
@@ -3510,6 +3510,11 @@ pick_selftest() {
     print -u2 "FAIL prompt_new/empty-auto missing new-session -d -P got=$(printf %q "${functions[prompt_new]}")"
     (( fails++ ))
   fi
+  # #130: n + pin must not store picker $PWD.
+  if [[ ${functions[prompt_new]} == *add_pin_record*'"$PWD"'* ]]; then
+    print -u2 "FAIL prompt_new/pin-cwd still pins \$PWD"
+    (( fails++ ))
+  fi
 
   oldhome=$HOME
   testhome=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-prompt-new.XXXXXX")
@@ -3536,6 +3541,12 @@ pick_selftest() {
       *) return 0 ;;
     esac
   }
+  if (( ! ${+functions[prompt_new_pin_cwd]} )); then
+    print -u2 "FAIL prompt_new/helper missing prompt_new_pin_cwd"
+    (( fails++ ))
+  else
+    expect prompt_new/pin-cwd-named "$HOME/Documents/projects/inferme" "$(prompt_new_pin_cwd inferme)"
+  fi
   if (( ! ${+functions[create_named_session]} )); then
     print -u2 "FAIL prompt_new/helper missing create_named_session"
     (( fails++ ))
@@ -3582,6 +3593,65 @@ pick_selftest() {
     print -u2 "FAIL prompt_new/n-empty-auto used -c got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
+
+  # #130: n + pin from picker cwd must store project dir, not $PWD.
+  pinned_names=()
+  pinned_cwd=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  oldpwd=$PWD
+  cd "$testhome"
+  : >"$tmux_log"
+  print -l -- inferme y | prompt_new >/dev/null
+  load_pinned_sessions
+  expect prompt_new/n-pin-named-cwd "$HOME/Documents/projects/inferme" "${pinned_cwd[inferme]:-}"
+  : >"$tmux_log"
+  restore_pinned_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s inferme -c '"$HOME/Documents/projects/inferme"* ]]; then
+    print -u2 "FAIL prompt_new/n-pin-restore-cwd got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session) return 0 ;;
+      display-message)
+        print -r -- /opt/live-pane
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  pinned_names=()
+  pinned_cwd=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  print -l -- inferme y | prompt_new >/dev/null
+  load_pinned_sessions
+  expect prompt_new/n-pin-existing-cwd /opt/live-pane "${pinned_cwd[inferme]:-}"
+
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session) return 1 ;;
+      new-session)
+        [[ $* == *-P* ]] && print -r -- auto-1
+        return 0
+        ;;
+      display-message)
+        print -r -- /tmp/picker-pane
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  pinned_names=()
+  pinned_cwd=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  print -l -- '' y | prompt_new >/dev/null
+  load_pinned_sessions
+  expect prompt_new/n-pin-empty-cwd /tmp/picker-pane "${pinned_cwd[auto-1]:-}"
+  cd "$oldpwd"
   functions -c _pn_restore_tty restore_tty
   functions -c _pn_setup_tty setup_tty
   functions -c _pn_draw draw
