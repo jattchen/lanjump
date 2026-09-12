@@ -3,7 +3,7 @@
 # sort_session_items, toggle_sort_mode, filter_session_items,
 # toggle_session_filter, save_session_filter, load_session_filter,
 # bulk_idle_unpinned_names, delete_idle_unpinned_sessions,
-# forget_killed_session, drop_snap_record,
+# forget_killed_session, drop_snap_record, rename_snap_record,
 # session_delete_needs_pin_warning, pin_delete_warning_text,
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
@@ -1298,6 +1298,76 @@ pick_selftest() {
   fi
   if [[ ${pinned_grok[keep-renamed]:-} != gid-keep ]]; then
     print -u2 "FAIL pin/rename dropped grok id got=${pinned_grok[keep-renamed]:-}"
+    (( fails++ ))
+  fi
+
+  if [[ ${functions[prompt_rename]} != *rename_snap_record* ]]; then
+    print -u2 "FAIL rename/prompt missing rename_snap_record"
+    (( fails++ ))
+  fi
+
+  # #99: rename must migrate snapshot cmd so idle grok still resumes.
+  snap_names=(old keep)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[old]=/proj/old
+  snap_cwd[keep]=/proj/keep
+  snap_occupied[old]=0
+  snap_occupied[keep]=1
+  snap_workspace[old]=1
+  snap_workspace[keep]=1
+  snap_cmd[old]=grok-1.0.24-mac
+  snap_cmd[keep]=zsh
+  snap_attached[old]=123
+  snap_attached[keep]=456
+  save_session_snapshot
+  rename_snap_record old new
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)old]} -ne 0 ]]; then
+    print -u2 "FAIL snap/rename left old name got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  if [[ ${snap_names[(Ie)new]} -eq 0 ]]; then
+    print -u2 "FAIL snap/rename missing new name got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  expect snap/rename-cmd grok-1.0.24-mac "${snap_cmd[new]:-}"
+  expect snap/rename-cwd /proj/old "${snap_cwd[new]:-}"
+  expect snap/rename-ws 1 "${snap_workspace[new]:-}"
+  expect snap/rename-occ 0 "${snap_occupied[new]:-}"
+  expect snap/rename-att 123 "${snap_attached[new]:-}"
+  if [[ -n ${snap_cmd[old]:-} ]]; then
+    print -u2 "FAIL snap/rename old cmd still set got=${snap_cmd[old]}"
+    (( fails++ ))
+  fi
+  expect snap/rename-keep-cmd zsh "${snap_cmd[keep]:-}"
+  session_snapshot_file
+  if grep -qx 'name old' "$REPLY"; then
+    print -u2 "FAIL snap/rename file still has old"
+    (( fails++ ))
+  fi
+  if ! grep -qx 'name new' "$REPLY"; then
+    print -u2 "FAIL snap/rename file missing new"
+    (( fails++ ))
+  fi
+  HAS_TMUX=1
+  tmuxx() {
+    case $1 in
+      list-sessions)
+        print -r -- $'new\x1f/proj/old\x1f0\x1fzsh'
+        print -r -- $'keep\x1f/proj/keep\x1f1\x1fzsh'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  snapshot_live_sessions
+  expect snap/rename-live-keeps-grok grok-1.0.24-mac "${snap_cmd[new]:-}"
+  if [[ ${snap_names[(Ie)old]} -ne 0 ]]; then
+    print -u2 "FAIL snap/rename-live still has old got=${snap_names[*]}"
     (( fails++ ))
   fi
 
