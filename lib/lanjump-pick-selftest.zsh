@@ -2139,6 +2139,40 @@ pick_selftest() {
       (( fails++ ))
       ;;
   esac
+  # #132: Terminal open_placement=tab uses front window; window stays a new window.
+  open_placement=tab
+  script=$(terminal_osascript_for_sessions a b)
+  if [[ $script != *'front window'* && $script != *'count of windows'* ]]; then
+    print -u2 "FAIL terminal/tab-placement missing front window got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'do script'*' in '* ]]; then
+    print -u2 "FAIL terminal/tab-placement missing do script in window got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script == *$'\n  set t to do script '* && $script != *'front window'* && $script != *'count of windows'* ]]; then
+    print -u2 "FAIL terminal/tab-placement only untargeted do script got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  print -r -- "$script" >"$testhome/terminal-tab.applescript"
+  if ! /usr/bin/osacompile -o "$testhome/terminal-tab.scpt" "$testhome/terminal-tab.applescript" 2>"$testhome/osacompile-terminal-tab.err"; then
+    print -u2 "FAIL terminal/tab-compile $(<"$testhome/osacompile-terminal-tab.err") got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  open_placement=window
+  script=$(terminal_osascript_for_sessions a b)
+  if [[ $script == *'front window'* ]]; then
+    print -u2 "FAIL terminal/window-placement attached first session to front window got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'set t to do script'* ]]; then
+    print -u2 "FAIL terminal/window-placement missing new do script got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'window of'* ]]; then
+    print -u2 "FAIL terminal/window-placement missing window of for extras got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
   expect attach/spec-local lanjump "$(attach_spec_for lanjump)"
   if attaching_remote_host; then
     print -u2 "FAIL attach/remote-host-empty should be local"
