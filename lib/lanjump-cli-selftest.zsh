@@ -552,11 +552,18 @@ cli_list_names() {
     print -u2 "没有保存的机器「${host}」。"
     return 1
   fi
+  if [[ $host != local ]] && (( ${CLI_HAS_CONNECT:-1} == 0 )); then
+    print -u2 "无法登录 ${host}."
+    return 2
+  fi
   case $flag in
     --print-workspace) print -r -- "${host}-work" ;;
     --print-pinned) print -r -- "${host}-pin" ;;
     --print-last) print -r -- "${host}-last" ;;
     --print-recent)
+      if (( ${CLI_RECENT_EMPTY:-0} )); then
+        return 0
+      fi
       print -r -- "${host}-recent1"
       print -r -- "${host}-recent2"
       ;;
@@ -1134,6 +1141,52 @@ expect_contains last-host/last-before-attach $'LAST host=office\nREMOTE_PICK' "$
 expect_absent last-host/not-local 'LAST host=local' "$hay"
 expect_absent last-host/not-local-list 'LIST host=local' "$hay"
 TEST_LAST_HOST=local
+
+# #178: last must not treat connect failure as an empty recent list.
+# work/list already return on cli_list_names failure; last did not.
+: >"$log"
+st=0
+out=$(cli_dispatch last nosuchhost 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL last-unknown-host/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains last-unknown-host/msg '没有保存的机器「nosuchhost」。' "$out"
+expect_absent last-unknown-host/no-empty '没有最近的 session。' "$out"
+hay=$(read_log)
+expect_absent last-unknown-host/no-last 'LAST ' "$hay"
+expect_absent last-unknown-host/no-select 'SELECT ' "$hay"
+expect_absent last-unknown-host/no-attach 'REMOTE_PICK ' "$hay"
+
+CLI_HAS_CONNECT=0
+: >"$log"
+st=0
+out=$(cli_dispatch last office 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL last-login-fail/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains last-login-fail/msg '无法登录' "$out"
+expect_absent last-login-fail/no-empty '没有最近的 session。' "$out"
+hay=$(read_log)
+expect_absent last-login-fail/no-last 'LAST ' "$hay"
+expect_absent last-login-fail/no-select 'SELECT ' "$hay"
+CLI_HAS_CONNECT=1
+
+CLI_RECENT_EMPTY=1
+: >"$log"
+st=0
+out=$(cli_dispatch last office 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL last-empty-recent/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains last-empty-recent/msg '没有最近的 session。' "$out"
+hay=$(read_log)
+expect_contains last-empty-recent/list 'LIST host=office flag=--print-recent' "$hay"
+expect_absent last-empty-recent/no-last 'LAST ' "$hay"
+expect_absent last-empty-recent/no-select 'SELECT ' "$hay"
+CLI_RECENT_EMPTY=0
 
 : >"$log"
 st=0

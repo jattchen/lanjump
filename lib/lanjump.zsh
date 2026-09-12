@@ -2029,7 +2029,7 @@ cli_dispatch() {
       mark_last "$host"
       ;;
     last)
-      names=("${(@f)$(cli_list_names "$host" --print-recent)}")
+      names=("${(@f)$(cli_list_names "$host" --print-recent)}") || return $?
       names=("${(@)names:#}")
       if (( ! ${#names} )); then
         print -u2 "没有最近的 session。"
