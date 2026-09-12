@@ -514,6 +514,18 @@ fi
 expect_contains last/restore-gate should_restore_sessions "$recent_src"
 expect_contains last/restore-saved restore_saved_sessions "$recent_src"
 
+# #134: list/--print-sessions must restore like last/work before listing.
+list_src=
+if [[ -f $pick_file ]]; then
+  list_src=$(awk '
+    /^print_session_list\(\)/ {p=1}
+    p {print}
+    p && /^}/ {exit}
+  ' "$pick_file")
+fi
+expect_contains list/restore-gate should_restore_sessions "$list_src"
+expect_contains list/restore-saved restore_saved_sessions "$list_src"
+
 # #124: --attach must restore like go/--has-session before attaching.
 attach_src=
 ensure_src=
