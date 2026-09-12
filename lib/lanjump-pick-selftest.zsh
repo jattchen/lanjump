@@ -4365,6 +4365,42 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #147: tmux application cursor keys send SS3 (ESC O A/B), not CSI.
+  # Those must move, not abort the restore overlay like Esc/q.
+  expect_restore_key() {
+    local label=$1 want=$2 seq=$3
+    local leftover=""
+    {
+      if restore_read_key; then
+        got=$REPLY
+      else
+        got=EOF
+      fi
+      sysread leftover || leftover=""
+    } < <(print -n -- "$seq")
+    expect "$label" "$want" "$got"
+    if [[ -n $leftover ]]; then
+      print -u2 "FAIL $label leftover=$(printf %q "$leftover")"
+      (( fails++ ))
+    fi
+  }
+  expect_restore_key restore/read-csi-up up $'\e[A'
+  expect_restore_key restore/read-csi-down down $'\e[B'
+  expect_restore_key restore/read-ss3-up up $'\eOA'
+  expect_restore_key restore/read-ss3-down down $'\eOB'
+  expect_restore_key restore/read-ss3-right other $'\eOC'
+  expect_restore_key restore/read-ss3-left other $'\eOD'
+  expect_restore_key restore/read-esc esc $'\e'
+  expect_restore_key restore/read-q q q
+  k1=EOF
+  k2=EOF
+  {
+    restore_read_key && k1=$REPLY
+    restore_read_key && k2=$REPLY
+  } < <(print -n $'\eOA\eOB')
+  expect restore/read-ss3-up-then-down-1 up "$k1"
+  expect restore/read-ss3-up-then-down-2 down "$k2"
+
   # #40: restore checkbox list must match host/session lists (j up, k down).
   restore_plain_key j
   expect restore/j-up up "$REPLY"

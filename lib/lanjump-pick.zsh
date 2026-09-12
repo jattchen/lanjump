@@ -1827,8 +1827,8 @@ draw_restore_pick() {
   done
 }
 
-# CSI third byte after ESC [. Left/right and PageDown-like leftovers
-# are ignored; only a true Esc aborts the restore overlay.
+# CSI/SS3 third byte after ESC [ or ESC O. Left/right and PageDown-like
+# leftovers are ignored; only a true Esc aborts the restore overlay.
 restore_csi_key() {
   case ${1:-} in
     A) REPLY=up ;;
@@ -1838,7 +1838,8 @@ restore_csi_key() {
   esac
 }
 
-# Match host/session lists: j up, k down. Arrows come from restore_csi_key.
+# Match host/session lists: j up, k down. Arrows come from restore_csi_key
+# (CSI ESC [ A/B and tmux application-cursor SS3 ESC O A/B).
 restore_plain_key() {
   case ${1:-} in
     $'\n'|$'\r') REPLY=enter ;;
@@ -1854,19 +1855,23 @@ restore_plain_key() {
 
 restore_read_key() {
   local k k2 k3 c buf
-  IFS= read -rsk1 k || return 1
+  read_byte || return 1
+  k=$REPLY
   if [[ $k == $'\e' ]]; then
-    IFS= read -rsk1 -t 0.2 k2 || { REPLY=esc; return 0 }
+    read_byte 0.2 || { REPLY=esc; return 0 }
+    k2=$REPLY
     # lanjump-keys rewrites Ghostty Shift+Enter to Alt+Enter (ESC CR).
     if [[ $k2 == $'\r' || $k2 == $'\n' ]]; then
       REPLY=other
       return 0
     fi
-    if [[ $k2 == '[' ]]; then
-      IFS= read -rsk1 -t 0.2 k3 || { REPLY=esc; return 0 }
+    if [[ $k2 == '[' || $k2 == 'O' ]]; then
+      read_byte 0.2 || { REPLY=esc; return 0 }
+      k3=$REPLY
       if [[ $k3 == '<' ]]; then
         buf=
-        while IFS= read -rsk1 c; do
+        while read_byte; do
+          c=$REPLY
           buf+=$c
           [[ $c == M || $c == m ]] && break
         done
@@ -1882,7 +1887,8 @@ restore_read_key() {
       fi
       restore_csi_key "$k3"
       if [[ $k3 == [0-9] ]]; then
-        while IFS= read -rsk1 -t 0.2 c; do
+        while read_byte 0.2; do
+          c=$REPLY
           [[ $c == [A-Za-z~] ]] && break
         done
       fi
