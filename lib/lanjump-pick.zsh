@@ -1793,6 +1793,11 @@ restore_read_key() {
   IFS= read -rsk1 k || return 1
   if [[ $k == $'\e' ]]; then
     IFS= read -rsk1 -t 0.2 k2 || { REPLY=esc; return 0 }
+    # lanjump-keys rewrites Ghostty Shift+Enter to Alt+Enter (ESC CR).
+    if [[ $k2 == $'\r' || $k2 == $'\n' ]]; then
+      REPLY=other
+      return 0
+    fi
     if [[ $k2 == '[' ]]; then
       IFS= read -rsk1 -t 0.2 k3 || { REPLY=esc; return 0 }
       if [[ $k3 == '<' ]]; then
@@ -2318,7 +2323,7 @@ settings_commit_input() {
 }
 
 # Raw-mode line editor for the settings overlay.
-# REPLY=enter|esc|other|backspace|char. Lone Esc cancels; CSI/SS3 is other.
+# REPLY=enter|esc|other|backspace|char. Lone Esc cancels; CSI/SS3 and ESC CR/LF are other.
 settings_input_read() {
   local k k2 c
   read_byte || return 1
@@ -2326,6 +2331,11 @@ settings_input_read() {
   if [[ $k == $'\e' ]]; then
     read_byte 0.2 || { REPLY=esc; return 0 }
     k2=$REPLY
+    # lanjump-keys rewrites Ghostty Shift+Enter to Alt+Enter (ESC CR).
+    if [[ $k2 == $'\r' || $k2 == $'\n' ]]; then
+      REPLY=other
+      return 0
+    fi
     if [[ $k2 == '[' || $k2 == 'O' ]]; then
       while read_byte 0.2; do
         c=$REPLY
@@ -3733,6 +3743,11 @@ read_key() {
   if [[ $k == $'\e' ]]; then
     read_byte 0.2 || { REPLY=esc; return 0 }
     k2=$REPLY
+    # lanjump-keys rewrites Ghostty Shift+Enter to Alt+Enter (ESC CR).
+    if [[ $k2 == $'\r' || $k2 == $'\n' ]]; then
+      REPLY=other
+      return 0
+    fi
     if [[ $k2 == '[' || $k2 == 'O' ]]; then
       read_byte 0.2 || { REPLY=esc; return 0 }
       k3=$REPLY

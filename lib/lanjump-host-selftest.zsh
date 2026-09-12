@@ -105,6 +105,9 @@ host_selftest() {
   expect_key host/key/end other $'\e[F'
   expect_key host/key/delete other $'\e[3~'
   expect_key host/key/csi-u-s-enter other $'\e[13;2u'
+  # #114: lanjump-keys rewrites Ghostty Shift+Enter to Alt+Enter (ESC CR/LF).
+  expect_key host/key/alt-enter-s-enter other $'\e\r'
+  expect_key host/key/alt-enter-lf other $'\e\n'
   expect_key host/key/q q q
   expect_key host/key/esc esc $'\e'
 
@@ -148,6 +151,35 @@ host_selftest() {
       break
     fi
   done
+
+  # #114: ESC CR then q must not quit on the first key.
+  loop_keys=()
+  loop_quit=0
+  PENDING_KEY=""
+  {
+    while true; do
+      read_key || break
+      loop_keys+=("$REPLY")
+      case $REPLY in
+        q|esc)
+          loop_quit=1
+          break
+          ;;
+      esac
+    done
+  } < <(print -n $'\e\rq')
+  expect host/key/alt-enter-then-q-quit 1 "$loop_quit"
+  if (( ${#loop_keys} != 2 )); then
+    print -u2 "FAIL host/key/alt-enter-then-q-keys got=${loop_keys[*]} want=other then q"
+    (( fails++ ))
+  elif [[ ${loop_keys[-1]} != q ]]; then
+    print -u2 "FAIL host/key/alt-enter-then-q-last got=$(printf %q "${loop_keys[-1]}") want=q"
+    (( fails++ ))
+  fi
+  if (( ${#loop_keys} >= 1 )) && [[ ${loop_keys[1]} == esc || ${loop_keys[1]} == q ]]; then
+    print -u2 "FAIL host/key/alt-enter-then-q treated as quit got=${loop_keys[*]}"
+    (( fails++ ))
+  fi
 
   # #112: scan inserts new hosts before 本机/扫描/退出; keep the same item, not the old row.
   scan_keep_fixture() {

@@ -2570,6 +2570,8 @@ pick_selftest() {
   expect_settings_input_key settings/input-end other $'\e[F'
   expect_settings_input_key settings/input-left other $'\e[D'
   expect_settings_input_key settings/input-csi-u-s-enter other $'\e[13;2u'
+  expect_settings_input_key settings/input-alt-enter-s-enter other $'\e\r'
+  expect_settings_input_key settings/input-alt-enter-lf other $'\e\n'
   expect_settings_input_key settings/input-ss3-up other $'\eOA'
   expect_settings_input_key settings/input-esc esc $'\e'
   expect_settings_input_key settings/input-enter enter $'\r'
@@ -2628,6 +2630,39 @@ pick_selftest() {
       break
     fi
   done
+
+  # #114: ESC CR then Esc must not cancel on the first key.
+  settings_input_keys=()
+  settings_input_quit=0
+  settings_input_on=1
+  settings_input_buf='/tmp/typed-root'
+  {
+    while true; do
+      settings_input_read || break
+      settings_input_keys+=("$REPLY")
+      case $REPLY in
+        esc)
+          settings_input_on=0
+          settings_input_buf=
+          settings_input_quit=1
+          break
+          ;;
+      esac
+    done
+  } < <(print -n $'\e\r\e')
+  expect settings/input-alt-enter-then-esc-quit 1 "$settings_input_quit"
+  expect settings/input-alt-enter-then-esc-on "0" "$settings_input_on"
+  if (( ${#settings_input_keys} != 2 )); then
+    print -u2 "FAIL settings/input-alt-enter-then-esc-keys got=${settings_input_keys[*]} want=other then esc"
+    (( fails++ ))
+  elif [[ ${settings_input_keys[-1]} != esc ]]; then
+    print -u2 "FAIL settings/input-alt-enter-then-esc-last got=$(printf %q "${settings_input_keys[-1]}") want=esc"
+    (( fails++ ))
+  fi
+  if (( ${#settings_input_keys} >= 1 )) && [[ ${settings_input_keys[1]} == esc ]]; then
+    print -u2 "FAIL settings/input-alt-enter treated as esc got=${settings_input_keys[*]}"
+    (( fails++ ))
+  fi
 
   project_roots=('/opt/a' '/opt/b' '/opt/c')
   settings_remove_root 2
@@ -3058,6 +3093,9 @@ pick_selftest() {
   expect_key key/end-4 other $'\e[4~'
   expect_key key/delete other $'\e[3~'
   expect_key key/csi-u-s-enter other $'\e[13;2u'
+  # #114: lanjump-keys rewrites Ghostty Shift+Enter to Alt+Enter (ESC CR/LF).
+  expect_key key/alt-enter-s-enter other $'\e\r'
+  expect_key key/alt-enter-lf other $'\e\n'
   expect_key key/t t t
   expect_key key/T t T
   expect_key key/enter enter $'\r'
@@ -3105,6 +3143,35 @@ pick_selftest() {
     fi
   done
 
+  # #114: ESC CR then q must not quit on the first key.
+  loop_keys=()
+  loop_quit=0
+  PENDING_KEY=""
+  {
+    while true; do
+      read_key || break
+      loop_keys+=("$REPLY")
+      case $REPLY in
+        q|esc)
+          loop_quit=1
+          break
+          ;;
+      esac
+    done
+  } < <(print -n $'\e\rq')
+  expect key/alt-enter-then-q-quit 1 "$loop_quit"
+  if (( ${#loop_keys} != 2 )); then
+    print -u2 "FAIL key/alt-enter-then-q-keys got=${loop_keys[*]} want=other then q"
+    (( fails++ ))
+  elif [[ ${loop_keys[-1]} != q ]]; then
+    print -u2 "FAIL key/alt-enter-then-q-last got=$(printf %q "${loop_keys[-1]}") want=q"
+    (( fails++ ))
+  fi
+  if (( ${#loop_keys} >= 1 )) && [[ ${loop_keys[1]} == esc || ${loop_keys[1]} == q ]]; then
+    print -u2 "FAIL key/alt-enter-then-q treated as quit got=${loop_keys[*]}"
+    (( fails++ ))
+  fi
+
   restore_csi_key A
   expect restore/csi-up up "$REPLY"
   restore_csi_key B
@@ -3117,6 +3184,10 @@ pick_selftest() {
   expect restore/csi-pgdn other "$REPLY"
   if [[ ${functions[restore_read_key]} != *restore_csi_key* ]]; then
     print -u2 "FAIL restore/read-key missing restore_csi_key got=$(printf %q "${functions[restore_read_key]}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[restore_read_key]} != *"\$'\\r'"* || ${functions[restore_read_key]} != *"\$'\\n'"* ]]; then
+    print -u2 "FAIL restore/read-key missing ESC CR/LF other got=$(printf %q "${functions[restore_read_key]}")"
     (( fails++ ))
   fi
 
