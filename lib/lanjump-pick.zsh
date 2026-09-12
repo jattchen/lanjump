@@ -1609,7 +1609,7 @@ draw_restore_pick() {
   restore_pick_row=()
   print -n $'\e[H\e[J\e[?25l'
   print -r -- "${c_bold}恢复后要打开哪些窗口？${c_reset}"
-  print -r -- "${c_dim}空格/鼠标勾选    Enter 打开并续上    2 只要空 shell    q 不打开${c_reset}"
+  print -r -- "${c_dim}空格/鼠标勾选    Enter 进入    t 新窗口    2 只要空 shell    q 不打开${c_reset}"
   print
   (( row += 3 ))
   for (( i = 1; i <= ${#restore_pick_kind}; i++ )); do
@@ -1650,6 +1650,7 @@ restore_plain_key() {
     $'\n'|$'\r') REPLY=enter ;;
     ' ') REPLY=space ;;
     2) REPLY=two ;;
+    t|T) REPLY=t ;;
     q|Q) REPLY=q ;;
     j|J) REPLY=up ;;
     k|K) REPLY=down ;;
@@ -1714,6 +1715,31 @@ restore_pick_checked_names() {
   done
 }
 
+# enter: one session attaches here; several (and t) open new windows.
+restore_pick_finish() {
+  local key=${1:-enter}
+  restore_pick_checked_names
+  if (( ! ${#ghostty_names} )); then
+    restore_pick_action=skip
+    return
+  fi
+  case $key in
+    two)
+      restore_pick_action=shell
+      ;;
+    t)
+      restore_pick_action=resume
+      ;;
+    *)
+      if (( ${#ghostty_names} > 1 )); then
+        restore_pick_action=resume
+      else
+        restore_pick_action=attach
+      fi
+      ;;
+  esac
+}
+
 prompt_restore_windows() {
   restore_pick_action=skip
   ghostty_names=()
@@ -1751,22 +1777,8 @@ prompt_restore_windows() {
           fi
         done
         ;;
-      enter)
-        restore_pick_checked_names
-        if (( ${#ghostty_names} )); then
-          restore_pick_action=resume
-        else
-          restore_pick_action=skip
-        fi
-        break
-        ;;
-      two)
-        restore_pick_checked_names
-        if (( ${#ghostty_names} )); then
-          restore_pick_action=shell
-        else
-          restore_pick_action=skip
-        fi
+      enter|t|two)
+        restore_pick_finish "$REPLY"
         break
         ;;
       q|esc)
@@ -1866,7 +1878,7 @@ read_last_session_name() {
 }
 
 attach_named_session() {
-  local name=$1 ask=${2:-0} live last ans
+  local name=$1 ask=${2:-0} want_new=${3:-0} live last ans
   [[ -n $name ]] || return 1
   mark_snapshot_occupied "$name"
   load_session_snapshot
@@ -1887,13 +1899,12 @@ attach_named_session() {
     fi
   fi
   maybe_resume_last_command "$name"
-  if [[ $(effective_open_target 1) != current ]]; then
+  if [[ $(effective_open_target 1 $want_new) != current ]]; then
     restore_tty
     if open_workspace_tabs "$name"; then
       trap - EXIT
       exit 0
     fi
-    print "改在当前窗口进入。"
   fi
   tmux_tty attach-session -t "=$name"
   snapshot_live_sessions
@@ -2048,7 +2059,7 @@ load_settings() {
       case $key in
         open_target)
           case $val in
-            auto|ghostty|terminal|current) open_target=$val ;;
+            auto|ghostty|terminal) open_target=$val ;;
           esac
           ;;
         open_placement)
@@ -2088,7 +2099,6 @@ settings_value_label() {
       case $open_target in
         ghostty) print -r -- Ghostty ;;
         terminal) print -r -- 系统终端 ;;
-        current) print -r -- 当前窗口 ;;
         *) print -r -- '自动（Ghostty 优先）' ;;
       esac
       ;;
@@ -2107,7 +2117,6 @@ cycle_setting() {
       case $open_target in
         auto) open_target=ghostty ;;
         ghostty) open_target=terminal ;;
-        terminal) open_target=current ;;
         *) open_target=auto ;;
       esac
       ;;
@@ -2149,7 +2158,7 @@ settings_remove_root() {
   (( settings_cursor > n )) && settings_cursor=$n
 }
 
-# d removes the selected root. Enter cycles 打开到/窗口 or starts overlay input on ＋.
+# d removes the selected root. Enter cycles 新窗口/窗口 or starts overlay input on ＋.
 settings_enter() {
   local -i n=${#project_roots}
   case $settings_cursor in
@@ -2209,16 +2218,18 @@ settings_input_read() {
   esac
 }
 
+# n sessions, want_new=1 means t (or CLI --open-tabs). n>1 always wants a
+# new window. Missing Ghostty/Terminal (SSH, no local keyboard) → current.
 effective_open_target() {
   local n=${1:-1}
+  local want_new=${2:-0}
   local want=$open_target
-  if [[ $want == current ]] && (( n > 1 )); then
-    want=auto
+  (( n > 1 )) && want_new=1
+  if (( ! want_new )); then
+    print -r -- current
+    return
   fi
   case $want in
-    current)
-      print -r -- current
-      ;;
     ghostty)
       if ghostty_restore_available; then
         print -r -- ghostty
@@ -2236,13 +2247,22 @@ effective_open_target() {
     *)
       if ghostty_restore_available; then
         print -r -- ghostty
-      elif (( n > 1 )) && terminal_restore_available; then
+      elif terminal_restore_available; then
         print -r -- terminal
       else
         print -r -- current
       fi
       ;;
   esac
+}
+
+# List/restore key → current vs new-window target. Only t requests a new
+# window for a single session; Shift+Enter is Grok newline, not a key here.
+picker_open_mode() {
+  local n=${1:-1} key=${2:-enter}
+  local want_new=0
+  [[ $key == t ]] && want_new=1
+  effective_open_target "$n" "$want_new"
 }
 
 ghostty_restore_available() {
@@ -2523,14 +2543,26 @@ maybe_restore_sessions() {
         for n in "${ghostty_names[@]}"; do
           maybe_resume_last_command "$n"
         done
-        open_workspace_tabs "${ghostty_names[@]}"
+        if [[ $(effective_open_target ${#ghostty_names} 1) == current ]]; then
+          attach_named_session "${ghostty_names[1]}" 0 0
+        elif ! open_workspace_tabs "${ghostty_names[@]}"; then
+          attach_named_session "${ghostty_names[1]}" 0 0
+        fi
+        ;;
+      attach)
+        attach_shell_only=0
+        attach_named_session "${ghostty_names[1]}" 0 0
         ;;
       shell)
         attach_shell_only=1
         for n in "${ghostty_names[@]}"; do
           ensure_session_cwd "$n"
         done
-        open_workspace_tabs "${ghostty_names[@]}"
+        if [[ $(effective_open_target ${#ghostty_names} 1) == current ]]; then
+          attach_named_session "${ghostty_names[1]}" 0 0
+        elif ! open_workspace_tabs "${ghostty_names[@]}"; then
+          attach_named_session "${ghostty_names[1]}" 0 0
+        fi
         attach_shell_only=0
         ;;
     esac
@@ -3257,7 +3289,7 @@ draw_help() {
   else
     preview_key='v 预览'
   fi
-  keys=("↑↓/jk 选择" "Enter 进入" "n 新建" "e 重命名" "d 删除" "p 常驻" "X 删空闲" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "$preview_key" "/ 包含" "! 排除" ", 设置" "q 退出")
+  keys=("↑↓/jk 选择" "Enter 进入" "t 新窗口" "n 新建" "e 重命名" "d 删除" "p 常驻" "X 删空闲" "h 换机器" "r 刷新" "$sort_key" "$filter_key" "$preview_key" "/ 包含" "! 排除" ", 设置" "q 退出")
   buf=""
   for piece in "${keys[@]}"; do
     if [[ -z $buf ]]; then
@@ -3425,7 +3457,7 @@ draw_settings_overlay() {
   lines=(
     "设置"
     ""
-    "  打开到    $(settings_value_label target)"
+    "  新窗口    $(settings_value_label target)"
     "  窗口      $(settings_value_label placement)"
   )
   for root in "${project_roots[@]}"; do
@@ -3596,6 +3628,7 @@ read_key() {
     k|K) REPLY=down ;;
     q|Q) REPLY=q ;;
     n|N) REPLY=n ;;
+    t|T) REPLY=t ;;
     s|S) REPLY=s ;;
     r|R) REPLY=r ;;
     d|D) REPLY=d ;;
@@ -3617,17 +3650,17 @@ read_key() {
 }
 
 activate() {
-  local i=$1
+  local i=$1 want_new=${2:-0}
   case ${items_kind[$i]} in
     session)
       [[ $HAS_TMUX -eq 1 ]] || return
-      attach_named_session "${items_id[$i]}" 1
+      attach_named_session "${items_id[$i]}" 1 $want_new
       setup_tty
       load_items
       draw
       ;;
     new)
-      prompt_new
+      prompt_new $want_new
       ;;
     shell)
       restore_tty
@@ -3671,6 +3704,7 @@ new_session_flag_invalid() {
 }
 
 prompt_new() {
+  local want_new=${1:-0}
   [[ $HAS_TMUX -eq 1 ]] || return
   restore_tty
   print
@@ -3701,7 +3735,7 @@ prompt_new() {
       add_pin_record "$name" "$PWD" ""
       tmux_set_pinned "$name" 1
     fi
-    attach_named_session "$name" 0
+    attach_named_session "$name" 0 $want_new
   else
     if [[ -z $name ]]; then
       created=$(tmuxx new-session -d -P -F '#{session_name}' 2>/dev/null) || created=
@@ -3730,7 +3764,7 @@ prompt_new() {
       tmux_set_pinned "$created" 1
     fi
     mark_snapshot_occupied "$created"
-    attach_named_session "$created" 0
+    attach_named_session "$created" 0 $want_new
   fi
   setup_tty
   load_items
@@ -4011,7 +4045,7 @@ if [[ ${1:-} == --open-tabs ]]; then
       maybe_resume_last_command "$n"
     done
   fi
-  if [[ $(effective_open_target ${#names}) == current ]]; then
+  if [[ $(effective_open_target ${#names} 1) == current ]]; then
     name=${names[1]:-}
     if [[ -z $name ]]; then
       print -u2 "没有可打开的 session。"
@@ -4156,6 +4190,9 @@ while true; do
       ;;
     enter)
       activate $cursor
+      ;;
+    t)
+      activate $cursor 1
       ;;
     n)
       prompt_new
