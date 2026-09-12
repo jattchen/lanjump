@@ -4584,7 +4584,21 @@ pick_selftest() {
       print -u2 "FAIL pick-winch/prompt draw called"
       (( fails++ ))
     fi
+    if (( list_active )); then
+      print -u2 "FAIL pick-winch/prompt list_active on"
+      (( fails++ ))
+    fi
+    # #160: overlay ends restore_tty then setup_tty so the list WINCH works again.
+    _pw_overlay=${functions[prompt_restore_windows]}
+    if [[ ${_pw_overlay##*restore_tty} != *setup_tty* ]]; then
+      print -u2 "FAIL pick-winch/overlay-end setup_tty missing after restore_tty"
+      (( fails++ ))
+    fi
     setup_tty >/dev/null
+    if (( list_active != 1 )); then
+      print -u2 "FAIL pick-winch/overlay-end list_active=$list_active"
+      (( fails++ ))
+    fi
     draw_on_winch
     if (( _pw_winch_draws != 1 )); then
       print -u2 "FAIL pick-winch/list skipped draw got=$_pw_winch_draws"
@@ -4602,7 +4616,7 @@ pick_selftest() {
     loading=0
     list_active=0
     stty_orig=$_pw_save_stty_orig
-    unset _pw_save_draw _pw_save_stty_orig _pw_winch_draws
+    unset _pw_save_draw _pw_save_stty_orig _pw_winch_draws _pw_overlay
   fi
 
   attach_shell_only=1
