@@ -1859,6 +1859,56 @@ pick_selftest() {
   fi
   expect pin/print-empty-names keep "$got"
 
+  # #177: leftover bmx pin must not list or restore-pick, and restore must not recreate it.
+  : >"$tmux_log"
+  mock_live=()
+  snap_names=()
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  : >"$HOME/Library/Application Support/lanjump/session-snapshot"
+  print -r -- $'name keep\ncwd /tmp/keep\n\nname bmx-demo\ncwd /tmp/bmx\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions) return 1 ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  got=$(print_pinned_names)
+  if [[ $got == *bmx-demo* ]]; then
+    print -u2 "FAIL pin/print-skip-foreign listed bmx-demo got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  expect pin/print-skip-foreign-names keep "$got"
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'new-session -d -s bmx-demo'* ]]; then
+    print -u2 "FAIL pin/print-skip-foreign restored bmx-demo got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  pinned_names=(keep bmx-demo)
+  open_window_names=()
+  build_restore_pick
+  if [[ ${restore_pick_name[(Ie)bmx-demo]} -ne 0 ]]; then
+    print -u2 "FAIL pin/pick-skip-foreign listed bmx-demo got=${restore_pick_name[*]}"
+    (( fails++ ))
+  fi
+  if [[ ${restore_pick_name[(Ie)keep]} -eq 0 ]]; then
+    print -u2 "FAIL pin/pick-skip-foreign missing keep got=${restore_pick_name[*]}"
+    (( fails++ ))
+  fi
+
   if [[ ${functions[print_workspace_names]} != *should_restore_sessions* ]]; then
     print -u2 "FAIL work/print missing should_restore_sessions got=$(printf %q "${functions[print_workspace_names]}")"
     (( fails++ ))
@@ -4322,6 +4372,34 @@ pick_selftest() {
   restore_log=$(<"$tmux_log")
   if [[ $restore_log == *rename-session* ]]; then
     print -u2 "FAIL pin/p-named renamed non-numeric got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # #177: p on a live bmx session must not add a pin.
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  : >"$tmux_log"
+  items_kind=(session)
+  items_id=(bmx-demo)
+  items_name=(bmx-demo)
+  items_pinned=(0)
+  all_id=(bmx-demo)
+  all_name=(bmx-demo)
+  all_pinned=(0)
+  cursor=1
+  HAS_TMUX=1
+  toggle_session_pin
+  load_pinned_sessions
+  if [[ ${pinned_names[(Ie)bmx-demo]} -ne 0 ]]; then
+    print -u2 "FAIL pin/p-foreign added pin got=${pinned_names[*]}"
+    (( fails++ ))
+  fi
+  expect pin/p-foreign-pinned 0 "${items_pinned[1]}"
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'@lanjump_pinned 1'* ]]; then
+    print -u2 "FAIL pin/p-foreign marked tmux pinned got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
