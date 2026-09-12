@@ -10,7 +10,7 @@
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
 # has_named_session, ensure_named_session_for_attach, print_recent_names,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
-# attaching_remote_host, attach_spec_for, attach_command_for,
+# attaching_remote_host, attach_spec_for, attach_command_for, open_named_tabs,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
 # picker_open_mode, restore_pick_finish,
@@ -2141,6 +2141,49 @@ pick_selftest() {
     (( fails++ ))
   fi
   unset LANJUMP_ATTACH_HOST
+
+  # #84: remote --open-tabs must open windows even if effective_open_target is current.
+  tabs_src=${functions[open_named_tabs]}
+  if [[ $tabs_src != *attaching_remote_host* ]]; then
+    print -u2 "FAIL open-tabs/remote-src missing attaching_remote_host"
+    (( fails++ ))
+  fi
+  if [[ $tabs_src == *没有可用的本机终端* ]]; then
+    print -u2 "FAIL open-tabs/remote-src errors instead of open_workspace_tabs"
+    (( fails++ ))
+  fi
+  _save_open_tabs=$functions[open_workspace_tabs]
+  _save_eot=$functions[effective_open_target]
+  _save_resume=$functions[maybe_resume_last_command]
+  open_workspace_tabs() {
+    print -r -- "OPEN_TABS ${(j: :)${(q)@}}"
+    return 0
+  }
+  effective_open_target() { print -r -- current }
+  maybe_resume_last_command() {
+    print -r -- "RESUME $1"
+  }
+  LANJUMP_ATTACH_HOST=studio
+  open_target=current
+  attach_shell_only=0
+  got=$(open_named_tabs pin-one 2>&1)
+  expect open-tabs/remote-current-one 'OPEN_TABS pin-one' "$got"
+  if [[ $got == *没有可用的本机终端* ]]; then
+    print -u2 "FAIL open-tabs/remote-current-one printed no-terminal got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got == *RESUME* ]]; then
+    print -u2 "FAIL open-tabs/remote-current-one resumed local session got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  got=$(open_named_tabs a b 2>&1)
+  expect open-tabs/remote-current-multi 'OPEN_TABS a b' "$got"
+  unset LANJUMP_ATTACH_HOST
+  functions[open_workspace_tabs]=$_save_open_tabs
+  functions[effective_open_target]=$_save_eot
+  functions[maybe_resume_last_command]=$_save_resume
+  unset _save_open_tabs _save_eot _save_resume
+  open_target=auto
 
   if pane_is_shell ''; then
     :

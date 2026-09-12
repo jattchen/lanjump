@@ -2664,6 +2664,35 @@ open_workspace_tabs() {
   return 1
 }
 
+# CLI --open-tabs. Remote host:name never attaches a local tmux session here.
+open_named_tabs() {
+  local n name keys
+  (( $# )) || {
+    print -u2 "没有可打开的 session。"
+    return 1
+  }
+  if (( ! attach_shell_only )) && ! attaching_remote_host; then
+    for n in "$@"; do
+      maybe_resume_last_command "$n"
+    done
+  fi
+  if attaching_remote_host || [[ $(effective_open_target $# 1) != current ]]; then
+    open_workspace_tabs "$@"
+    return $?
+  fi
+  name=$1
+  mark_snapshot_occupied "$name"
+  remember_last_session "$name"
+  tmux_prepare_color
+  tmux_prepare_keys
+  keys=
+  if local_keyboard && keys=$(keys_bin); then
+    exec "$keys" "$TMUX_BIN" attach-session -t "=$name"
+  else
+    exec "$TMUX_BIN" attach-session -t "=$name"
+  fi
+}
+
 maybe_restore_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   load_pinned_sessions
@@ -4247,34 +4276,7 @@ if [[ ${1:-} == --open-tabs ]]; then
   load_settings
   load_pinned_sessions
   load_session_snapshot
-  # Remote names attach via host:name in new windows; do not resume local same-name sessions.
-  if (( ! attach_shell_only )) && ! attaching_remote_host; then
-    for n in "${names[@]}"; do
-      maybe_resume_last_command "$n"
-    done
-  fi
-  if [[ $(effective_open_target ${#names} 1) == current ]]; then
-    if attaching_remote_host; then
-      print -u2 "没有可用的本机终端来打开窗口。"
-      exit 1
-    fi
-    name=${names[1]:-}
-    if [[ -z $name ]]; then
-      print -u2 "没有可打开的 session。"
-      exit 1
-    fi
-    mark_snapshot_occupied "$name"
-    remember_last_session "$name"
-    tmux_prepare_color
-    tmux_prepare_keys
-    keys=
-    if local_keyboard && keys=$(keys_bin); then
-      exec "$keys" "$TMUX_BIN" attach-session -t "=$name"
-    else
-      exec "$TMUX_BIN" attach-session -t "=$name"
-    fi
-  fi
-  open_workspace_tabs "${names[@]}"
+  open_named_tabs "${names[@]}"
   exit $?
 fi
 
