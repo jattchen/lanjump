@@ -2422,7 +2422,19 @@ ghostty_attach_bin() {
 }
 
 ghostty_attach_helper() {
-  print -r -- "${LANJUMP_GHOSTTY_ATTACH:-$HOME/Library/Application Support/lanjump/lanjump-ghostty-attach}"
+  local bin
+  if [[ -n ${LANJUMP_GHOSTTY_ATTACH:-} ]]; then
+    print -r -- "$LANJUMP_GHOSTTY_ATTACH"
+    return
+  fi
+  bin=$(ghostty_attach_bin)
+  print -r -- "${bin:h}/lanjump-ghostty-attach"
+}
+
+ghostty_applescript_string() {
+  local s=$1
+  s=${s//\"/\"\"}
+  print -r -- "\"$s\""
 }
 
 attaching_remote_host() {
@@ -2477,16 +2489,22 @@ ghostty_restore_prompt_text() {
 }
 
 ghostty_cfg_lines() {
-  local name=$1 cmd cwd
+  local name=$1 helper spec env_list cwd
   # Ghostty on macOS runs command via `login … bash -c 'exec -l <command>'`.
-  # `direct:` is config-file only and becomes a literal path; spaces in
-  # Application Support also split. Use ~/.local/bin/lanjump (no spaces).
-  cmd=$(attach_command_for "$name")
+  # Outer single quotes eat zsh quoting, so command must have no spaces or
+  # quotes. Helper lives in ~/.local/bin; spec is surface env (#136).
+  helper=$(ghostty_attach_helper)
+  spec=$(attach_spec_for "$name")
   cwd=${snap_cwd[$name]:-}
   print -r -- '  set cfg to new surface configuration'
-  print -r -- "  set command of cfg to \"${cmd}\""
+  print -r -- "  set command of cfg to $(ghostty_applescript_string "$helper")"
+  env_list=$(ghostty_applescript_string "LANJUMP_ATTACH_SPEC=${spec}")
+  if (( attach_shell_only )); then
+    env_list+=", $(ghostty_applescript_string LANJUMP_ATTACH_SHELL=1)"
+  fi
+  print -r -- "  set environment variables of cfg to {${env_list}}"
   if [[ -n $cwd ]]; then
-    print -r -- "  set initial working directory of cfg to \"${cwd}\""
+    print -r -- "  set initial working directory of cfg to $(ghostty_applescript_string "$cwd")"
   fi
   print -r -- '  set wait after command of cfg to true'
 }

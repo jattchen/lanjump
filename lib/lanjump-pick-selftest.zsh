@@ -2213,12 +2213,16 @@ pick_selftest() {
     print -u2 "FAIL ghostty/script used direct: which macOS Ghostty passes to bash got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'/Users/mac/.local/bin/lanjump attach lanjump'* ]]; then
-    print -u2 "FAIL ghostty/script missing attach lanjump got=$(printf %q "$script")"
+  if [[ $script != *'set command of cfg to "/Users/mac/.local/bin/lanjump-ghostty-attach"'* ]]; then
+    print -u2 "FAIL ghostty/script missing space-free helper command got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'/Users/mac/.local/bin/lanjump attach sysmtn'* ]]; then
-    print -u2 "FAIL ghostty/script missing attach sysmtn got=$(printf %q "$script")"
+  if [[ $script != *'LANJUMP_ATTACH_SPEC=lanjump'* ]]; then
+    print -u2 "FAIL ghostty/script missing attach lanjump spec got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'LANJUMP_ATTACH_SPEC=sysmtn'* ]]; then
+    print -u2 "FAIL ghostty/script missing attach sysmtn spec got=$(printf %q "$script")"
     (( fails++ ))
   fi
   # #127: Terminal `do script` returns a tab; later sessions must target that tab's window.
@@ -2301,12 +2305,16 @@ pick_selftest() {
     (( fails++ ))
   fi
   script=$(ghostty_osascript_for_sessions lanjump sysmtn)
-  if [[ $script != *'/Users/mac/.local/bin/lanjump attach studio:lanjump'* ]]; then
-    print -u2 "FAIL ghostty/host-script missing attach studio:lanjump got=$(printf %q "$script")"
+  if [[ $script != *'set command of cfg to "/Users/mac/.local/bin/lanjump-ghostty-attach"'* ]]; then
+    print -u2 "FAIL ghostty/host-script missing space-free helper command got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'/Users/mac/.local/bin/lanjump attach studio:sysmtn'* ]]; then
-    print -u2 "FAIL ghostty/host-script missing attach studio:sysmtn got=$(printf %q "$script")"
+  if [[ $script != *'LANJUMP_ATTACH_SPEC=studio:lanjump'* ]]; then
+    print -u2 "FAIL ghostty/host-script missing attach studio:lanjump spec got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'LANJUMP_ATTACH_SPEC=studio:sysmtn'* ]]; then
+    print -u2 "FAIL ghostty/host-script missing attach studio:sysmtn spec got=$(printf %q "$script")"
     (( fails++ ))
   fi
   LANJUMP_ATTACH_HOST=local
@@ -2437,6 +2445,95 @@ pick_selftest() {
     (( fails++ ))
   fi
   attach_shell_only=0
+
+  # #136: Ghostty wraps command in bash -c 'exec -l <command>'; zsh quotes are eaten.
+  LANJUMP_ATTACH_BIN=/Users/mac/.local/bin/lanjump
+  LANJUMP_GHOSTTY_ATTACH=/Users/mac/.local/bin/lanjump-ghostty-attach
+  ghostty_command_of_cfg() {
+    local line
+    while IFS= read -r line; do
+      [[ $line == $'  set command of cfg to '* ]] || continue
+      line=${line#  set command of cfg to }
+      line=${line#\"}
+      line=${line%\"}
+      print -r -- "$line"
+    done
+  }
+  assert_ghostty_command_helper() {
+    local label=$1 script=$2 cmd
+    cmd=$(print -r -- "$script" | ghostty_command_of_cfg)
+    if [[ -z $cmd ]]; then
+      print -u2 "FAIL $label missing command of cfg got=$(printf %q "$script")"
+      (( fails++ ))
+      return
+    fi
+    if [[ $cmd == *[[:space:]]* || $cmd == *\'* ]]; then
+      print -u2 "FAIL $label command has space/quote got=$(printf %q "$cmd")"
+      (( fails++ ))
+    fi
+    if [[ $cmd != /Users/mac/.local/bin/lanjump-ghostty-attach ]]; then
+      print -u2 "FAIL $label command is not space-free helper got=$(printf %q "$cmd")"
+      (( fails++ ))
+    fi
+  }
+  script=$(ghostty_osascript_for_sessions 'my app')
+  assert_ghostty_command_helper ghostty/space-name "$script"
+  if [[ $script == *"attach 'my app'"* || $script == *'attach "my app"'* ]]; then
+    print -u2 "FAIL ghostty/space-name quoted spec in command got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'LANJUMP_ATTACH_SPEC=my app'* ]]; then
+    print -u2 "FAIL ghostty/space-name spec missing from env got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'set environment variables of cfg to'* ]]; then
+    print -u2 "FAIL ghostty/space-name missing environment variables got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  print -r -- "$script" >"$testhome/ghostty-space.applescript"
+  if ! /usr/bin/osacompile -o "$testhome/ghostty-space.scpt" "$testhome/ghostty-space.applescript" 2>"$testhome/osacompile-space.err"; then
+    print -u2 "FAIL ghostty/space-compile $(<"$testhome/osacompile-space.err") got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  script=$(ghostty_osascript_for_sessions lanjump)
+  assert_ghostty_command_helper ghostty/plain-name "$script"
+  if [[ $script != *'LANJUMP_ATTACH_SPEC=lanjump'* ]]; then
+    print -u2 "FAIL ghostty/plain-name spec missing from env got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  attach_shell_only=1
+  script=$(ghostty_osascript_for_sessions 'my app')
+  assert_ghostty_command_helper ghostty/space-shell "$script"
+  if [[ $script != *'LANJUMP_ATTACH_SPEC=my app'* ]]; then
+    print -u2 "FAIL ghostty/space-shell spec missing from env got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'LANJUMP_ATTACH_SHELL=1'* ]]; then
+    print -u2 "FAIL ghostty/space-shell missing LANJUMP_ATTACH_SHELL got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script == *'attach --shell'* ]]; then
+    print -u2 "FAIL ghostty/space-shell still puts --shell in command got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  attach_shell_only=0
+  script=$(terminal_osascript_for_sessions 'my app')
+  if [[ $script != *"$(printf %q 'my app')"* ]]; then
+    print -u2 "FAIL terminal/space-name missing quoted my app got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  local helper_src helper_got helper_home
+  helper_src=${_pick_src_file:h:h}/bin/lanjump-ghostty-attach
+  helper_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-ghostty-helper.XXXXXX")
+  mkdir -p "$helper_home/Library/Application Support/lanjump"
+  print -r -- 'print -r -- "ATTACH ${(j: :)${(q)@}}"' >"$helper_home/Library/Application Support/lanjump/lanjump.zsh"
+  helper_got=$(HOME=$helper_home LANJUMP_ATTACH_SPEC='my app' /bin/zsh "$helper_src")
+  expect ghostty/helper-space "ATTACH attach $(printf %q 'my app')" "$helper_got"
+  helper_got=$(HOME=$helper_home LANJUMP_ATTACH_SPEC='my app' LANJUMP_ATTACH_SHELL=1 /bin/zsh "$helper_src")
+  expect ghostty/helper-space-shell "ATTACH attach --shell $(printf %q 'my app')" "$helper_got"
+  helper_got=$(HOME=$helper_home LANJUMP_ATTACH_SPEC=lanjump /bin/zsh "$helper_src")
+  expect ghostty/helper-plain 'ATTACH attach lanjump' "$helper_got"
+  rm -rf "$helper_home"
 
   snap_names=(keep drop)
   snap_cwd=()
@@ -3097,8 +3194,16 @@ pick_selftest() {
 
   attach_shell_only=1
   script=$(ghostty_osascript_for_sessions lanjump)
-  if [[ $script != *'attach --shell lanjump'* ]]; then
-    print -u2 "FAIL ghostty/script-shell missing --shell got=$(printf %q "$script")"
+  if [[ $script != *'LANJUMP_ATTACH_SPEC=lanjump'* ]]; then
+    print -u2 "FAIL ghostty/script-shell missing spec env got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'LANJUMP_ATTACH_SHELL=1'* ]]; then
+    print -u2 "FAIL ghostty/script-shell missing LANJUMP_ATTACH_SHELL got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script == *'attach --shell'* ]]; then
+    print -u2 "FAIL ghostty/script-shell still puts --shell in command got=$(printf %q "$script")"
     (( fails++ ))
   fi
   attach_shell_only=0
@@ -3592,6 +3697,10 @@ pick_selftest() {
 
   if session_name_invalid ''; then
     print -u2 "FAIL name/empty auto-name rejected"
+    (( fails++ ))
+  fi
+  if session_name_invalid 'my app'; then
+    print -u2 "FAIL name/space my app rejected"
     (( fails++ ))
   fi
   if got=$(session_name_invalid web:api); then
