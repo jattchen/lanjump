@@ -149,6 +149,106 @@ host_selftest() {
     fi
   done
 
+  # #90: forgetting the last remote must not leave last_target on that alias.
+  local orig_home=$HOME
+  local real_ssh="$orig_home/.ssh/config"
+  local real_last="$orig_home/Library/Application Support/lanjump/last_target"
+  local tmpdir forget_i j
+  local saved_ssh saved_hosts saved_key saved_home saved_last_file
+  local -a saved_alias saved_user saved_hostname saved_ip saved_mac saved_last
+  tmpdir=$(mktemp -d) || return 1
+  saved_ssh=$SSH_CONFIG
+  saved_hosts=$HOSTS_FILE
+  saved_key=$KEY
+  saved_home=$HOME
+  saved_last_file=$LAST_FILE
+  saved_alias=("${h_alias[@]}")
+  saved_user=("${h_user[@]}")
+  saved_hostname=("${h_hostname[@]}")
+  saved_ip=("${h_ip[@]}")
+  saved_mac=("${h_mac[@]}")
+  saved_last=("${h_last[@]}")
+  SSH_CONFIG="$tmpdir/config"
+  HOSTS_FILE="$tmpdir/hosts"
+  LAST_FILE="$tmpdir/last_target"
+  KEY="$tmpdir/id_ed25519_lanjump"
+  HOME=$tmpdir
+  restore_tty() { : }
+  setup_tty() { : }
+  if [[ $SSH_CONFIG == "$real_ssh" || $LAST_FILE == "$real_last" || $HOSTS_FILE == "$orig_home/Library/Application Support/lanjump/hosts" ]]; then
+    print -u2 "FAIL host/forget-last refusing to use real SSH/hosts/last paths"
+    (( fails++ ))
+  else
+    : >"$SSH_CONFIG"
+    print -r -- 'office|mac|office.local|10.0.0.8||1' >"$HOSTS_FILE"
+    print -r -- 'studio|mac|studio.local|10.0.0.2||2' >>"$HOSTS_FILE"
+    print -r -- office >"$LAST_FILE"
+    load_hosts
+    build_items
+    forget_i=
+    for (( j = 1; j <= ${#items_kind}; j++ )); do
+      if [[ ${items_kind[$j]} == host && ${items_alias[$j]} == office ]]; then
+        forget_i=$j
+        break
+      fi
+    done
+    if [[ -z $forget_i ]]; then
+      print -u2 "FAIL host/forget-last missing office item"
+      (( fails++ ))
+    else
+      host_tty_read() { printf -v $1 'y' }
+      forget_item $forget_i >/dev/null
+      expect host/forget-last-cleared local "$(read_last)"
+      if [[ $notice != *已忘掉*office* ]]; then
+        print -u2 "FAIL host/forget-last-notice got=$(printf %q "$notice")"
+        (( fails++ ))
+      fi
+    fi
+
+    print -r -- 'office|mac|office.local|10.0.0.8||1' >"$HOSTS_FILE"
+    print -r -- 'studio|mac|studio.local|10.0.0.2||2' >>"$HOSTS_FILE"
+    print -r -- studio >"$LAST_FILE"
+    load_hosts
+    build_items
+    forget_i=
+    for (( j = 1; j <= ${#items_kind}; j++ )); do
+      if [[ ${items_kind[$j]} == host && ${items_alias[$j]} == office ]]; then
+        forget_i=$j
+        break
+      fi
+    done
+    host_tty_read() { printf -v $1 'y' }
+    forget_item $forget_i >/dev/null
+    expect host/forget-other-keeps-last studio "$(read_last)"
+
+    print -r -- 'office|mac|office.local|10.0.0.8||1' >"$HOSTS_FILE"
+    print -r -- office >"$LAST_FILE"
+    load_hosts
+    build_items
+    forget_i=
+    for (( j = 1; j <= ${#items_kind}; j++ )); do
+      if [[ ${items_kind[$j]} == host && ${items_alias[$j]} == office ]]; then
+        forget_i=$j
+        break
+      fi
+    done
+    host_tty_read() { printf -v $1 'n' }
+    forget_item $forget_i >/dev/null
+    expect host/forget-cancel-keeps-last office "$(read_last)"
+  fi
+  SSH_CONFIG=$saved_ssh
+  HOSTS_FILE=$saved_hosts
+  KEY=$saved_key
+  HOME=$saved_home
+  LAST_FILE=$saved_last_file
+  h_alias=("${saved_alias[@]}")
+  h_user=("${saved_user[@]}")
+  h_hostname=("${saved_hostname[@]}")
+  h_ip=("${saved_ip[@]}")
+  h_mac=("${saved_mac[@]}")
+  h_last=("${saved_last[@]}")
+  rm -rf "$tmpdir"
+
   if (( fails )); then
     print -u2 "host-selftest: $fails failed"
     return 1

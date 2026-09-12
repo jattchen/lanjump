@@ -22,6 +22,14 @@ expect_absent() {
   fi
 }
 
+expect_eq() {
+  local label=$1 want=$2 got=$3
+  if [[ $got != "$want" ]]; then
+    print -u2 "FAIL $label got=$(printf %q "$got") want=$(printf %q "$want")"
+    (( fails++ ))
+  fi
+}
+
 if ! (( ${+functions[cli_dispatch]} )); then
   MAIN=${0:A:h}/lanjump.zsh
 
@@ -101,6 +109,7 @@ log=$tmpdir/log
 fake_picker=$tmpdir/pick
 export LANJUMP_CLI_TEST_LOG=$log
 trap 'rm -rf "$tmpdir"; restore_tty 2>/dev/null || true' EXIT
+functions -c default_cli_host _shipped_default_cli_host
 
 cat >"$fake_picker" <<'EOF'
 emulate -L zsh
@@ -131,6 +140,19 @@ h_hostname=(studio.local)
 h_ip=(10.0.0.2)
 h_mac=('')
 h_last=('0')
+
+# #90: last_target naming a missing host must not stay the default machine.
+saved_last_file=$LAST_FILE
+LAST_FILE="$tmpdir/last_target"
+print -r -- studio >"$LAST_FILE"
+expect_eq default-host/known studio "$(default_cli_host)"
+print -r -- office >"$LAST_FILE"
+expect_eq default-host/stale local "$(default_cli_host)"
+print -r -- local >"$LAST_FILE"
+expect_eq default-host/local local "$(default_cli_host)"
+print -r -- host >"$LAST_FILE"
+expect_eq default-host/legacy-host local "$(default_cli_host)"
+LAST_FILE=$saved_last_file
 
 picker_path() {
   print -r -- "$fake_picker"
@@ -834,6 +856,100 @@ expect_contains go-unprefixed-from-remote/session lj85-local "$hay"
 expect_contains go-unprefixed-from-remote/last 'LAST host=office' "$hay"
 expect_absent go-unprefixed-from-remote/no-local 'PICK_EXEC' "$hay"
 TEST_LAST_HOST=local
+
+# #90: unprefixed list/go/work/pins/last after the last remote was forgotten.
+unfunction default_cli_host
+functions -c _shipped_default_cli_host default_cli_host
+LAST_FILE="$tmpdir/last_target"
+print -r -- office >"$LAST_FILE"
+h_alias=()
+h_user=()
+h_hostname=()
+h_ip=()
+h_mac=()
+h_last=()
+CLI_HAS_SESSION=1
+
+: >"$log"
+st=0
+err=$(cli_dispatch list 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL list-stale-last/status got $st want 0 err=$(printf %q "$err")"
+  (( fails++ ))
+fi
+expect_contains list-stale-last/list 'LIST host=local' "$hay"
+expect_absent list-stale-last/no-office-msg '没有保存的机器「office」。' "$err"
+expect_absent list-stale-last/not-office-list 'LIST host=office' "$hay"
+
+: >"$log"
+st=0
+err=$(cli_dispatch work 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL work-stale-last/status got $st want 0 err=$(printf %q "$err")"
+  (( fails++ ))
+fi
+expect_contains work-stale-last/list 'LIST host=local flag=--print-workspace' "$hay"
+expect_contains work-stale-last/open 'OPEN host=local names=local-work' "$hay"
+expect_absent work-stale-last/no-office-msg '没有保存的机器「office」。' "$err"
+expect_absent work-stale-last/not-office-open 'OPEN host=office' "$hay"
+
+: >"$log"
+st=0
+err=$(cli_dispatch pins 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL pins-stale-last/status got $st want 0 err=$(printf %q "$err")"
+  (( fails++ ))
+fi
+expect_contains pins-stale-last/list 'LIST host=local flag=--print-pinned' "$hay"
+expect_contains pins-stale-last/open 'OPEN host=local names=local-pin' "$hay"
+expect_absent pins-stale-last/no-office-msg '没有保存的机器「office」。' "$err"
+
+: >"$log"
+st=0
+err=$(cli_dispatch go demo 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-stale-last/status got $st want 0 err=$(printf %q "$err")"
+  (( fails++ ))
+fi
+expect_contains go-stale-last/has 'HAS host=local session=demo' "$hay"
+expect_contains go-stale-last/attach 'PICK_EXEC --attach demo' "$hay"
+expect_absent go-stale-last/no-remote 'REMOTE_PICK' "$hay"
+expect_absent go-stale-last/no-office-msg '没有保存的机器「office」。' "$err"
+
+: >"$log"
+st=0
+err=$(cli_dispatch last 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL last-stale-last/status got $st want 0 err=$(printf %q "$err")"
+  (( fails++ ))
+fi
+expect_contains last-stale-last/list 'LIST host=local flag=--print-recent' "$hay"
+expect_contains last-stale-last/attach 'PICK_EXEC --attach local-recent1' "$hay"
+expect_absent last-stale-last/no-office-msg '没有保存的机器「office」。' "$err"
+expect_absent last-stale-last/not-office-list 'LIST host=office' "$hay"
+
+h_alias=(office)
+h_user=(mac)
+h_hostname=(office.local)
+h_ip=(10.0.0.1)
+h_mac=('')
+h_last=('0')
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+err=$(cli_dispatch list 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL list-last-office/status got $st want 0 err=$(printf %q "$err")"
+  (( fails++ ))
+fi
+expect_contains list-last-office/list 'LIST host=office' "$hay"
+expect_eq list-last-office/host office "$(default_cli_host)"
 
 st=0
 err=$(/bin/zsh "${0:A:h}/lanjump.zsh" new 2>&1) || st=$?
