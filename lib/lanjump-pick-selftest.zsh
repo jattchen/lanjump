@@ -21,7 +21,9 @@
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
 # resume_prompt_choice, attach_command_for, new_session_flag_invalid, prompt_new,
-# prompt_new_pin_cwd, create_named_session, read_key, settings_input_read, PENDING_KEY.
+# prompt_new_pin_cwd, create_named_session, unique_non_numeric_session_name,
+# ensure_pinnable_session_name, toggle_session_pin, read_key, settings_input_read,
+# PENDING_KEY.
 
 _pick_src_file=${0:A:h}/lanjump-pick.zsh
 
@@ -3974,7 +3976,7 @@ pick_selftest() {
     case $1 in
       has-session) return 1 ;;
       new-session)
-        [[ $* == *-P* ]] && print -r -- auto-1
+        [[ $* == *-P* ]] && print -r -- 0
         return 0
         ;;
       *) return 0 ;;
@@ -3985,6 +3987,14 @@ pick_selftest() {
     (( fails++ ))
   else
     expect prompt_new/pin-cwd-named "$HOME/Documents/projects/inferme" "$(prompt_new_pin_cwd inferme)"
+  fi
+  if (( ! ${+functions[ensure_pinnable_session_name]} )); then
+    print -u2 "FAIL pin/helper missing ensure_pinnable_session_name"
+    (( fails++ ))
+  fi
+  if (( ! ${+functions[unique_non_numeric_session_name]} )); then
+    print -u2 "FAIL pin/helper missing unique_non_numeric_session_name"
+    (( fails++ ))
   fi
   if (( ! ${+functions[create_named_session]} )); then
     print -u2 "FAIL prompt_new/helper missing create_named_session"
@@ -4032,6 +4042,14 @@ pick_selftest() {
     print -u2 "FAIL prompt_new/n-empty-auto used -c got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
+  if [[ $restore_log == *rename-session* ]]; then
+    print -u2 "FAIL prompt_new/n-empty-auto renamed unpinned got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if (( ${#pinned_names} )); then
+    print -u2 "FAIL prompt_new/n-empty-auto pinned unpinned got=${pinned_names[*]}"
+    (( fails++ ))
+  fi
 
   # #130: n + pin from picker cwd must store project dir, not $PWD.
   pinned_names=()
@@ -4074,7 +4092,7 @@ pick_selftest() {
     case $1 in
       has-session) return 1 ;;
       new-session)
-        [[ $* == *-P* ]] && print -r -- auto-1
+        [[ $* == *-P* ]] && print -r -- 0
         return 0
         ;;
       display-message)
@@ -4086,10 +4104,118 @@ pick_selftest() {
   }
   pinned_names=()
   pinned_cwd=()
+  pinned_grok=()
   : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  : >"$tmux_log"
   print -l -- '' y | prompt_new >/dev/null
   load_pinned_sessions
-  expect prompt_new/n-pin-empty-cwd /tmp/picker-pane "${pinned_cwd[auto-1]:-}"
+  created=${pinned_names[1]:-}
+  if [[ -z $created ]]; then
+    print -u2 "FAIL prompt_new/n-pin-empty missing pin record"
+    (( fails++ ))
+  fi
+  if numeric_session_name "$created"; then
+    print -u2 "FAIL prompt_new/n-pin-empty still numeric got=$(printf %q "$created")"
+    (( fails++ ))
+  fi
+  if [[ $created == *:* || $created == *.* || $created == *' '* ]]; then
+    print -u2 "FAIL prompt_new/n-pin-empty invalid name got=$(printf %q "$created")"
+    (( fails++ ))
+  fi
+  expect prompt_new/n-pin-empty-cwd /tmp/picker-pane "${pinned_cwd[$created]:-}"
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'rename-session -t =0 '* ]]; then
+    print -u2 "FAIL prompt_new/n-pin-empty-rename got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  restore_pinned_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ -n $created && $restore_log != *'new-session -d -s '"$created"' -c /tmp/picker-pane'* ]]; then
+    print -u2 "FAIL prompt_new/n-pin-empty-restore got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # #145: list p on numeric 0 renames then pins.
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session) return 1 ;;
+      display-message)
+        print -r -- /tmp/zero-pane
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  : >"$tmux_log"
+  items_kind=(session)
+  items_id=(0)
+  items_name=(0)
+  items_pinned=(0)
+  all_id=(0)
+  all_name=(0)
+  all_pinned=(0)
+  cursor=1
+  HAS_TMUX=1
+  toggle_session_pin
+  load_pinned_sessions
+  created=${pinned_names[1]:-}
+  if [[ -z $created ]]; then
+    print -u2 "FAIL pin/p-numeric missing pin record"
+    (( fails++ ))
+  fi
+  if numeric_session_name "$created"; then
+    print -u2 "FAIL pin/p-numeric still numeric got=$(printf %q "$created")"
+    (( fails++ ))
+  fi
+  if [[ $created == *:* || $created == *.* || $created == *' '* ]]; then
+    print -u2 "FAIL pin/p-numeric invalid name got=$(printf %q "$created")"
+    (( fails++ ))
+  fi
+  expect pin/p-numeric-id "$created" "${items_id[1]}"
+  expect pin/p-numeric-name "$created" "${items_name[1]}"
+  expect pin/p-numeric-pinned 1 "${items_pinned[1]}"
+  expect pin/p-numeric-cwd /tmp/zero-pane "${pinned_cwd[$created]:-}"
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'rename-session -t =0 '* ]]; then
+    print -u2 "FAIL pin/p-numeric-rename got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  restore_pinned_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ -n $created && $restore_log != *'new-session -d -s '"$created"' -c /tmp/zero-pane'* ]]; then
+    print -u2 "FAIL pin/p-numeric-restore got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # Named pin still uses the given name.
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  : >"$tmux_log"
+  items_kind=(session)
+  items_id=(keep)
+  items_name=(keep)
+  items_pinned=(0)
+  all_id=(keep)
+  all_name=(keep)
+  all_pinned=(0)
+  cursor=1
+  toggle_session_pin
+  load_pinned_sessions
+  expect pin/p-named keep "${pinned_names[1]:-}"
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *rename-session* ]]; then
+    print -u2 "FAIL pin/p-named renamed non-numeric got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
   cd "$oldpwd"
   functions -c _pn_restore_tty restore_tty
   functions -c _pn_setup_tty setup_tty
