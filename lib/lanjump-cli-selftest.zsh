@@ -304,8 +304,10 @@ src_connect=${functions[connect_item]}
 src_remote=${functions[cli_remote_pick]}
 expect_contains sync/connect-term TERM_PROGRAM "$src_connect"
 expect_contains sync/connect-color COLORTERM "$src_connect"
+expect_contains sync/connect-pick-bin LANJUMP_PICK_BIN "$src_connect"
 expect_contains sync/remote-term TERM_PROGRAM "$src_remote"
 expect_contains sync/remote-color COLORTERM "$src_remote"
+expect_contains sync/remote-pick-bin LANJUMP_PICK_BIN "$src_remote"
 
 : >"$log"
 TERM_PROGRAM=Apple_Terminal TERM_PROGRAM_VERSION=440 \
@@ -316,6 +318,7 @@ expect_contains remote/cli-term/unset 'unset GROK_APPEARANCE LC_GROK_APPEARANCE 
 expect_contains remote/cli-term/program 'TERM_PROGRAM=Apple_Terminal' "$hay"
 expect_contains remote/cli-term/version 'TERM_PROGRAM_VERSION=440' "$hay"
 expect_contains remote/cli-term/attach --attach "$hay"
+expect_contains remote/cli-term/pick-bin 'LANJUMP_PICK_BIN=$HOME/.local/bin/lanjump-pick' "$hay"
 
 : >"$log"
 cli_open_tabs local lanjump

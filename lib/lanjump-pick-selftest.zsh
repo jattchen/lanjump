@@ -2815,6 +2815,66 @@ pick_selftest() {
     print -u2 "FAIL snap/tty --snapshot should not need a tty"
     (( fails++ ))
   fi
+  # #162: remote pick is ~/.local/bin/lanjump-pick; hooks must not keep
+  # pointing at the Mac-only Application Support path.
+  got=$(LANJUMP_PICK_BIN=/tmp/lanjump-pick snapshot_hook_shell)
+  expect snap/hook-env-bin "/bin/zsh /tmp/lanjump-pick --snapshot >/dev/null 2>&1" "$got"
+  local hook_home hook_pick app_home app_pick stale_sr
+  hook_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-hook-local.XXXXXX")
+  mkdir -p "$hook_home/.local/bin"
+  hook_pick=$hook_home/.local/bin/lanjump-pick
+  : >"$hook_pick"
+  got=$(unset LANJUMP_PICK_BIN; HOME=$hook_home snapshot_hook_shell)
+  expect snap/hook-local-bin "/bin/zsh $(printf %q "$hook_pick") --snapshot >/dev/null 2>&1" "$got"
+  if [[ $got == *'Application Support'* ]]; then
+    print -u2 "FAIL snap/hook-local-bin leaked Application Support got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  app_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-hook-app.XXXXXX")
+  mkdir -p "$app_home/Library/Application Support/lanjump"
+  app_pick="$app_home/Library/Application Support/lanjump/lanjump-pick.zsh"
+  : >"$app_pick"
+  got=$(unset LANJUMP_PICK_BIN; HOME=$app_home snapshot_hook_shell)
+  expect snap/hook-app-default "/bin/zsh $(printf %q "$app_pick") --snapshot >/dev/null 2>&1" "$got"
+  if [[ $got == *'.local/bin/lanjump-pick'* ]]; then
+    print -u2 "FAIL snap/hook-app-default used local/bin got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  unset LANJUMP_PICK_BIN
+  LANJUMP_PICK_BIN=$hook_pick
+  stale_sr="#(/bin/zsh $(printf %q "$app_pick") --snapshot;)"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    if [[ $* == *show-options*-gv\ status-right* ]]; then
+      print -r -- "$stale_sr"
+    fi
+    return 0
+  }
+  tmux_install_snapshot_hooks
+  hook_log=$(<"$tmux_log")
+  if [[ $hook_log != *"$hook_pick"* ]]; then
+    print -u2 "FAIL snap/hook-stale missing local pick got=$(printf %q "$hook_log")"
+    (( fails++ ))
+  fi
+  if [[ $hook_log != *'set-hook -g client-detached[91]'* ]]; then
+    print -u2 "FAIL snap/hook-stale missing client-detached got=$(printf %q "$hook_log")"
+    (( fails++ ))
+  fi
+  if [[ $hook_log != *'set-option -g status-right'* ]]; then
+    print -u2 "FAIL snap/hook-stale missing status-right replace got=$(printf %q "$hook_log")"
+    (( fails++ ))
+  fi
+  if [[ $hook_log == *'set-option -ag status-right'* ]]; then
+    print -u2 "FAIL snap/hook-stale appended instead of replace got=$(printf %q "$hook_log")"
+    (( fails++ ))
+  fi
+  if [[ $hook_log == *"$app_pick"* && $hook_log == *'set-option -g status-right'* ]]; then
+    print -u2 "FAIL snap/hook-stale kept Application Support got=$(printf %q "$hook_log")"
+    (( fails++ ))
+  fi
+  unset LANJUMP_PICK_BIN
+  rm -rf "$hook_home" "$app_home"
   tmuxx() {
     case $1 in
       list-sessions)
