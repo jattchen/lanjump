@@ -489,6 +489,18 @@ strip_ssh_block() {
   local begin=$1 end=$2
   [[ -f $SSH_CONFIG ]] || return
   grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null || return
+  # Missing END must not delete through EOF.
+  awk -v b="$begin" -v e="$end" '
+    $0 == b {
+      if (open) exit 1
+      open = 1
+      next
+    }
+    $0 == e {
+      if (open) open = 0
+    }
+    END { if (open) exit 1 }
+  ' "$SSH_CONFIG" || return 1
   local tmp
   tmp=$(mktemp)
   awk -v b="$begin" -v e="$end" '
@@ -1437,6 +1449,12 @@ fi
 if [[ ${1:-} == --host-selftest ]]; then
   . "${0:A:h}/lanjump-host-selftest.zsh"
   host_selftest
+  exit $?
+fi
+
+if [[ ${1:-} == --ssh-selftest ]]; then
+  . "${0:A:h}/lanjump-ssh-selftest.zsh"
+  ssh_selftest
   exit $?
 fi
 
