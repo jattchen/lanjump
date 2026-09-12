@@ -1931,6 +1931,84 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #116: unpinned named session. cd $HOME must not overwrite the stored project cwd.
+  snap_names=(home-cd)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[home-cd]=/proj/keep
+  snap_occupied[home-cd]=0
+  snap_workspace[home-cd]=1
+  snap_cmd[home-cd]=zsh
+  snap_attached[home-cd]=123
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  save_session_snapshot
+  tmuxx() {
+    case $1 in
+      list-sessions)
+        print -r -- $'home-cd\x1f'"$HOME"$'\x1f0\x1fzsh'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  snapshot_live_sessions
+  expect snap/home-cd-keeps-cwd /proj/keep "${snap_cwd[home-cd]:-}"
+  collect_restore_names
+  expect snap/home-cd-restore-cwd /proj/keep "${restore_cwd[home-cd]:-}"
+  tmuxx() {
+    case $1 in
+      list-sessions)
+        print -r -- $'home-cd\x1f/opt/other\x1f0\x1fzsh'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  snapshot_live_sessions
+  expect snap/home-cd-follow-live /opt/other "${snap_cwd[home-cd]:-}"
+
+  # #116: pinned cwd is the fallback when snap was already home and the live pane is home.
+  snap_names=(pin-home)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[pin-home]=$HOME
+  snap_occupied[pin-home]=0
+  snap_workspace[pin-home]=1
+  snap_cmd[pin-home]=zsh
+  snap_attached[pin-home]=123
+  save_session_snapshot
+  print -r -- $'name pin-home\ncwd /proj/pinned\ngrok \n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  LANJUMP_SNAPSHOT_MIN=0
+  tmuxx() {
+    case $1 in
+      list-sessions)
+        print -r -- $'pin-home\x1f'"$HOME"$'\x1f0\x1fzsh'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  run_session_snapshot
+  unset LANJUMP_SNAPSHOT_MIN
+  expect snap/pin-home-loaded-pin /proj/pinned "${pinned_cwd[pin-home]:-}"
+  expect snap/pin-home-keeps-cwd /proj/pinned "${snap_cwd[pin-home]:-}"
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+
   : >"$tmux_log"
   snap_cmd[idle-grok]=grok-1.0.24-mac
   snap_cwd[idle-grok]=/proj/lanjump
