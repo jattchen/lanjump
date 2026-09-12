@@ -603,6 +603,27 @@ fi
 expect_contains last-menu/list 'LIST host=local flag=--print-recent' "$hay"
 expect_contains last-menu/select 'SELECT local-recent1 local-recent2' "$hay"
 expect_contains last-menu/attach 'PICK_EXEC --attach local-recent1' "$hay"
+expect_contains last-menu/last 'LAST host=local' "$hay"
+
+# #75: last <host> enters that host; last/default host must become it, not the previous local.
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+cli_dispatch last office >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL last-host/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains last-host/list 'LIST host=office flag=--print-recent' "$hay"
+expect_contains last-host/select 'SELECT office-recent1 office-recent2' "$hay"
+expect_contains last-host/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains last-host/attach-flag '--attach' "$hay"
+expect_contains last-host/session office-recent1 "$hay"
+expect_contains last-host/last 'LAST host=office' "$hay"
+expect_absent last-host/not-local 'LAST host=local' "$hay"
+expect_absent last-host/not-local-list 'LIST host=local' "$hay"
+TEST_LAST_HOST=local
 
 : >"$log"
 st=0
