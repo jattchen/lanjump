@@ -1634,9 +1634,13 @@ cli_auto_new_session() {
 }
 
 cli_start_grok() {
-  local session=$1
+  local host=$1 session=$2
   local live pane_cwd bin line target
   [[ -n $session ]] || return 1
+  if [[ $host != local ]]; then
+    cli_remote_print "$host" --start-grok "$session"
+    return $?
+  fi
   target="=${session}:."
   live=$(cli_tmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
   live=${live##*/}
@@ -1863,7 +1867,7 @@ cli_dispatch() {
       if [[ -z $session ]]; then
         session=$(cli_auto_new_session) || return 1
         if (( want_grok )); then
-          cli_start_grok "$session" || return 1
+          cli_start_grok local "$session" || return 1
         fi
         cli_attach_one local "$session" 0
         return
@@ -1884,7 +1888,7 @@ cli_dispatch() {
         fi
       fi
       if (( want_grok )); then
-        cli_start_grok "$session" || return 1
+        cli_start_grok "$host" "$session" || return 1
       fi
       cli_attach_one "$host" "$session" 0 || return 1
       mark_last "$host"

@@ -2494,6 +2494,90 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #70: picker --start-grok types grok into this machine's tmux.
+  local grok_log
+  grok_log=$(mktemp "${TMPDIR:-/tmp}/lanjump-grok.XXXXXX") || return 1
+  HAS_TMUX=1
+  LANJUMP_GROK_BIN=grok
+  TEST_GROK_DIR=0
+  TEST_PANE_CMD=zsh
+  TEST_PANE_CWD=/tmp/typed-cwd
+  cwd_has_grok_session() { (( TEST_GROK_DIR )); }
+  tmuxx() {
+    print -r -- "$*" >>"$grok_log"
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_command* ]]; then
+          print -r -- "$TEST_PANE_CMD"
+        elif [[ $* == *pane_current_path* ]]; then
+          print -r -- "$TEST_PANE_CWD"
+        fi
+        ;;
+      send-keys) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+
+  : >"$grok_log"
+  start_grok_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log != *'send-keys -t =demo:. -- grok Enter'* ]]; then
+    print -u2 "FAIL grok/start-idle missing send-keys grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'grok -c'* ]]; then
+    print -u2 "FAIL grok/start-idle used grok -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  TEST_GROK_DIR=1
+  : >"$grok_log"
+  start_grok_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log != *'send-keys -t =demo:. -- grok -c Enter'* ]]; then
+    print -u2 "FAIL grok/start-c missing grok -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  TEST_GROK_DIR=0
+
+  TEST_PANE_CMD=grok
+  : >"$grok_log"
+  start_grok_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL grok/start-already sent keys into grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  TEST_PANE_CMD=grok-1.0.24-mac
+  : >"$grok_log"
+  start_grok_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL grok/start-grok-ver sent keys into grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  TEST_PANE_CMD=
+  : >"$grok_log"
+  start_grok_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL grok/start-unread sent keys into unread pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'-t =demo:.'* ]]; then
+    print -u2 "FAIL grok/start-unread missing pane target got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  TEST_PANE_CMD=zsh
+
+  if pick_needs_tty --start-grok; then
+    print -u2 "FAIL grok/start-no-tty --start-grok still needs tty"
+    (( fails++ ))
+  fi
+  rm -f "$grok_log"
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1

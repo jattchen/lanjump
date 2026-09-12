@@ -15,7 +15,7 @@ fi
 
 pick_needs_tty() {
   case ${1:-} in
-    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-recent|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--snapshot|--install-hooks) return 1 ;;
+    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-recent|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--start-grok|--snapshot|--install-hooks) return 1 ;;
   esac
   return 0
 }
@@ -594,6 +594,42 @@ grok_bin() {
   done
   (( $+commands[grok] )) && { print -r -- "${commands[grok]}"; return 0 }
   print -r -- grok
+}
+
+cwd_has_grok_session() {
+  local cwd=$1 enc dir
+  [[ -n $cwd ]] || return 1
+  enc=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$cwd" 2>/dev/null) || return 1
+  dir="$HOME/.grok/sessions/$enc"
+  [[ -d $dir ]]
+}
+
+# go --grok: type grok into an idle shell on this machine's tmux.
+start_grok_session() {
+  local session=$1
+  local live pane_cwd bin line target
+  [[ -n $session ]] || return 1
+  [[ $HAS_TMUX -eq 1 ]] || return 1
+  target=$(session_pane_target "$session")
+  live=$(tmuxx display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
+  live=${live##*/}
+  # Unreadable command is not an idle shell; do not send-keys into a live grok.
+  [[ -n $live ]] || return 0
+  if [[ $live == grok || $live == grok-* ]]; then
+    return 0
+  fi
+  case $live in
+    zsh|bash|sh|fish|dash|login) ;;
+    *) return 0 ;;
+  esac
+  pane_cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
+  bin=$(grok_bin)
+  if cwd_has_grok_session "$pane_cwd"; then
+    line="$bin -c"
+  else
+    line="$bin"
+  fi
+  tmuxx send-keys -t "$target" -- "$line" Enter
 }
 
 resume_line_for() {
@@ -3985,6 +4021,13 @@ if [[ ${1:-} == --has-session ]]; then
   [[ -n $name ]] || exit 1
   [[ $HAS_TMUX -eq 1 ]] || exit 1
   tmuxx has-session -t "=$name" 2>/dev/null
+  exit $?
+fi
+
+if [[ ${1:-} == --start-grok ]]; then
+  name=${2:-}
+  [[ -n $name ]] || exit 1
+  start_grok_session "$name"
   exit $?
 fi
 
