@@ -1414,12 +1414,15 @@ forget_item() {
   print "忘掉「${name}」？只删本机记录，不动对方。"
   print -n "确认请输入 y，其他键取消: "
   local ans
-  read -r ans </dev/tty
+  cli_tty_read ans
   setup_tty
   if [[ $ans == y || $ans == Y ]]; then
     forget_saved "${items_saved[$i]}"
     load_hosts
     build_items
+    if [[ $(read_last) == "$name" ]]; then
+      mark_last local
+    fi
     notice="已忘掉 ${name}。"
   fi
 }
@@ -1485,6 +1488,10 @@ default_cli_host() {
   local last
   last=$(read_last) || last=local
   if [[ -z $last || $last == host ]]; then
+    print -r -- local
+    return
+  fi
+  if [[ $last != local ]] && ! find_host_index "$last" >/dev/null; then
     print -r -- local
     return
   fi
