@@ -3,6 +3,7 @@
 # sort_session_items, toggle_sort_mode, filter_session_items,
 # toggle_session_filter, save_session_filter, load_session_filter,
 # bulk_idle_unpinned_names, delete_idle_unpinned_sessions,
+# forget_killed_session, drop_snap_record,
 # session_delete_needs_pin_warning, pin_delete_warning_text,
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
@@ -1114,6 +1115,151 @@ pick_selftest() {
   fi
   if [[ $killed == *idle-pin* || $killed == *busy-free* || $killed == *busy-pin* ]]; then
     print -u2 "FAIL pin/bulk-kill hit protected session got=$(printf %q "$killed")"
+    (( fails++ ))
+  fi
+
+  # #93: last-session delete must persist an empty snapshot. load_items
+  # skips snapshot_live_sessions when list-sessions is empty, so the
+  # kill path itself has to drop the name from snap/pin.
+  setup_last_snap() {
+    local gone=$1
+    shift
+    snap_names=("$@")
+    snap_cwd=()
+    snap_occupied=()
+    snap_workspace=()
+    snap_cmd=()
+    snap_attached=()
+    local n
+    for n in "${snap_names[@]}"; do
+      snap_cwd[$n]=/tmp/$n
+      snap_occupied[$n]=1
+      snap_workspace[$n]=1
+      snap_cmd[$n]=zsh
+      snap_attached[$n]=$EPOCHSECONDS
+    done
+    save_session_snapshot
+    pinned_names=()
+    pinned_cwd=()
+    pinned_grok=()
+    : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    items_kind=(session new shell hosts quit)
+    items_id=("$gone" new shell hosts quit)
+    items_name=("${items_id[@]}")
+    items_att=(0 '' '' '' '')
+    items_pinned=(0 '' '' '' '')
+    items_time=('01-01 00:00' '' '' '' '')
+    items_activity=(1 '' '' '' '')
+    items_path=('~/gone' '' '' '' '')
+    items_summary=(sa '' '' '' '')
+    items_cmd=(zsh '' '' '' '')
+    cursor=1
+    HAS_TMUX=1
+  }
+
+  setup_last_snap last-one last-one
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      kill-session) return 0 ;;
+      list-sessions) return 1 ;;
+      has-session) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  delete_idle_unpinned_sessions
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)last-one]} -ne 0 ]]; then
+    print -u2 "FAIL delete/last-snap still has last-one got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  session_snapshot_file
+  if grep -qx 'name last-one' "$REPLY"; then
+    print -u2 "FAIL delete/last-snap file still has last-one"
+    (( fails++ ))
+  fi
+  if should_restore_sessions; then
+    print -u2 "FAIL delete/last-snap should not restore after last kill"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  restore_saved_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'new-session -d -s last-one'* ]]; then
+    print -u2 "FAIL delete/last-snap restored last-one got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  setup_last_snap gone keep gone
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      kill-session) return 0 ;;
+      list-sessions) return 1 ;;
+      has-session) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  delete_idle_unpinned_sessions
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)gone]} -ne 0 ]]; then
+    print -u2 "FAIL delete/keep-snap still has gone got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  if [[ ${snap_names[(Ie)keep]} -eq 0 ]]; then
+    print -u2 "FAIL delete/keep-snap dropped keep got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+
+  setup_last_snap last-one last-one
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      kill-session) return 1 ;;
+      list-sessions) return 1 ;;
+      has-session) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  delete_idle_unpinned_sessions
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)last-one]} -eq 0 ]]; then
+    print -u2 "FAIL delete/failed-kill dropped last-one from snap"
+    (( fails++ ))
+  fi
+
+  if [[ ${functions[prompt_delete]} != *forget_killed_session* ]]; then
+    print -u2 "FAIL delete/prompt missing forget_killed_session"
+    (( fails++ ))
+  fi
+  if [[ ${functions[delete_idle_unpinned_sessions]} != *forget_killed_session* ]]; then
+    print -u2 "FAIL delete/bulk missing forget_killed_session"
+    (( fails++ ))
+  fi
+
+  setup_last_snap last-one last-one
+  add_pin_record last-one /tmp/last-one
+  forget_killed_session last-one
+  load_session_snapshot
+  load_pinned_sessions
+  if [[ ${snap_names[(Ie)last-one]} -ne 0 ]]; then
+    print -u2 "FAIL delete/forget-snap still has last-one got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  if pin_record_exists last-one; then
+    print -u2 "FAIL delete/forget-pin still has last-one"
+    (( fails++ ))
+  fi
+  session_snapshot_file
+  if grep -qx 'name last-one' "$REPLY"; then
+    print -u2 "FAIL delete/forget-snap file still has last-one"
+    (( fails++ ))
+  fi
+  if should_restore_sessions; then
+    print -u2 "FAIL delete/forget-pin should not restore"
     (( fails++ ))
   fi
 
