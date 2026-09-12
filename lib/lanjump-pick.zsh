@@ -2656,13 +2656,53 @@ ghostty_osascript_for_sessions() {
   done
   if (( ghostty_close_others )); then
     print -r -- '  delay 0.3'
+    print -r -- '  set keepId to id of win'
     print -r -- '  repeat with i in preexisting'
     print -r -- '    try'
     print -r -- '      close (first window whose id is i)'
     print -r -- '    end try'
     print -r -- '  end repeat'
+    print -r -- '  set extraIds to {}'
+    print -r -- '  repeat with w in (get windows)'
+    print -r -- '    try'
+    print -r -- '      if (id of w) is not keepId then set end of extraIds to id of w'
+    print -r -- '    end try'
+    print -r -- '  end repeat'
+    print -r -- '  repeat with extraId in extraIds'
+    print -r -- '    try'
+    print -r -- '      set extraId to contents of extraId'
+    print -r -- '      close window (first window whose id is extraId)'
+    print -r -- '    end try'
+    print -r -- '  end repeat'
+    print -r -- '  activate window win'
   fi
   print -r -- '  activate'
+  print -r -- 'end tell'
+}
+
+# First-launch welcome pane, not a home-cwd session tab (both can be titled "~").
+ghostty_close_welcome_osascript() {
+  print -r -- 'tell application "System Events"'
+  print -r -- '  tell process "Ghostty"'
+  print -r -- '    set keepWin to missing value'
+  print -r -- '    try'
+  print -r -- '      if (count of windows) > 0 then set keepWin to front window'
+  print -r -- '    end try'
+  print -r -- '    if keepWin is missing value then return'
+  print -r -- '    set keepId to id of keepWin'
+  print -r -- '    set extraIds to {}'
+  print -r -- '    repeat with w in (get windows)'
+  print -r -- '      try'
+  print -r -- '        if (id of w) is not keepId then set end of extraIds to id of w'
+  print -r -- '      end try'
+  print -r -- '    end repeat'
+  print -r -- '    repeat with extraId in extraIds'
+  print -r -- '      try'
+  print -r -- '        set extraId to contents of extraId'
+  print -r -- '        perform action "AXPress" of (first button of (first window whose id is extraId) whose subrole is "AXCloseButton")'
+  print -r -- '      end try'
+  print -r -- '    end repeat'
+  print -r -- '  end tell'
   print -r -- 'end tell'
 }
 
@@ -2761,19 +2801,7 @@ open_ghostty_session_tabs() {
     return 1
   }
   if (( ghostty_close_others )); then
-    /usr/bin/osascript <<'APPLESCRIPT' 2>/dev/null || true
-tell application "System Events"
-  tell process "Ghostty"
-    repeat with w in windows
-      try
-        if name of w is "~" then
-          perform action "AXPress" of (first button of w whose subrole is "AXCloseButton")
-        end if
-      end try
-    end repeat
-  end tell
-end tell
-APPLESCRIPT
+    ghostty_close_welcome_osascript | /usr/bin/osascript 2>/dev/null || true
   fi
 }
 

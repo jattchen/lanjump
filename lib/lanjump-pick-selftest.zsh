@@ -11,7 +11,7 @@
 # has_named_session, ensure_named_session_for_attach, print_recent_names,
 # print_session_list,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
-# terminal_osascript_for_sessions,
+# ghostty_close_welcome_osascript, terminal_osascript_for_sessions,
 # attaching_remote_host, attach_spec_for, attach_command_for, open_named_tabs,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
@@ -3463,6 +3463,48 @@ pick_selftest() {
     print -u2 "FAIL ghostty/script-compile $(<"$testhome/osacompile.err") got=$(printf %q "$script")"
     (( fails++ ))
   fi
+
+  # #170: first-launch close-others must not AXPress-close a home-cwd session titled "~".
+  snap_cwd[home-tilde]=$HOME
+  script=$(ghostty_osascript_for_sessions home-tilde)
+  tabs_src=${functions[open_ghostty_session_tabs]}
+  welcome=
+  if (( ${+functions[ghostty_close_welcome_osascript]} )); then
+    welcome=$(ghostty_close_welcome_osascript)
+  else
+    print -u2 "FAIL ghostty/close-others-home-tilde missing ghostty_close_welcome_osascript"
+    (( fails++ ))
+  fi
+  close_src=$script$'\n'$welcome$'\n'$tabs_src
+  if [[ $close_src == *'name of w is "~"'* ]]; then
+    print -u2 "FAIL ghostty/close-others-home-tilde closes windows titled ~ got=$(printf %q "$script"$'\n'"$welcome")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'set keepId to id of win'* || $script != *'is not keepId'* ]]; then
+    print -u2 "FAIL ghostty/close-others-home-tilde missing keep-new-window guard got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $welcome != *'AXPress'* || $welcome != *'keepId'* || $welcome != *'is not keepId'* ]]; then
+    print -u2 "FAIL ghostty/close-others-home-tilde welcome close not distinct from session tab got=$(printf %q "$welcome")"
+    (( fails++ ))
+  fi
+  if [[ $tabs_src != *ghostty_close_welcome_osascript* ]]; then
+    print -u2 "FAIL ghostty/close-others-home-tilde open path skips welcome closer"
+    (( fails++ ))
+  fi
+  print -r -- "$script" >"$testhome/ghostty-home.applescript"
+  if ! /usr/bin/osacompile -o "$testhome/ghostty-home.scpt" "$testhome/ghostty-home.applescript" 2>"$testhome/osacompile-home.err"; then
+    print -u2 "FAIL ghostty/close-others-home-compile $(<"$testhome/osacompile-home.err") got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ -n $welcome ]]; then
+    print -r -- "$welcome" >"$testhome/ghostty-welcome.applescript"
+    if ! /usr/bin/osacompile -o "$testhome/ghostty-welcome.scpt" "$testhome/ghostty-welcome.applescript" 2>"$testhome/osacompile-welcome.err"; then
+      print -u2 "FAIL ghostty/welcome-compile $(<"$testhome/osacompile-welcome.err") got=$(printf %q "$welcome")"
+      (( fails++ ))
+    fi
+  fi
+  unset 'snap_cwd[home-tilde]'
   ghostty_close_others=0
 
   attach_shell_only=1
