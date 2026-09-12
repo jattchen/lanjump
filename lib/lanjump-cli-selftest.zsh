@@ -1105,6 +1105,40 @@ expect_contains go-remote-missing/session-msg '没有 session「demo」' "$out"
 hay=$(read_log)
 expect_absent go-remote-missing/no-new 'NEW ' "$hay"
 
+# #183: missing dotted name must fail before the create/pin prompts.
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=(y y)
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+out=$(cli_dispatch go web.api 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-invalid-dot/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-invalid-dot/msg '名称不能包含冒号或点' "$out"
+expect_absent go-invalid-dot/no-prompt '要新建并打开吗' "$out"
+hay=$(read_log)
+expect_absent go-invalid-dot/no-new 'NEW ' "$hay"
+expect_absent go-invalid-dot/no-last 'LAST ' "$hay"
+
+# Existing dotted name still attaches if has-session succeeds.
+CLI_HAS_SESSION=1
+CLI_TTY_REPLIES=()
+: >"$log"
+st=0
+out=$(cli_dispatch go web.api 2>&1) || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-existing-dot/status got $st want 0"
+  (( fails++ ))
+fi
+expect_absent go-existing-dot/no-invalid '名称不能包含冒号或点' "$out"
+expect_absent go-existing-dot/no-prompt '要新建并打开吗' "$out"
+hay=$(read_log)
+expect_contains go-existing-dot/has 'HAS host=local session=web.api' "$hay"
+expect_contains go-existing-dot/attach 'PICK_EXEC --attach web.api' "$hay"
+expect_absent go-existing-dot/no-new 'NEW ' "$hay"
+
 CLI_HAS_SESSION=1
 CLI_TTY_REPLIES=()
 LANJUMP_GROK_BIN=grok

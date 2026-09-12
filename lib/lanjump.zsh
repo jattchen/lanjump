@@ -1859,6 +1859,13 @@ cli_new_session() {
   fi
 }
 
+# Colon/dot collide with CLI host:session. Same rule as picker n / --new-session.
+session_name_invalid() {
+  [[ -n ${1:-} && ( $1 == *:* || $1 == *.* ) ]] || return 1
+  print -r -- "名称不能包含冒号或点。"
+  return 0
+}
+
 cli_list_names() {
   local host=$1 flag=$2
   if [[ $host == local ]]; then
@@ -1988,6 +1995,10 @@ cli_dispatch() {
         # #175: remote connect/login/sync failure is not a missing session.
         if [[ $host != local ]] && (( has_st != 1 )); then
           return $has_st
+        fi
+        # #183: colon/dot names cannot be created; do not ask first.
+        if session_name_invalid "$session"; then
+          return 1
         fi
         print "没有 session「${session}」。"
         print -n "要新建并打开吗？（回车或 y=是，其他键=否） "
