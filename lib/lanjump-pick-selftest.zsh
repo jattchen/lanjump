@@ -2257,6 +2257,10 @@ pick_selftest() {
   expect_key key/delete other $'\e[3~'
   expect_key key/csi-u-s-enter other $'\e[13;2u'
   expect_key key/q q q
+  expect_key key/j up j
+  expect_key key/k down k
+  expect_key key/J up J
+  expect_key key/K down K
   expect_key key/esc esc $'\e'
 
   local k1=EOF k2=EOF
@@ -2312,6 +2316,16 @@ pick_selftest() {
   expect restore/csi-pgdn other "$REPLY"
   if [[ ${functions[restore_read_key]} != *restore_csi_key* ]]; then
     print -u2 "FAIL restore/read-key missing restore_csi_key got=$(printf %q "${functions[restore_read_key]}")"
+    (( fails++ ))
+  fi
+  # restore_read_key uses read -k (needs a tty). Collapse spaces; zsh prints (j | J).
+  local restore_compact=${functions[restore_read_key]//[$' \t\n']/}
+  if [[ $restore_compact != *'j|J)REPLY=up'* ]]; then
+    print -u2 "FAIL restore/j want j=up"
+    (( fails++ ))
+  fi
+  if [[ $restore_compact != *'k|K)REPLY=down'* ]]; then
+    print -u2 "FAIL restore/k want k=down"
     (( fails++ ))
   fi
 

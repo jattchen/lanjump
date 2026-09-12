@@ -1683,8 +1683,8 @@ restore_read_key() {
     ' ') REPLY=space ;;
     2) REPLY=two ;;
     q|Q) REPLY=q ;;
-    j|J) REPLY=down ;;
-    k|K) REPLY=up ;;
+    j|J) REPLY=up ;;
+    k|K) REPLY=down ;;
     *) REPLY=other ;;
   esac
 }
