@@ -4174,9 +4174,15 @@ ensure_named_session_for_attach() {
   return 1
 }
 
+# Restore before listing so pins matches work/list (#137).
 print_pinned_names() {
   load_pinned_sessions
-  restore_pinned_sessions
+  load_session_snapshot
+  if should_restore_sessions; then
+    restore_saved_sessions
+  else
+    restore_pinned_sessions
+  fi
   local n
   for n in "${pinned_names[@]}"; do
     [[ -n $n ]] || continue

@@ -526,6 +526,18 @@ fi
 expect_contains list/restore-gate should_restore_sessions "$list_src"
 expect_contains list/restore-saved restore_saved_sessions "$list_src"
 
+# #137: pins/--print-pinned must restore like work/list before listing pins.
+pins_src=
+if [[ -f $pick_file ]]; then
+  pins_src=$(awk '
+    /^print_pinned_names\(\)/ {p=1}
+    p {print}
+    p && /^}/ {exit}
+  ' "$pick_file")
+fi
+expect_contains pins/restore-gate should_restore_sessions "$pins_src"
+expect_contains pins/restore-saved restore_saved_sessions "$pins_src"
+
 # #124: --attach must restore like go/--has-session before attaching.
 attach_src=
 ensure_src=
