@@ -2541,14 +2541,29 @@ terminal_osascript_for_sessions() {
   cmd=$(attach_command_for "$first")
   print -r -- 'tell application "Terminal"'
   print -r -- '  activate'
-  print -r -- "  set t to do script \"${cmd}\""
-  if (( $# )); then
-    print -r -- '  set w to window of t'
-    for n in "$@"; do
-      cmd=$(attach_command_for "$n")
-      print -r -- "  do script \"${cmd}\" in w"
-    done
+  if [[ $open_placement == tab ]]; then
+    print -r -- '  set w to missing value'
+    print -r -- '  try'
+    print -r -- '    if (count of windows) > 0 then set w to front window'
+    print -r -- '  end try'
+    print -r -- '  if w is missing value then'
+    print -r -- "    set t to do script \"${cmd}\""
+    if (( $# )); then
+      print -r -- '    set w to window of t'
+    fi
+    print -r -- '  else'
+    print -r -- "    set t to do script \"${cmd}\" in w"
+    print -r -- '  end if'
+  else
+    print -r -- "  set t to do script \"${cmd}\""
+    if (( $# )); then
+      print -r -- '  set w to window of t'
+    fi
   fi
+  for n in "$@"; do
+    cmd=$(attach_command_for "$n")
+    print -r -- "  do script \"${cmd}\" in w"
+  done
   print -r -- 'end tell'
 }
 
