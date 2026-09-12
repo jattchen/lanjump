@@ -2425,9 +2425,13 @@ ghostty_attach_helper() {
   print -r -- "${LANJUMP_GHOSTTY_ATTACH:-$HOME/Library/Application Support/lanjump/lanjump-ghostty-attach}"
 }
 
+attaching_remote_host() {
+  [[ -n ${LANJUMP_ATTACH_HOST:-} && ${LANJUMP_ATTACH_HOST} != local ]]
+}
+
 attach_spec_for() {
   local name=$1 host=${LANJUMP_ATTACH_HOST:-}
-  if [[ -n $host && $host != local ]]; then
+  if attaching_remote_host; then
     print -r -- "${host}:${name}"
   else
     print -r -- "$name"
@@ -2594,7 +2598,7 @@ open_ghostty_session_tabs() {
   fi
   todo=()
   for n in "$@"; do
-    if session_has_live_client "$n" && [[ -n $titles && ( $titles == *$'\n'"$n"$'\n'* || $titles == "$n"$'\n'* || $titles == *$'\n'"$n" || $titles == "$n" ) ]]; then
+    if ! attaching_remote_host && session_has_live_client "$n" && [[ -n $titles && ( $titles == *$'\n'"$n"$'\n'* || $titles == "$n"$'\n'* || $titles == *$'\n'"$n" || $titles == "$n" ) ]]; then
       ghostty_focus_session "$n" || true
       continue
     fi
@@ -2658,6 +2662,35 @@ open_workspace_tabs() {
   fi
   print -u2 "没有可用的本机终端来打开窗口。"
   return 1
+}
+
+# CLI --open-tabs. Remote host:name never attaches a local tmux session here.
+open_named_tabs() {
+  local n name keys
+  (( $# )) || {
+    print -u2 "没有可打开的 session。"
+    return 1
+  }
+  if (( ! attach_shell_only )) && ! attaching_remote_host; then
+    for n in "$@"; do
+      maybe_resume_last_command "$n"
+    done
+  fi
+  if attaching_remote_host || [[ $(effective_open_target $# 1) != current ]]; then
+    open_workspace_tabs "$@"
+    return $?
+  fi
+  name=$1
+  mark_snapshot_occupied "$name"
+  remember_last_session "$name"
+  tmux_prepare_color
+  tmux_prepare_keys
+  keys=
+  if local_keyboard && keys=$(keys_bin); then
+    exec "$keys" "$TMUX_BIN" attach-session -t "=$name"
+  else
+    exec "$TMUX_BIN" attach-session -t "=$name"
+  fi
 }
 
 maybe_restore_sessions() {
@@ -4243,29 +4276,7 @@ if [[ ${1:-} == --open-tabs ]]; then
   load_settings
   load_pinned_sessions
   load_session_snapshot
-  if (( ! attach_shell_only )); then
-    for n in "${names[@]}"; do
-      maybe_resume_last_command "$n"
-    done
-  fi
-  if [[ $(effective_open_target ${#names} 1) == current ]]; then
-    name=${names[1]:-}
-    if [[ -z $name ]]; then
-      print -u2 "没有可打开的 session。"
-      exit 1
-    fi
-    mark_snapshot_occupied "$name"
-    remember_last_session "$name"
-    tmux_prepare_color
-    tmux_prepare_keys
-    keys=
-    if local_keyboard && keys=$(keys_bin); then
-      exec "$keys" "$TMUX_BIN" attach-session -t "=$name"
-    else
-      exec "$TMUX_BIN" attach-session -t "=$name"
-    fi
-  fi
-  open_workspace_tabs "${names[@]}"
+  open_named_tabs "${names[@]}"
   exit $?
 fi
 
