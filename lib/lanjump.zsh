@@ -1143,6 +1143,11 @@ read_key() {
   if [[ $k == $'\e' ]]; then
     read_byte 0.2 || { REPLY=esc; return 0 }
     k2=$REPLY
+    # lanjump-keys rewrites Ghostty Shift+Enter to Alt+Enter (ESC CR).
+    if [[ $k2 == $'\r' || $k2 == $'\n' ]]; then
+      REPLY=other
+      return 0
+    fi
     if [[ $k2 == '[' || $k2 == 'O' ]]; then
       read_byte 0.2 || { REPLY=esc; return 0 }
       k3=$REPLY
