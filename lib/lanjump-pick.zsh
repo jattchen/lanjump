@@ -4201,22 +4201,30 @@ print_recent_names() {
   (( n ))
 }
 
-if [[ ${1:-} == --pick-selftest ]]; then
-  . "${0:A:h}/lanjump-pick-selftest.zsh"
-  pick_selftest
-  exit $?
-fi
-
+# Restore before listing so list matches last/work (#134).
 print_session_list() {
   local line
   local -a raw
   [[ $HAS_TMUX -eq 1 ]] || return 0
+  load_pinned_sessions
+  load_session_snapshot
+  if should_restore_sessions; then
+    restore_saved_sessions
+  else
+    restore_pinned_sessions
+  fi
   raw=("${(@f)$(tmuxx list-sessions -F $'#{session_name}\t#{?session_attached,占用中,空闲}\t#{pane_current_command}\t#{pane_current_path}' 2>/dev/null)}")
   (( ${#raw} )) || return 0
   for line in "${raw[@]}"; do
     [[ -n $line ]] && print -r -- "$line"
   done
 }
+
+if [[ ${1:-} == --pick-selftest ]]; then
+  . "${0:A:h}/lanjump-pick-selftest.zsh"
+  pick_selftest
+  exit $?
+fi
 
 if [[ ${1:-} == --snapshot ]]; then
   run_session_snapshot

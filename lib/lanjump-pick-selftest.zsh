@@ -9,6 +9,7 @@
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
 # has_named_session, ensure_named_session_for_attach, print_recent_names,
+# print_session_list,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # terminal_osascript_for_sessions,
 # attaching_remote_host, attach_spec_for, attach_command_for, open_named_tabs,
@@ -2070,6 +2071,116 @@ pick_selftest() {
   restore_log=$(<"$tmux_log")
   if [[ $restore_log == *'new-session -d -s '* ]]; then
     print -u2 "FAIL recent/print-none restored sessions got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # #134: list/--print-sessions must restore like last/work before listing.
+  if [[ ${functions[print_session_list]:-} != *should_restore_sessions* ]]; then
+    print -u2 "FAIL list/print missing should_restore_sessions got=$(printf %q "${functions[print_session_list]:-}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[print_session_list]:-} != *restore_saved_sessions* ]]; then
+    print -u2 "FAIL list/print missing restore_saved_sessions got=$(printf %q "${functions[print_session_list]:-}")"
+    (( fails++ ))
+  fi
+
+  session_list_tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions)
+        (( ${#mock_live} )) || return 1
+        if [[ $* == *-F* ]]; then
+          local k
+          for k in ${(k)mock_live}; do
+            print -r -- "$k"$'\t'"空闲"$'\t'"zsh"$'\t'"${snap_cwd[$k]:-/tmp/$k}"
+          done
+        fi
+        return 0
+        ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+
+  # kill-server / no live sessions: restore snapshot names then list them.
+  : >"$tmux_log"
+  mock_live=()
+  did_restore=0
+  snap_names=(demo)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[demo]=/tmp/demo
+  snap_occupied[demo]=1
+  snap_workspace[demo]=1
+  snap_attached[demo]=$EPOCHSECONDS
+  save_session_snapshot
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() { session_list_tmuxx "$@" }
+  if (( ${+functions[print_session_list]} )); then
+    got=$(print_session_list)
+  else
+    got=
+    print -u2 "FAIL list/print-empty print_session_list missing"
+    (( fails++ ))
+  fi
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
+    print -u2 "FAIL list/print-empty missing demo new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $got != *demo* ]]; then
+    print -u2 "FAIL list/print-empty missing demo got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+
+  # #80/#134: anything restoreable already live skips full restore.
+  setup_partial_pins
+  tmuxx() { session_list_tmuxx "$@" }
+  if (( ${+functions[print_session_list]} )); then
+    got=$(print_session_list)
+  else
+    got=
+    print -u2 "FAIL list/print-partial print_session_list missing"
+    (( fails++ ))
+  fi
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
+    print -u2 "FAIL list/print-partial missing lj-pin-gone got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
+    print -u2 "FAIL list/print-partial restored unpinned workspace got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s lj-pin-keep'* ]]; then
+    print -u2 "FAIL list/print-partial recreated live pin got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $got != *lj-pin-keep* ]]; then
+    print -u2 "FAIL list/print-partial missing live pin got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got != *lj-pin-gone* ]]; then
+    print -u2 "FAIL list/print-partial missing restored pin got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got != *ws-live* ]]; then
+    print -u2 "FAIL list/print-partial missing live workspace got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got == *ws-gone* ]]; then
+    print -u2 "FAIL list/print-partial listed killed unpinned workspace got=$(printf %q "$got")"
     (( fails++ ))
   fi
 
