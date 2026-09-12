@@ -1371,6 +1371,40 @@ numeric_session_name() {
   [[ -n ${1:-} && $1 == [0-9]## ]]
 }
 
+# Unique non-numeric name so a pinned leftover 0/1 can restore (#145).
+unique_non_numeric_session_name() {
+  local base candidate
+  local -i n=0
+  base="s-${EPOCHSECONDS}"
+  candidate=$base
+  while (( n < 32 )); do
+    if ! pin_record_exists "$candidate" && ! tmuxx has-session -t "=$candidate" 2>/dev/null; then
+      REPLY=$candidate
+      return 0
+    fi
+    (( ++n ))
+    candidate="${base}-${n}"
+  done
+  REPLY="${base}-$$"
+}
+
+# Restore skips 0/1; rename first, then pin the new name (#145).
+ensure_pinnable_session_name() {
+  local name=$1 new
+  REPLY=$name
+  [[ -n $name ]] || return 1
+  numeric_session_name "$name" || return 0
+  load_pinned_sessions
+  unique_non_numeric_session_name
+  new=$REPLY
+  tmuxx rename-session -t "=$name" "$new" 2>/dev/null || {
+    REPLY=$name
+    return 1
+  }
+  rename_snap_record "$name" "$new"
+  REPLY=$new
+}
+
 lanjump_foreign_session() {
   [[ -n ${1:-} && $1 == bmx-* ]]
 }
@@ -2878,23 +2912,30 @@ toggle_session_pin() {
   if [[ ${items_kind[$cursor]:-} != session ]]; then
     return
   fi
-  local name=${items_id[$cursor]} cwd pid grok
+  local name=${items_id[$cursor]} old cwd pid grok
   local -i i on=0
+  old=$name
   if [[ ${items_pinned[$cursor]:-0} == 1 ]]; then
     remove_pin_record "$name"
     tmux_set_pinned "$name" 0
     on=0
   else
+    ensure_pinnable_session_name "$name" || return
+    name=$REPLY
     cwd=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_path}' 2>/dev/null || true)
     pid=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_pid}' 2>/dev/null || true)
     grok=$(grok_id_for_pid "$pid")
     add_pin_record "$name" "$cwd" "$grok"
     tmux_set_pinned "$name" 1
     on=1
+    items_id[$cursor]=$name
+    items_name[$cursor]=$name
   fi
   items_pinned[$cursor]=$on
   for (( i = 1; i <= ${#all_id}; i++ )); do
-    if [[ ${all_id[$i]} == "$name" ]]; then
+    if [[ ${all_id[$i]} == "$old" ]]; then
+      all_id[$i]=$name
+      all_name[$i]=$name
       all_pinned[$i]=$on
       break
     fi
@@ -4005,9 +4046,12 @@ prompt_new() {
   if [[ -n $name ]] && tmuxx has-session -t "=$name" 2>/dev/null; then
     print "session「${name}」已存在，直接进入。"
     if (( pin )); then
-      cwd=$(prompt_new_pin_cwd "$name")
-      add_pin_record "$name" "${cwd:-}" ""
-      tmux_set_pinned "$name" 1
+      if ensure_pinnable_session_name "$name"; then
+        name=$REPLY
+        cwd=$(prompt_new_pin_cwd "$name")
+        add_pin_record "$name" "${cwd:-}" ""
+        tmux_set_pinned "$name" 1
+      fi
     fi
     attach_named_session "$name" 0 $want_new
   else
@@ -4034,9 +4078,12 @@ prompt_new() {
       created=$name
     fi
     if (( pin )); then
-      cwd=$(prompt_new_pin_cwd "$created")
-      add_pin_record "$created" "${cwd:-}" ""
-      tmux_set_pinned "$created" 1
+      if ensure_pinnable_session_name "$created"; then
+        created=$REPLY
+        cwd=$(prompt_new_pin_cwd "$created")
+        add_pin_record "$created" "${cwd:-}" ""
+        tmux_set_pinned "$created" 1
+      fi
     fi
     mark_snapshot_occupied "$created"
     attach_named_session "$created" 0 $want_new
