@@ -1530,24 +1530,36 @@ snapshot_live_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   tmux_server_running || return 0
   local line name cwd att cmd
-  local -a raw f names
-  typeset -A prev_ws prev_cmd prev_cwd prev_att prev_seen
-  local n
+  local -a raw f names prev_names
+  typeset -A prev_ws prev_cmd prev_cwd prev_att prev_seen live_seen
+  local n keep_missing=0
   for n in "${snap_names[@]}"; do
+    [[ -n $n ]] || continue
     prev_ws[$n]=${snap_workspace[$n]:-${snap_occupied[$n]:-0}}
     prev_cmd[$n]=${snap_cmd[$n]:-}
     prev_cwd[$n]=${snap_cwd[$n]:-}
     prev_att[$n]=${snap_attached[$n]:-0}
+    if (( ! ${prev_seen[$n]:-0} )); then
+      prev_names+=("$n")
+    fi
     prev_seen[$n]=1
   done
   load_session_snapshot
   for n in "${snap_names[@]}"; do
+    [[ -n $n ]] || continue
     prev_ws[$n]=${snap_workspace[$n]:-${snap_occupied[$n]:-0}}
     prev_cmd[$n]=${snap_cmd[$n]:-}
     prev_cwd[$n]=${snap_cwd[$n]:-}
     prev_att[$n]=${snap_attached[$n]:-0}
+    if (( ! ${prev_seen[$n]:-0} )); then
+      prev_names+=("$n")
+    fi
     prev_seen[$n]=1
   done
+  # First paint can snapshot leftover tmux before restore; keep missing names (#141).
+  if should_restore_sessions; then
+    keep_missing=1
+  fi
   snap_names=()
   snap_cwd=()
   snap_occupied=()
@@ -1588,6 +1600,21 @@ snapshot_live_sessions() {
       snap_attached[$name]=${prev_att[$name]:-0}
     fi
   done
+  if (( keep_missing )); then
+    for n in "${snap_names[@]}"; do
+      live_seen[$n]=1
+    done
+    for n in "${prev_names[@]}"; do
+      [[ -n $n ]] || continue
+      (( ${live_seen[$n]:-0} )) && continue
+      snap_names+=("$n")
+      snap_cwd[$n]=${prev_cwd[$n]:-}
+      snap_cmd[$n]=${prev_cmd[$n]:-}
+      snap_occupied[$n]=0
+      snap_workspace[$n]=${prev_ws[$n]:-0}
+      snap_attached[$n]=${prev_att[$n]:-0}
+    done
+  fi
   save_session_snapshot
 }
 

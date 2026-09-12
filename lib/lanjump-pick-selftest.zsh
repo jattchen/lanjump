@@ -1633,6 +1633,121 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #141: leftover live session after kill-server must not wipe unpinned
+  # restoreable snapshot names before maybe_restore_sessions runs.
+  setup_leftover_live() {
+    : >"$tmux_log"
+    mock_live=()
+    mock_live[leftover]=1
+    did_restore=0
+    snap_names=(demo)
+    snap_cwd=()
+    snap_occupied=()
+    snap_workspace=()
+    snap_cmd=()
+    snap_attached=()
+    snap_cwd[demo]=/tmp/demo
+    snap_occupied[demo]=1
+    snap_workspace[demo]=1
+    snap_cmd[demo]=zsh
+    snap_attached[demo]=$EPOCHSECONDS
+    pinned_names=()
+    pinned_cwd=()
+    pinned_grok=()
+    : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    save_session_snapshot
+    HAS_TMUX=1
+    cursor=1
+    tmuxx() {
+      print -r -- "$*" >>"$tmux_log"
+      case $1 in
+        list-sessions)
+          if [[ $* == *-F* ]]; then
+            if [[ $* == *session_activity* ]]; then
+              print -r -- $'1\x1fleftover\x1f1\x1f0\x1f/tmp/leftover\x1fzsh\x1fzsh\x1fzsh'
+            else
+              print -r -- $'leftover\x1f/tmp/leftover\x1f0\x1fzsh'
+            fi
+          else
+            print -r -- leftover
+          fi
+          return 0
+          ;;
+        has-session)
+          [[ $2 == -t ]] || return 1
+          (( ${mock_live[${3#=}]:-0} )) && return 0
+          return 1
+          ;;
+        new-session)
+          mock_live_from_new_session "$@"
+          return 0
+          ;;
+        *) return 0 ;;
+      esac
+    }
+  }
+
+  setup_leftover_live
+  load_pinned_sessions
+  load_session_snapshot
+  if ! should_restore_sessions; then
+    print -u2 "FAIL snap/leftover-gate should restore demo"
+    (( fails++ ))
+  fi
+  snapshot_live_sessions
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)demo]} -eq 0 ]]; then
+    print -u2 "FAIL snap/leftover-keep dropped demo got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  expect snap/leftover-keep-cwd /tmp/demo "${snap_cwd[demo]:-}"
+  expect snap/leftover-keep-cmd zsh "${snap_cmd[demo]:-}"
+  if [[ ${snap_names[(Ie)leftover]} -eq 0 ]]; then
+    print -u2 "FAIL snap/leftover-keep missing leftover got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  restore_saved_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
+    print -u2 "FAIL snap/leftover-restore missing demo got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  setup_leftover_live
+  load_items
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)demo]} -eq 0 ]]; then
+    print -u2 "FAIL load/leftover-keep dropped demo got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  if [[ ${items_id[(Ie)leftover]} -eq 0 ]]; then
+    print -u2 "FAIL load/leftover-paint missing leftover got=${items_id[*]}"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  restore_saved_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
+    print -u2 "FAIL load/leftover-restore missing demo got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # #80: a live restoreable pin still lets snapshot drop killed unpinned.
+  setup_partial_pins
+  load_pinned_sessions
+  load_session_snapshot
+  if should_restore_sessions; then
+    print -u2 "FAIL snap/partial-gate should skip full restore"
+    (( fails++ ))
+  fi
+  snapshot_live_sessions
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)ws-gone]} -ne 0 ]]; then
+    print -u2 "FAIL snap/partial-drop still has ws-gone got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+
   # #137: pins/--print-pinned must restore like work/list before listing pins.
   if [[ ${functions[print_pinned_names]:-} != *should_restore_sessions* ]]; then
     print -u2 "FAIL pin/print missing should_restore_sessions got=$(printf %q "${functions[print_pinned_names]:-}")"
