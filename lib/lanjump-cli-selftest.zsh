@@ -153,6 +153,7 @@ sync_picker() {
 
 ssh_tty() {
   print -r -- "REMOTE_SSH ${(j: :)${(q)@}}" >>"$LANJUMP_CLI_TEST_LOG"
+  print -r -- "REMOTE_CMD ${@[-1]}" >>"$LANJUMP_CLI_TEST_LOG"
   return 0
 }
 
@@ -216,6 +217,26 @@ expect_eq() {
 : >"$log"
 cli_open_tabs studio lanjump
 assert_remote_open remote/open-tabs "$(read_log)" lanjump
+
+# #110: CLI SSH into the remote picker must carry the same Apple Terminal
+# env as host-list connect_item. Otherwise tmux_prepare_color treats the
+# remote as RGB-capable and Grok's 24-bit background becomes white.
+src_connect=${functions[connect_item]}
+src_remote=${functions[cli_remote_pick]}
+expect_contains sync/connect-term TERM_PROGRAM "$src_connect"
+expect_contains sync/connect-color COLORTERM "$src_connect"
+expect_contains sync/remote-term TERM_PROGRAM "$src_remote"
+expect_contains sync/remote-color COLORTERM "$src_remote"
+
+: >"$log"
+TERM_PROGRAM=Apple_Terminal TERM_PROGRAM_VERSION=440 \
+  cli_remote_pick studio --attach demo
+hay=$(read_log)
+assert_remote_open remote/cli-term "$hay" demo
+expect_contains remote/cli-term/unset 'unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM' "$hay"
+expect_contains remote/cli-term/program 'TERM_PROGRAM=Apple_Terminal' "$hay"
+expect_contains remote/cli-term/version 'TERM_PROGRAM_VERSION=440' "$hay"
+expect_contains remote/cli-term/attach --attach "$hay"
 
 : >"$log"
 cli_open_tabs local lanjump
