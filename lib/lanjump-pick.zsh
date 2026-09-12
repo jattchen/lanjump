@@ -2024,6 +2024,7 @@ prompt_restore_windows() {
   print -n $'\e[?1000l\e[?1006l'
   trap draw_on_winch WINCH
   restore_tty
+  setup_tty
   print -n $'\e[H\e[J'
 }
 
