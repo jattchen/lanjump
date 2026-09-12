@@ -1859,6 +1859,77 @@ pick_selftest() {
   fi
   expect pin/print-empty-names keep "$got"
 
+  # #177: pinned bmx-* is not listed after tmux is gone; do not recreate it.
+  # Non-foreign pins still restore/list as today (#137).
+  : >"$tmux_log"
+  mock_live=()
+  did_restore=0
+  snap_names=(keep)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[keep]=/tmp/keep
+  snap_occupied[keep]=1
+  snap_workspace[keep]=1
+  snap_attached[keep]=$EPOCHSECONDS
+  save_session_snapshot
+  print -r -- $'name keep\ncwd /tmp/keep\n\nname bmx-ghost\ncwd /tmp/bmx-ghost\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions) return 1 ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  got=$(print_pinned_names)
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s keep -c /tmp/keep'* ]]; then
+    print -u2 "FAIL pin/print-dead-foreign missing keep new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s bmx-ghost'* ]]; then
+    print -u2 "FAIL pin/print-dead-foreign recreated bmx-ghost got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $got == *bmx-ghost* ]]; then
+    print -u2 "FAIL pin/print-dead-foreign listed bmx-ghost got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  expect pin/print-dead-foreign-names keep "$got"
+
+  : >"$tmux_log"
+  mock_live=()
+  print -r -- $'name keep\ncwd /tmp/keep\n\nname bmx-ghost\ncwd /tmp/bmx-ghost\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  load_pinned_sessions
+  load_session_snapshot
+  restore_saved_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'new-session -d -s bmx-ghost'* ]]; then
+    print -u2 "FAIL pin/restore-dead-foreign recreated bmx-ghost got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  collect_open_window_names
+  build_restore_pick
+  if [[ ${restore_pick_name[(Ie)bmx-ghost]} -ne 0 ]]; then
+    print -u2 "FAIL pin/restore-pick-dead-foreign listed bmx-ghost got=${restore_pick_name[*]}"
+    (( fails++ ))
+  fi
+  if [[ ${restore_pick_name[(Ie)keep]} -eq 0 ]]; then
+    print -u2 "FAIL pin/restore-pick-dead-foreign missing keep got=${restore_pick_name[*]}"
+    (( fails++ ))
+  fi
+
   if [[ ${functions[print_workspace_names]} != *should_restore_sessions* ]]; then
     print -u2 "FAIL work/print missing should_restore_sessions got=$(printf %q "${functions[print_workspace_names]}")"
     (( fails++ ))

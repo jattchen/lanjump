@@ -1374,6 +1374,7 @@ if sid:
 restore_pinned_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   load_pinned_sessions
+  drop_dead_foreign_pins
   local name cwd
   for name in "${pinned_names[@]}"; do
     [[ -n $name ]] || continue
@@ -1451,6 +1452,24 @@ pin_named_session() {
 
 lanjump_foreign_session() {
   [[ -n ${1:-} && $1 == bmx-* ]]
+}
+
+# Foreign pins are never recreated; drop them once the live session is gone (#177).
+drop_dead_foreign_pins() {
+  local name
+  local -a drop
+  load_pinned_sessions
+  drop=()
+  for name in "${pinned_names[@]}"; do
+    [[ -n $name ]] || continue
+    lanjump_foreign_session "$name" || continue
+    tmuxx has-session -t "=$name" 2>/dev/null && continue
+    drop+=("$name")
+  done
+  (( ${#drop} )) || return 0
+  for name in "${drop[@]}"; do
+    remove_pin_record "$name"
+  done
 }
 
 session_snapshot_file() {
@@ -1793,6 +1812,7 @@ build_restore_pick() {
   for n in "${pinned_names[@]}"; do
     [[ -n $n ]] || continue
     numeric_session_name "$n" && continue
+    lanjump_foreign_session "$n" && ! tmuxx has-session -t "=$n" 2>/dev/null && continue
     is_pin[$n]=1
     pins+=("$n")
   done
@@ -2156,6 +2176,7 @@ attach_named_session() {
 
 restore_saved_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
+  drop_dead_foreign_pins
   collect_restore_names
   local name cwd
   for name in "${restore_names[@]}"; do
@@ -4327,6 +4348,7 @@ print_pinned_names() {
   for n in "${pinned_names[@]}"; do
     [[ -n $n ]] || continue
     numeric_session_name "$n" && continue
+    lanjump_foreign_session "$n" && ! tmuxx has-session -t "=$n" 2>/dev/null && continue
     print -r -- "$n"
   done
 }
