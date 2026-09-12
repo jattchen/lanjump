@@ -8,7 +8,7 @@
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
-# has_named_session,
+# has_named_session, print_recent_names,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
 # load_settings, save_settings, cycle_setting, effective_open_target,
@@ -1802,6 +1802,181 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #122: last/--print-recent must restore like work/go before listing.
+  if [[ ${functions[print_recent_names]:-} != *should_restore_sessions* ]]; then
+    print -u2 "FAIL recent/print missing should_restore_sessions got=$(printf %q "${functions[print_recent_names]:-}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[print_recent_names]:-} != *restore_saved_sessions* ]]; then
+    print -u2 "FAIL recent/print missing restore_saved_sessions got=$(printf %q "${functions[print_recent_names]:-}")"
+    (( fails++ ))
+  fi
+
+  local -A mock_activity
+  recent_list_tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions)
+        (( ${#mock_live} )) || return 1
+        if [[ $* == *session_activity* ]]; then
+          local k
+          for k in ${(k)mock_live}; do
+            print -r -- "${mock_activity[$k]:-1}"$'\t'"$k"
+          done
+        fi
+        return 0
+        ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+
+  # kill-server / no live sessions: restore snapshot names then list them.
+  : >"$tmux_log"
+  mock_live=()
+  mock_activity=()
+  did_restore=0
+  snap_names=(demo other)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[demo]=/tmp/demo
+  snap_cwd[other]=/tmp/other
+  snap_occupied[demo]=1
+  snap_occupied[other]=1
+  snap_workspace[demo]=1
+  snap_workspace[other]=1
+  snap_attached[demo]=$EPOCHSECONDS
+  snap_attached[other]=$EPOCHSECONDS
+  mock_activity[demo]=200
+  mock_activity[other]=100
+  save_session_snapshot
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() { recent_list_tmuxx "$@" }
+  got=$(print_recent_names 5)
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
+    print -u2 "FAIL recent/print-empty missing demo new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-session -d -s other -c /tmp/other'* ]]; then
+    print -u2 "FAIL recent/print-empty missing other new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  expect recent/print-empty-names $'demo\nother' "$got"
+
+  # Newest-activity first, up to 5, after restore.
+  : >"$tmux_log"
+  mock_live=()
+  mock_activity=()
+  did_restore=0
+  snap_names=(r1 r2 r3 r4 r5 r6)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  local rn
+  for rn in r1 r2 r3 r4 r5 r6; do
+    snap_cwd[$rn]=/tmp/$rn
+    snap_occupied[$rn]=1
+    snap_workspace[$rn]=1
+    snap_attached[$rn]=$EPOCHSECONDS
+  done
+  mock_activity[r1]=100
+  mock_activity[r2]=200
+  mock_activity[r3]=300
+  mock_activity[r4]=400
+  mock_activity[r5]=500
+  mock_activity[r6]=600
+  save_session_snapshot
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() { recent_list_tmuxx "$@" }
+  got=$(print_recent_names 5)
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s r6 -c /tmp/r6'* ]]; then
+    print -u2 "FAIL recent/print-limit missing r6 new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  expect recent/print-limit-names $'r6\nr5\nr4\nr3\nr2' "$got"
+
+  # #80/#122: anything restoreable already live skips full restore.
+  : >"$tmux_log"
+  mock_live=()
+  mock_activity=()
+  mock_live[lj-pin-keep]=1
+  mock_live[ws-live]=1
+  mock_activity[lj-pin-keep]=300
+  mock_activity[lj-pin-gone]=200
+  mock_activity[ws-live]=100
+  mock_activity[ws-gone]=50
+  did_restore=0
+  snap_names=(ws-live ws-gone)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[ws-live]=/tmp/ws-live
+  snap_cwd[ws-gone]=/tmp/ws-gone
+  snap_occupied[ws-live]=1
+  snap_occupied[ws-gone]=1
+  snap_workspace[ws-live]=1
+  snap_workspace[ws-gone]=1
+  snap_attached[ws-live]=$EPOCHSECONDS
+  snap_attached[ws-gone]=$EPOCHSECONDS
+  save_session_snapshot
+  print -r -- $'name lj-pin-keep\ncwd /tmp/lj-pin-keep\n\nname lj-pin-gone\ncwd /tmp/lj-pin-gone\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() { recent_list_tmuxx "$@" }
+  got=$(print_recent_names 5)
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
+    print -u2 "FAIL recent/print-partial missing lj-pin-gone got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
+    print -u2 "FAIL recent/print-partial restored unpinned workspace got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'new-session -d -s lj-pin-keep'* ]]; then
+    print -u2 "FAIL recent/print-partial recreated live pin got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  expect recent/print-partial-names $'lj-pin-keep\nlj-pin-gone\nws-live' "$got"
+
+  # Nothing restoreable and no live sessions: still empty.
+  : >"$tmux_log"
+  mock_live=()
+  mock_activity=()
+  snap_names=()
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  save_session_snapshot
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() { recent_list_tmuxx "$@" }
+  if print_recent_names 5 >/dev/null; then
+    print -u2 "FAIL recent/print-none listed names"
+    (( fails++ ))
+  fi
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'new-session -d -s '* ]]; then
+    print -u2 "FAIL recent/print-none restored sessions got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
   unset SSH_CONNECTION SSH_CLIENT SSH_TTY
   LANJUMP_GHOSTTY_APP="$testhome/Ghostty.app"
   mkdir -p "$LANJUMP_GHOSTTY_APP"
@@ -3045,6 +3220,9 @@ pick_selftest() {
     command "$TMUX_BIN" "$@" </dev/null
   }
 
+  recent_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-recent.XXXXXX")
+  HOME=$recent_home
+  mkdir -p "$HOME/Library/Application Support/lanjump"
   tmuxx() {
     if [[ $1 == list-sessions ]]; then
       print -r -- $'100\toldest'
@@ -3064,6 +3242,8 @@ pick_selftest() {
     print -u2 "FAIL recent/empty listed names"
     (( fails++ ))
   fi
+  HOME=$oldhome
+  rm -rf "$recent_home"
 
   if session_name_invalid ''; then
     print -u2 "FAIL name/empty auto-name rejected"

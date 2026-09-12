@@ -453,6 +453,18 @@ fi
 expect_contains has-session/restore-gate should_restore_sessions "$has_src"
 expect_contains has-session/restore-saved restore_saved_sessions "$has_src"
 
+# #122: last/--print-recent must restore like work/go before listing.
+recent_src=
+if [[ -f $pick_file ]]; then
+  recent_src=$(awk '
+    /^print_recent_names\(\)/ {p=1}
+    p {print}
+    p && /^}/ {exit}
+  ' "$pick_file")
+fi
+expect_contains last/restore-gate should_restore_sessions "$recent_src"
+expect_contains last/restore-saved restore_saved_sessions "$recent_src"
+
 cli_new_session() {
   print -r -- "NEW host=$1 session=$2" >>"$log"
   return 0

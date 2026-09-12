@@ -4105,12 +4105,20 @@ print_last_name() {
   print -r -- "${snap_names[-1]}"
 }
 
+# Restore before listing so last matches work/go (#122).
 # Newest-activity first, up to $1 names (default 5).
 print_recent_names() {
   local -i max=${1:-5} n=0
   local line name
   local -a raw
   [[ $HAS_TMUX -eq 1 ]] || return 1
+  load_pinned_sessions
+  load_session_snapshot
+  if should_restore_sessions; then
+    restore_saved_sessions
+  else
+    restore_pinned_sessions
+  fi
   raw=("${(@f)$(tmuxx list-sessions -F $'#{session_activity}\t#{session_name}' 2>/dev/null)}")
   (( ${#raw} )) || return 1
   for line in "${(@f)$(print -r -- "${(F)raw}" | sort -t $'\t' -k1,1nr)}"; do
