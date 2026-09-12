@@ -102,6 +102,66 @@ fake_picker=$tmpdir/pick
 export LANJUMP_CLI_TEST_LOG=$log
 trap 'rm -rf "$tmpdir"; restore_tty 2>/dev/null || true' EXIT
 
+# #153: WINCH at file load must not host-draw. last/help/list/confirm
+# share this process; resize used to paint an empty 「局域网 SSH」 table.
+# zsh has no `trap -p SIGNAL`; that form *sets* WINCH to -p.
+# `$(trap)` is a subshell and hides the parent's traps; write in-shell.
+trap >"$tmpdir/traps"
+_lj_traps=$(<"$tmpdir/traps")
+expect_absent last-winch/load-trap "draw' WINCH" "$_lj_traps"
+_lj_head=$(sed -n '1,90p' "${0:A:h}/lanjump.zsh")
+if [[ $_lj_head == *WINCH* && $_lj_head == *draw* ]]; then
+  print -u2 "FAIL last-winch/source-load-trap WINCH host draw at load"
+  (( fails++ ))
+fi
+unset _lj_traps _lj_head
+
+if ! (( ${+functions[draw_on_winch]} )); then
+  print -u2 "FAIL last-winch/draw_on_winch missing"
+  (( fails++ ))
+else
+  _lj_save_draw=$functions[draw]
+  _lj_winch_draws=0
+  draw() { ((_lj_winch_draws++)) }
+  host_list_active=0
+  loading=0
+  items_kind=()
+  draw_on_winch
+  if (( _lj_winch_draws )); then
+    print -u2 "FAIL last-winch/last-menu host draw called"
+    (( fails++ ))
+  fi
+  host_list_active=1
+  draw_on_winch
+  if (( _lj_winch_draws != 1 )); then
+    print -u2 "FAIL last-winch/host-list skipped draw got=$_lj_winch_draws"
+    (( fails++ ))
+  fi
+  _lj_winch_draws=0
+  loading=1
+  draw_on_winch
+  if (( _lj_winch_draws )); then
+    print -u2 "FAIL last-winch/loading host draw called"
+    (( fails++ ))
+  fi
+  functions[draw]=$_lj_save_draw
+  host_list_active=0
+  loading=0
+  unset _lj_save_draw _lj_winch_draws
+fi
+
+if ! (( ${+functions[cli_recent_draw]} )); then
+  print -u2 "FAIL last-winch/cli_recent_draw missing"
+  (( fails++ ))
+else
+  cli_recent_names=(alpha beta)
+  cli_recent_cur=2
+  out=$(cli_recent_draw)
+  expect_contains last-winch/recent-title '最近 session' "$out"
+  expect_contains last-winch/recent-sel '> beta' "$out"
+  expect_absent last-winch/recent-host '局域网 SSH' "$out"
+fi
+
 cat >"$fake_picker" <<'EOF'
 emulate -L zsh
 log=${LANJUMP_CLI_TEST_LOG:?}

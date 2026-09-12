@@ -21,10 +21,13 @@ SSH_CONFIG="$HOME/.ssh/config"
 
 typeset -a h_alias h_user h_hostname h_ip h_mac h_last
 typeset -a items_kind items_alias items_user items_hostname items_ip items_mac items_status items_saved
+typeset -a cli_recent_names
 typeset -a s_alias s_host s_ip s_mac
 typeset -a MYIPS
 cursor=1
+cli_recent_cur=1
 loading=0
+host_list_active=0
 draw_remain=0
 view_start=1
 view_end=0
@@ -66,6 +69,7 @@ find_lanjump_keys() {
 }
 
 restore_tty() {
+  host_list_active=0
   print -n -u2 $'\e[?25h'
   [[ -n ${stty_orig:-} ]] && stty "$stty_orig" 2>/dev/null || stty sane 2>/dev/null
 }
@@ -74,6 +78,7 @@ setup_tty() {
   stty_orig=$(stty -g)
   stty -echo -icanon min 1 time 0
   print -n -u2 $'\e[?25l'
+  host_list_active=1
 }
 
 on_exit() {
@@ -81,7 +86,6 @@ on_exit() {
 }
 trap on_exit EXIT
 trap 'restore_tty; exit 130' INT
-trap '[[ $loading -eq 1 ]] || draw' WINCH
 
 term_cols() {
   local c=${COLUMNS:-0}
@@ -1056,6 +1060,13 @@ draw() {
   (( view_below > 0 )) && draw_emit "  ${c_dim}↓ 还有 ${view_below}${c_reset}"
 }
 
+# WINCH: host draw only while the host picker is on screen.
+draw_on_winch() {
+  (( host_list_active )) || return 0
+  [[ $loading -eq 1 ]] && return 0
+  draw
+}
+
 # True if another digit could still name a list index.
 index_prefix_ambiguous() {
   local acc=$1
@@ -1764,11 +1775,28 @@ cli_pin_session() {
   [[ -n ${lines[-1]:-} ]] && REPLY=${lines[-1]}
 }
 
+cli_recent_draw() {
+  local -i i n=${#cli_recent_names}
+  print -n $'\e[H\e[J'
+  print -r -- "最近 session"
+  print
+  for (( i = 1; i <= n; i++ )); do
+    if (( i == cli_recent_cur )); then
+      print -r -- "> ${cli_recent_names[i]}"
+    else
+      print -r -- "  ${cli_recent_names[i]}"
+    fi
+  done
+  print
+  print -r -- "j/k 选择  Enter 进入  q 取消"
+}
+
 cli_recent_select() {
-  local -a names
-  names=("$@")
-  local -i cur=1 n=${#names} i
+  local -i n
   local chosen=
+  cli_recent_names=("$@")
+  cli_recent_cur=1
+  n=${#cli_recent_names}
   (( n )) || return 1
   if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
     print -u2 "需要交互式终端。"
@@ -1778,42 +1806,33 @@ cli_recent_select() {
     stty_orig=$(stty -g </dev/tty 2>/dev/null) || stty_orig=
     stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
     print -n $'\e[?25l'
+    trap cli_recent_draw WINCH
     while true; do
-      print -n $'\e[H\e[J'
-      print -r -- "最近 session"
-      print
-      for (( i = 1; i <= n; i++ )); do
-        if (( i == cur )); then
-          print -r -- "> ${names[i]}"
-        else
-          print -r -- "  ${names[i]}"
-        fi
-      done
-      print
-      print -r -- "j/k 选择  Enter 进入  q 取消"
+      cli_recent_draw
       read_key || continue
       case $REPLY in
         up)
-          (( cur-- ))
-          (( cur < 1 )) && cur=$n
+          (( cli_recent_cur-- ))
+          (( cli_recent_cur < 1 )) && cli_recent_cur=$n
           ;;
         down)
-          (( cur++ ))
-          (( cur > n )) && cur=1
+          (( cli_recent_cur++ ))
+          (( cli_recent_cur > n )) && cli_recent_cur=1
           ;;
         enter)
-          chosen=${names[cur]}
-          print -n $'\e[?25h'
-          [[ -n $stty_orig ]] && stty "$stty_orig" </dev/tty 2>/dev/null
+          chosen=${cli_recent_names[cli_recent_cur]}
           break
           ;;
         q|esc)
-          print -n $'\e[?25h'
-          [[ -n $stty_orig ]] && stty "$stty_orig" </dev/tty 2>/dev/null
-          return 1
+          chosen=
+          break
           ;;
       esac
     done
+  } always {
+    trap - WINCH
+    print -n $'\e[?25h'
+    [[ -n $stty_orig ]] && stty "$stty_orig" </dev/tty 2>/dev/null
   } </dev/tty >/dev/tty
   [[ -n $chosen ]] || return 1
   print -r -- "$chosen"
@@ -2066,6 +2085,7 @@ if (( ${#h_alias} == 0 )) && [[ $(read_last) != local ]]; then
   do_scan
   apply_last_cursor
 fi
+trap draw_on_winch WINCH
 draw
 
 while true; do
