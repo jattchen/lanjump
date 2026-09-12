@@ -3833,6 +3833,22 @@ new_session_flag_invalid() {
   session_name_invalid "$name"
 }
 
+# Named create: pin/snap then project dir, same cwd as CLI --new-session.
+create_named_session() {
+  local name=$1 cwd
+  [[ -n $name ]] || return 1
+  load_settings
+  load_pinned_sessions
+  load_session_snapshot
+  cwd=$(resolve_session_cwd "$name")
+  if [[ -n $cwd ]]; then
+    tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || \
+      tmuxx new-session -d -s "$name" 2>/dev/null
+  else
+    tmuxx new-session -d -s "$name" 2>/dev/null
+  fi
+}
+
 prompt_new() {
   local want_new=${1:-0}
   [[ $HAS_TMUX -eq 1 ]] || return
@@ -3878,7 +3894,7 @@ prompt_new() {
         return
       fi
     else
-      if ! tmuxx new-session -d -s "$name" 2>/dev/null; then
+      if ! create_named_session "$name"; then
         print "创建失败。"
         print -n "按回车继续…"
         read -r
@@ -4151,15 +4167,7 @@ if [[ ${1:-} == --new-session ]]; then
   if tmuxx has-session -t "=$name" 2>/dev/null; then
     exit 0
   fi
-  load_settings
-  load_pinned_sessions
-  load_session_snapshot
-  cwd=$(resolve_session_cwd "$name")
-  if [[ -n $cwd ]]; then
-    tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || tmuxx new-session -d -s "$name" 2>/dev/null || exit 1
-  else
-    tmuxx new-session -d -s "$name" 2>/dev/null || exit 1
-  fi
+  create_named_session "$name" || exit 1
   mark_snapshot_occupied "$name"
   exit 0
 fi

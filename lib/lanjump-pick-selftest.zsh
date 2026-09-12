@@ -16,8 +16,8 @@
 # preview_is_grok, preview_line_is_tool, preview_line_is_model,
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
-# resume_prompt_choice, attach_command_for, new_session_flag_invalid,
-# read_key, settings_input_read, PENDING_KEY.
+# resume_prompt_choice, attach_command_for, new_session_flag_invalid, prompt_new,
+# create_named_session, read_key, settings_input_read, PENDING_KEY.
 
 pick_selftest() {
   local -i fails=0
@@ -2716,6 +2716,106 @@ pick_selftest() {
     (( fails++ ))
   fi
   expect name/cli-flag-colon "名称不能包含冒号或点。" "$err"
+
+  # #103: picker n named-create must use project dir as tmux -c.
+  if [[ ${functions[prompt_new]} != *resolve_session_cwd* && ${functions[prompt_new]} != *create_named_session* ]]; then
+    print -u2 "FAIL prompt_new/named-cwd missing resolve_session_cwd got=$(printf %q "${functions[prompt_new]}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[prompt_new]} != *'new-session -d -P'* ]]; then
+    print -u2 "FAIL prompt_new/empty-auto missing new-session -d -P got=$(printf %q "${functions[prompt_new]}")"
+    (( fails++ ))
+  fi
+
+  oldhome=$HOME
+  testhome=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-prompt-new.XXXXXX")
+  HOME=$testhome
+  mkdir -p "$HOME/Library/Application Support/lanjump" "$HOME/Documents/projects/inferme"
+  tmux_log=$testhome/tmux.log
+  : >"$tmux_log"
+  HAS_TMUX=1
+  snap_cwd=()
+  pinned_cwd=()
+  pinned_names=()
+  snap_names=()
+  load_settings
+  expect prompt_new/settings-root "$HOME/Documents/projects" "${project_roots[*]}"
+  expect prompt_new/resolve-project "$HOME/Documents/projects/inferme" "$(resolve_session_cwd inferme)"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session) return 1 ;;
+      new-session)
+        [[ $* == *-P* ]] && print -r -- auto-1
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  if (( ! ${+functions[create_named_session]} )); then
+    print -u2 "FAIL prompt_new/helper missing create_named_session"
+    (( fails++ ))
+  else
+    create_named_session inferme
+    restore_log=$(<"$tmux_log")
+    if [[ $restore_log != *'new-session -d -s inferme -c '"$HOME/Documents/projects/inferme"* ]]; then
+      print -u2 "FAIL prompt_new/named-project-cwd got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+  fi
+
+  functions -c restore_tty _pn_restore_tty
+  functions -c setup_tty _pn_setup_tty
+  functions -c draw _pn_draw
+  functions -c load_items _pn_load_items
+  functions -c tmux_prepare_color _pn_tmux_prepare_color
+  functions -c tmux_prepare_keys _pn_tmux_prepare_keys
+  functions -c attach_named_session _pn_attach_named_session
+  functions -c mark_snapshot_occupied _pn_mark_snapshot_occupied
+  restore_tty() { : }
+  setup_tty() { : }
+  draw() { : }
+  load_items() { : }
+  tmux_prepare_color() { : }
+  tmux_prepare_keys() { : }
+  attach_named_session() { : }
+  mark_snapshot_occupied() { : }
+  : >"$tmux_log"
+  print -l -- inferme '' | prompt_new >/dev/null
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s inferme -c '"$HOME/Documents/projects/inferme"* ]]; then
+    print -u2 "FAIL prompt_new/n-named-project-cwd got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  print -l -- '' '' | prompt_new >/dev/null
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -P'* ]]; then
+    print -u2 "FAIL prompt_new/n-empty-auto missing -P got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *' -c '* ]]; then
+    print -u2 "FAIL prompt_new/n-empty-auto used -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  functions -c _pn_restore_tty restore_tty
+  functions -c _pn_setup_tty setup_tty
+  functions -c _pn_draw draw
+  functions -c _pn_load_items load_items
+  functions -c _pn_tmux_prepare_color tmux_prepare_color
+  functions -c _pn_tmux_prepare_keys tmux_prepare_keys
+  functions -c _pn_attach_named_session attach_named_session
+  functions -c _pn_mark_snapshot_occupied mark_snapshot_occupied
+  unset -f _pn_restore_tty _pn_setup_tty _pn_draw _pn_load_items \
+    _pn_tmux_prepare_color _pn_tmux_prepare_keys _pn_attach_named_session \
+    _pn_mark_snapshot_occupied
+  HOME=$oldhome
+  rm -rf "$testhome"
+  unset -f tmuxx
+  tmuxx() {
+    [[ -n $TMUX_BIN ]] || return 1
+    command "$TMUX_BIN" "$@" </dev/null
+  }
 
   # #41 / #64: CSI leftovers (PageDown/Home/End/Delete/CSI-u) must not be Esc/q.
   expect_key() {
