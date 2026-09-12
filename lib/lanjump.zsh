@@ -1869,6 +1869,8 @@ cli_dispatch() {
         if (( want_grok )); then
           cli_start_grok local "$session" || return 1
         fi
+        # Local attach execs the picker; write last_target first.
+        mark_last local
         cli_attach_one local "$session" 0
         return
       fi

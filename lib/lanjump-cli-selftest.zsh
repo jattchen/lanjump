@@ -614,9 +614,26 @@ if (( st != 0 )); then
 fi
 expect_contains go-auto/tmux 'TMUX new-session' "$hay"
 expect_contains go-auto/attach 'PICK_EXEC --attach auto7' "$hay"
+expect_contains go-auto/last 'LAST host=local' "$hay"
 expect_absent go-auto/no-tabs 'OPEN ' "$hay"
 expect_absent go-auto/no-grok 'TMUX send-keys' "$hay"
 expect_absent go-auto/no-pin 'PICK --pin-session' "$hay"
+
+# #73: nameless go enters local; last host must become local, not the previous remote.
+TEST_LAST_HOST=office
+: >"$log"
+st=0
+cli_dispatch go >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-auto-from-remote/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-auto-from-remote/tmux 'TMUX new-session' "$hay"
+expect_contains go-auto-from-remote/attach 'PICK_EXEC --attach auto7' "$hay"
+expect_contains go-auto-from-remote/last 'LAST host=local' "$hay"
+expect_absent go-auto-from-remote/not-office 'LAST host=office' "$hay"
+TEST_LAST_HOST=local
 
 : >"$log"
 st=0
