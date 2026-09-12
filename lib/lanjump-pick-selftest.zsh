@@ -17,7 +17,7 @@
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
 # resume_prompt_choice, attach_command_for, new_session_flag_invalid,
-# read_key, PENDING_KEY.
+# read_key, PENDING_KEY, settings_input_read.
 
 pick_selftest() {
   local -i fails=0
@@ -2641,6 +2641,89 @@ pick_selftest() {
       break
     fi
   done
+
+  # #96: settings overlay path input must ignore CSI; only a true Esc cancels.
+  expect_settings_key() {
+    local label=$1 want=$2 seq=$3
+    local leftover=""
+    {
+      if settings_input_read; then
+        got=$REPLY
+      else
+        got=EOF
+      fi
+      sysread leftover || leftover=""
+    } < <(print -n -- "$seq")
+    expect "$label" "$want" "$got"
+    if [[ -n $leftover ]]; then
+      print -u2 "FAIL $label leftover=$(printf %q "$leftover")"
+      (( fails++ ))
+    fi
+  }
+
+  expect_settings_key settings/key/csi-u-s-enter other $'\e[13;2u'
+  expect_settings_key settings/key/left other $'\e[D'
+  expect_settings_key settings/key/right other $'\e[C'
+  expect_settings_key settings/key/pagedown other $'\e[6~'
+  expect_settings_key settings/key/pageup other $'\e[5~'
+  expect_settings_key settings/key/home other $'\e[H'
+  expect_settings_key settings/key/end other $'\e[F'
+  expect_settings_key settings/key/ss3-left other $'\eOD'
+  expect_settings_key settings/key/esc esc $'\e'
+  expect_settings_key settings/key/char char a
+  expect_settings_key settings/key/enter enter $'\r'
+  expect_settings_key settings/key/backspace backspace $'\x7f'
+
+  k1=EOF
+  k2=EOF
+  settings_input_char=
+  {
+    settings_input_read && k1=$REPLY
+    settings_input_read && k2=$REPLY
+  } < <(print -n $'\e[6~a')
+  expect settings/key/pagedown-then-char-1 other "$k1"
+  expect settings/key/pagedown-then-char-2 char "$k2"
+  expect settings/key/pagedown-then-char-val a "$settings_input_char"
+
+  settings_input_on=1
+  settings_input_buf='/opt/p'
+  {
+    while true; do
+      settings_input_read || break
+      case $REPLY in
+        enter)
+          break
+          ;;
+        esc)
+          settings_input_on=0
+          settings_input_buf=
+          break
+          ;;
+        backspace)
+          (( ${#settings_input_buf} )) && settings_input_buf=${settings_input_buf[1,-2]}
+          ;;
+        char)
+          settings_input_buf+=$settings_input_char
+          ;;
+      esac
+    done
+  } < <(print -n $'\e[13;2u\e[D\e[6~\e[H\e[Fath')
+  expect settings/key/loop-on "1" "$settings_input_on"
+  expect settings/key/loop-buf '/opt/path' "$settings_input_buf"
+
+  settings_input_on=1
+  settings_input_buf='/opt/p'
+  {
+    settings_input_read || true
+    case $REPLY in
+      esc)
+        settings_input_on=0
+        settings_input_buf=
+        ;;
+    esac
+  } < <(print -n $'\e')
+  expect settings/key/true-esc-on "0" "$settings_input_on"
+  expect settings/key/true-esc-buf "" "$settings_input_buf"
 
   restore_csi_key A
   expect restore/csi-up up "$REPLY"
