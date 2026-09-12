@@ -1941,6 +1941,10 @@ cli_dispatch() {
       mark_last "$host"
       ;;
     go)
+      if [[ $spec == *:* && -z $session ]]; then
+        print -u2 "用法：lanjump go [机器:]名字"
+        return 1
+      fi
       if [[ -z $session ]]; then
         session=$(cli_auto_new_session) || return 1
         if (( want_grok )); then

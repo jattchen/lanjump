@@ -904,6 +904,25 @@ expect_contains go-auto-from-remote/last 'LAST host=local' "$hay"
 expect_absent go-auto-from-remote/not-office 'LAST host=office' "$hay"
 TEST_LAST_HOST=local
 
+# #142: go host: with empty session is usage, not a local auto-new.
+# Nameless go (no args) still auto-news local — covered by go-auto above.
+TEST_LAST_HOST=office
+: >"$log"
+st=0
+err=$(cli_dispatch go office: 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-host-empty/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-host-empty/usage '用法：' "$err"
+hay=$(read_log)
+expect_absent go-host-empty/no-local-pick 'LOCAL_PICK' "$hay"
+expect_absent go-host-empty/no-tmux 'TMUX ' "$hay"
+expect_absent go-host-empty/no-pick-exec 'PICK_EXEC' "$hay"
+expect_absent go-host-empty/no-last 'LAST ' "$hay"
+expect_absent go-host-empty/no-remote 'REMOTE_PICK' "$hay"
+TEST_LAST_HOST=local
+
 : >"$log"
 st=0
 cli_dispatch go --grok >/dev/null || st=$?
