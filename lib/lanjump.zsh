@@ -1752,12 +1752,16 @@ cli_ask_pin() {
 }
 
 cli_pin_session() {
-  local host=$1 session=$2
+  local host=$1 session=$2 out
+  local -a lines
+  REPLY=$session
   if [[ $host == local ]]; then
-    cli_pick --pin-session "$session"
+    out=$(cli_pick --pin-session "$session") || return $?
   else
-    cli_remote_print "$host" --pin-session "$session"
+    out=$(cli_remote_print "$host" --pin-session "$session") || return $?
   fi
+  lines=("${(@f)out}")
+  [[ -n ${lines[-1]:-} ]] && REPLY=${lines[-1]}
 }
 
 cli_recent_select() {
@@ -1967,7 +1971,9 @@ cli_dispatch() {
         [[ $pinans == y || $pinans == Y ]] && pin=1
         cli_new_session "$host" "$session" || return 1
         if (( pin )); then
-          cli_pin_session "$host" "$session"
+          if cli_pin_session "$host" "$session"; then
+            [[ -n $REPLY ]] && session=$REPLY
+          fi
         fi
       fi
       if (( want_grok )); then

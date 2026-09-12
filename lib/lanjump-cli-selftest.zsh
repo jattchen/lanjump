@@ -473,6 +473,14 @@ cli_remote_pick() {
 
 cli_remote_print() {
   print -r -- "REMOTE_PRINT host=$1 argv=${(j: :)${@[2,-1]}}" >>"$log"
+  if [[ ${2:-} == --pin-session ]]; then
+    local n=${3:-}
+    if [[ -n $n && $n != *[!0-9]* ]]; then
+      print -r -- "s-renamed-$n"
+    else
+      print -r -- "$n"
+    fi
+  fi
 }
 
 CLI_HAS_SESSION=1
@@ -586,6 +594,14 @@ cli_ask_pin() {
 
 cli_pick() {
   print -r -- "PICK ${(j: :)@}" >>"$log"
+  if [[ ${1:-} == --pin-session ]]; then
+    local n=${2:-}
+    if [[ -n $n && $n != *[!0-9]* ]]; then
+      print -r -- "s-renamed-$n"
+    else
+      print -r -- "$n"
+    fi
+  fi
 }
 
 cli_pick_exec() {
@@ -821,6 +837,72 @@ expect_contains go-create-empty/new 'NEW host=local session=dummytest' "$hay"
 expect_contains go-create-empty/attach 'PICK_EXEC --attach dummytest' "$hay"
 expect_contains go-create-empty/last 'LAST host=local' "$hay"
 expect_absent go-create-empty/no-open 'OPEN ' "$hay"
+
+# #149: go create+pin numeric must attach the renamed name, not 42.
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=(y y)
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+cli_dispatch go 42 >/dev/null || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-create-pin-numeric/status got $st want 0"
+  (( fails++ ))
+fi
+hay=$(read_log)
+expect_contains go-create-pin-numeric/new 'NEW host=local session=42' "$hay"
+expect_contains go-create-pin-numeric/pin 'PICK --pin-session 42' "$hay"
+expect_contains go-create-pin-numeric/attach 'PICK_EXEC --attach s-renamed-42' "$hay"
+expect_absent go-create-pin-numeric/no-old-attach 'PICK_EXEC --attach 42' "$hay"
+expect_contains go-create-pin-numeric/last 'LAST host=local' "$hay"
+expect_absent go-create-pin-numeric/no-open 'OPEN ' "$hay"
+
+# Unpinned numeric go 42 stays 42 and does not pin.
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=(y '')
+: >"$log"
+st=0
+cli_dispatch go 42 >/dev/null || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-create-numeric-nopin/status got $st want 0"
+  (( fails++ ))
+fi
+hay=$(read_log)
+expect_contains go-create-numeric-nopin/new 'NEW host=local session=42' "$hay"
+expect_absent go-create-numeric-nopin/no-pin 'PICK --pin-session' "$hay"
+expect_contains go-create-numeric-nopin/attach 'PICK_EXEC --attach 42' "$hay"
+
+# Named create+pin still attaches the given name.
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=(y y)
+: >"$log"
+st=0
+cli_dispatch go dummytest >/dev/null || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-create-pin-named/status got $st want 0"
+  (( fails++ ))
+fi
+hay=$(read_log)
+expect_contains go-create-pin-named/pin 'PICK --pin-session dummytest' "$hay"
+expect_contains go-create-pin-named/attach 'PICK_EXEC --attach dummytest' "$hay"
+
+# Remote go create+pin numeric attaches the renamed name.
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=(y y)
+: >"$log"
+st=0
+cli_dispatch go office:42 >/dev/null || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-remote-pin-numeric/status got $st want 0"
+  (( fails++ ))
+fi
+hay=$(read_log)
+expect_contains go-remote-pin-numeric/new 'NEW host=office session=42' "$hay"
+expect_contains go-remote-pin-numeric/pin 'REMOTE_PRINT host=office argv=--pin-session 42' "$hay"
+expect_contains go-remote-pin-numeric/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains go-remote-pin-numeric/attach-flag '--attach' "$hay"
+expect_contains go-remote-pin-numeric/new-name s-renamed-42 "$hay"
+expect_absent go-remote-pin-numeric/no-old-attach '--attach 42' "$hay"
 
 CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=(n)
