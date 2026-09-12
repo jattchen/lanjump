@@ -1036,6 +1036,19 @@ expect_absent go-auto/no-tabs 'OPEN ' "$hay"
 expect_absent go-auto/no-grok 'TMUX send-keys' "$hay"
 expect_absent go-auto/no-pin 'PICK --pin-session' "$hay"
 
+# #164: nameless go --shell still skips resume (same attach flag as --grok).
+: >"$log"
+st=0
+cli_dispatch go --shell >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-auto-shell/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-auto-shell/attach 'PICK_EXEC --attach --shell auto7' "$hay"
+expect_absent go-auto-shell/no-resume 'PICK_EXEC --attach auto7' "$hay"
+expect_absent go-auto-shell/no-grok 'TMUX send-keys' "$hay"
+
 # #73: nameless go enters local; last host must become local, not the previous remote.
 TEST_LAST_HOST=office
 : >"$log"
@@ -1125,6 +1138,19 @@ if (( st != 0 )); then
 fi
 expect_contains go-exist-nogrok/attach 'PICK_EXEC --attach demo' "$hay"
 expect_absent go-exist-nogrok/no-shell 'PICK_EXEC --attach --shell demo' "$hay"
+
+# #164: go name --shell must skip resume, same as attach --shell.
+: >"$log"
+st=0
+cli_dispatch go demo --shell >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-exist-shell/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-exist-shell/attach 'PICK_EXEC --attach --shell demo' "$hay"
+expect_absent go-exist-shell/no-resume 'PICK_EXEC --attach demo' "$hay"
+expect_absent go-exist-shell/no-grok 'TMUX send-keys' "$hay"
 
 TEST_PANE_CMD=grok
 : >"$log"
