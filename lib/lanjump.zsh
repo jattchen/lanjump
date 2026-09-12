@@ -1962,7 +1962,7 @@ cli_dispatch() {
         print -u2 "用法：lanjump attach [--shell] <session>"
         return 1
       fi
-      [[ $host == local ]] && mark_last "$host"
+      mark_last "$host"
       cli_attach_one "$host" "$session" $shell || return 1
       mark_last "$host"
       ;;
@@ -2002,9 +2002,9 @@ cli_dispatch() {
       if (( want_grok )); then
         cli_start_grok "$host" "$session" || return 1
       fi
-      # Local attach execs the picker; write last_target first.
+      # Mark before attach: remote SSH blocks until it returns.
       # --grok already started/selected grok; --shell skips maybe_resume.
-      [[ $host == local ]] && mark_last "$host"
+      mark_last "$host"
       cli_attach_one "$host" "$session" $(( want_grok || shell )) || return 1
       mark_last "$host"
       ;;
@@ -2030,8 +2030,8 @@ cli_dispatch() {
         return 1
       fi
       session=$(cli_recent_select "${names[@]}") || return 1
-      # Local attach execs the picker; write last_target first.
-      [[ $host == local ]] && mark_last "$host"
+      # Mark before attach: remote SSH blocks until it returns.
+      mark_last "$host"
       cli_attach_one "$host" "$session" 0 || return 1
       mark_last "$host"
       ;;
