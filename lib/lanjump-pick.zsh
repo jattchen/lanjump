@@ -1877,15 +1877,8 @@ ensure_session_cwd() {
   tmuxx send-keys -t "$target" -- "cd ${(q)want}" Enter 2>/dev/null || true
 }
 
-session_first_pane() {
-  local name=$1
-  local -a panes
-  panes=("${(@f)$(tmuxx list-panes -t "=$name" -F '#{pane_id}' 2>/dev/null)}")
-  [[ -n ${panes[1]:-} ]] && print -r -- "${panes[1]}"
-}
-
 maybe_resume_last_command() {
-  local name=$1 live last line want pane_cwd pane target
+  local name=$1 live last line want pane_cwd target
   local -a args
   [[ -n $name ]] || return 0
   target=$(session_pane_target "$name")
@@ -1912,9 +1905,8 @@ maybe_resume_last_command() {
     fi
     return 0
   }
-  pane=$(session_first_pane "$name")
-  [[ -n $pane ]] || pane=$target
-  args=(respawn-pane -t "$pane" -k)
+  # Same pane just confirmed idle (`=$name:.`), not list-panes' first item.
+  args=(respawn-pane -t "$target" -k)
   [[ -n $want ]] && args+=(-c "$want")
   args+=(-e "PATH=$(resume_pane_path)")
   args+=("${(z)line}")
