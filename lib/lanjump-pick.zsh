@@ -4086,6 +4086,15 @@ has_named_session() {
   tmuxx has-session -t "=$name" 2>/dev/null
 }
 
+# Restore before attach so list t / Ghostty matches go (#80 / #124).
+ensure_named_session_for_attach() {
+  local name=${1:-}
+  [[ -n $name ]] || return 1
+  has_named_session "$name" && return 0
+  print -u2 "没有 session「${name}」。"
+  return 1
+}
+
 print_pinned_names() {
   load_pinned_sessions
   restore_pinned_sessions
@@ -4279,6 +4288,7 @@ if [[ ${1:-} == --attach ]]; then
     print -u2 "这台机器上没有 tmux。"
     exit 1
   fi
+  ensure_named_session_for_attach "$name" || exit 1
   load_settings
   load_session_snapshot
   mark_snapshot_occupied "$name"
