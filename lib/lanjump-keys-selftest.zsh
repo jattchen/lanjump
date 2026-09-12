@@ -39,6 +39,8 @@ run_cases() {
   check_rewrite "$label semi-release" '' $'\x1b[13;2;3u'
   # Already Alt+Enter; unmodified CR; unrelated CSI.
   check_rewrite "$label esc-cr" '1b0d' $'\x1b\r'
+  # Lone Esc must flush at EOF; holding ST_ESC forever drops it (#118).
+  check_rewrite "$label lone-esc" '1b' $'\x1b'
   check_rewrite "$label cr" '0d' $'\r'
   check_rewrite "$label up" '1b5b41' $'\x1b[A'
   # xterm modifyOtherKeys Shift+Enter.
