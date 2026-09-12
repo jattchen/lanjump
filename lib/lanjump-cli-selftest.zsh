@@ -439,6 +439,20 @@ cli_has_session() {
   (( CLI_HAS_SESSION ))
 }
 
+# #120: cli_has_session is stubbed here; the picker --has-session handler
+# must restore like work/print before answering.
+pick_file="${0:A:h}/lanjump-pick.zsh"
+has_src=
+if [[ -f $pick_file ]]; then
+  has_src=$(awk '
+    /^has_named_session\(\)/ {p=1}
+    p {print}
+    p && /^}/ {exit}
+  ' "$pick_file")
+fi
+expect_contains has-session/restore-gate should_restore_sessions "$has_src"
+expect_contains has-session/restore-saved restore_saved_sessions "$has_src"
+
 cli_new_session() {
   print -r -- "NEW host=$1 session=$2" >>"$log"
   return 0
