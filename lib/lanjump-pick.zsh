@@ -1461,6 +1461,26 @@ save_session_snapshot() {
   done
 }
 
+forget_killed_session() {
+  local name=$1
+  local -i i
+  [[ -n $name ]] || return 0
+  load_session_snapshot
+  for (( i = 1; i <= ${#snap_names}; i++ )); do
+    if [[ ${snap_names[$i]} == "$name" ]]; then
+      snap_names[$i]=()
+      break
+    fi
+  done
+  unset "snap_cwd[$name]"
+  unset "snap_occupied[$name]"
+  unset "snap_workspace[$name]"
+  unset "snap_cmd[$name]"
+  unset "snap_attached[$name]"
+  save_session_snapshot
+  remove_pin_record "$name"
+}
+
 session_in_workspace() {
   local n=$1
   [[ ${snap_workspace[$n]:-${snap_occupied[$n]:-0}} == 1 ]]
@@ -2677,11 +2697,15 @@ bulk_idle_unpinned_names() {
 
 delete_idle_unpinned_sessions() {
   local -i i
+  local name
   for (( i = 1; i <= ${#items_kind}; i++ )); do
     [[ ${items_kind[$i]} == session ]] || continue
     [[ ${items_att[$i]} == 1 ]] && continue
     [[ ${items_pinned[$i]:-0} == 1 ]] && continue
-    tmuxx kill-session -t "=${items_id[$i]}" 2>/dev/null || true
+    name=${items_id[$i]}
+    if tmuxx kill-session -t "=$name" 2>/dev/null; then
+      forget_killed_session "$name"
+    fi
   done
 }
 
@@ -3841,8 +3865,6 @@ prompt_delete() {
     return
   fi
   local name=${items_id[$cursor]} ans
-  local -i was_pinned=0
-  [[ ${items_pinned[$cursor]:-0} == 1 ]] && was_pinned=1
   restore_tty
   print
   if session_delete_needs_pin_warning; then
@@ -3860,8 +3882,8 @@ prompt_delete() {
       print "删除失败。"
       print -n "按回车继续…"
       read -r
-    elif (( was_pinned )); then
-      remove_pin_record "$name"
+    else
+      forget_killed_session "$name"
     fi
   fi
   setup_tty

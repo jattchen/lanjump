@@ -3,7 +3,7 @@
 # sort_session_items, toggle_sort_mode, filter_session_items,
 # toggle_session_filter, save_session_filter, load_session_filter,
 # bulk_idle_unpinned_names, delete_idle_unpinned_sessions,
-# session_delete_needs_pin_warning, pin_delete_warning_text,
+# forget_killed_session, session_delete_needs_pin_warning, pin_delete_warning_text,
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, should_restore_sessions, restore_saved_sessions,
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
@@ -1422,6 +1422,128 @@ pick_selftest() {
   fi
   if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
     print -u2 "FAIL pin/restore-partial-work restored unpinned workspace got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # #93: deleting the last session must write the snapshot, including empty.
+  # load_items only snapshots when list-sessions is non-empty, and
+  # snapshot_live_sessions no-ops if the server is already gone, so the
+  # delete path has to drop the name itself. #80 already covers an unpinned
+  # workspace staying gone while others are still live.
+  setup_last_ws_snapshot() {
+    snap_names=(lj-last-ws)
+    snap_cwd=()
+    snap_occupied=()
+    snap_workspace=()
+    snap_cmd=()
+    snap_attached=()
+    snap_cwd[lj-last-ws]=/tmp/lj-last-ws
+    snap_occupied[lj-last-ws]=1
+    snap_workspace[lj-last-ws]=1
+    snap_cmd[lj-last-ws]=zsh
+    snap_attached[lj-last-ws]=$EPOCHSECONDS
+    save_session_snapshot
+    pinned_names=()
+    pinned_cwd=()
+    pinned_grok=()
+    : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  }
+  empty_tmux() {
+    : >"$tmux_log"
+    tmuxx() {
+      print -r -- "$*" >>"$tmux_log"
+      case $1 in
+        kill-session) return 0 ;;
+        list-sessions|has-session) return 1 ;;
+        *) return 0 ;;
+      esac
+    }
+  }
+
+  setup_last_ws_snapshot
+  empty_tmux
+  items_kind=(session new)
+  items_id=(lj-last-ws new)
+  items_att=(0 '')
+  items_pinned=(0 '')
+  delete_idle_unpinned_sessions
+  load_session_snapshot
+  expect snap/bulk-last-names '' "${snap_names[*]}"
+  session_snapshot_file
+  if [[ -n $(<"$REPLY") ]]; then
+    print -u2 "FAIL snap/bulk-last-file still has content got=$(printf %q "$(<"$REPLY")")"
+    (( fails++ ))
+  fi
+  if should_restore_sessions; then
+    print -u2 "FAIL restore/gate bulk last delete should skip"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  restore_saved_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'new-session -d -s lj-last-ws'* ]]; then
+    print -u2 "FAIL restore/bulk-last recreated lj-last-ws got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  setup_last_ws_snapshot
+  empty_tmux
+  forget_killed_session lj-last-ws
+  load_session_snapshot
+  expect snap/delete-last-names '' "${snap_names[*]}"
+  session_snapshot_file
+  if [[ -n $(<"$REPLY") ]]; then
+    print -u2 "FAIL snap/delete-last-file still has content got=$(printf %q "$(<"$REPLY")")"
+    (( fails++ ))
+  fi
+  if should_restore_sessions; then
+    print -u2 "FAIL restore/gate last delete should skip"
+    (( fails++ ))
+  fi
+  : >"$tmux_log"
+  restore_saved_sessions
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'new-session -d -s lj-last-ws'* ]]; then
+    print -u2 "FAIL restore/delete-last recreated lj-last-ws got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  setup_last_ws_snapshot
+  print -r -- $'name lj-last-ws\ncwd /tmp/lj-last-ws\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  load_pinned_sessions
+  empty_tmux
+  forget_killed_session lj-last-ws
+  load_pinned_sessions
+  if pin_record_exists lj-last-ws; then
+    print -u2 "FAIL pin/delete-last left pin record"
+    (( fails++ ))
+  fi
+  load_session_snapshot
+  if should_restore_sessions; then
+    print -u2 "FAIL restore/gate last pin delete should skip"
+    (( fails++ ))
+  fi
+
+  snap_names=(lj-keep lj-drop)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[lj-keep]=/tmp/lj-keep
+  snap_cwd[lj-drop]=/tmp/lj-drop
+  snap_occupied[lj-keep]=1
+  snap_occupied[lj-drop]=1
+  snap_workspace[lj-keep]=1
+  snap_workspace[lj-drop]=1
+  snap_attached[lj-keep]=$EPOCHSECONDS
+  snap_attached[lj-drop]=$EPOCHSECONDS
+  save_session_snapshot
+  forget_killed_session lj-drop
+  load_session_snapshot
+  expect snap/delete-keep lj-keep "${snap_names[*]}"
+  if [[ ${snap_names[(Ie)lj-drop]} -ne 0 ]]; then
+    print -u2 "FAIL snap/delete-keep still has lj-drop got=${snap_names[*]}"
     (( fails++ ))
   fi
 
