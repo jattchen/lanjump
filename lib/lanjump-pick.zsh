@@ -2284,16 +2284,22 @@ settings_commit_input() {
   settings_cursor=$(( 2 + ${#project_roots} ))
 }
 
-# Raw-mode line editor for the settings overlay. REPLY=enter|esc|backspace|char.
+# Raw-mode line editor for the settings overlay.
+# REPLY=enter|esc|other|backspace|char. Lone Esc cancels; CSI/SS3 is other.
 settings_input_read() {
   local k k2 c
-  IFS= read -rsk1 k || return 1
+  read_byte || return 1
+  k=$REPLY
   if [[ $k == $'\e' ]]; then
-    IFS= read -rsk1 -t 0.2 k2 || { REPLY=esc; return 0 }
+    read_byte 0.2 || { REPLY=esc; return 0 }
+    k2=$REPLY
     if [[ $k2 == '[' || $k2 == 'O' ]]; then
-      while IFS= read -rsk1 -t 0.2 c; do
+      while read_byte 0.2; do
+        c=$REPLY
         [[ $c == [A-Za-z~] ]] && break
       done
+      REPLY=other
+      return 0
     fi
     REPLY=esc
     return 0
@@ -4219,6 +4225,8 @@ while true; do
         settings_input_on=0
         settings_input_buf=
         draw
+        ;;
+      other)
         ;;
       backspace)
         (( ${#settings_input_buf} )) && settings_input_buf=${settings_input_buf[1,-2]}
