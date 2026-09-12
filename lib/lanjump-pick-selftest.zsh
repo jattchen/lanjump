@@ -17,7 +17,7 @@
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
 # resume_prompt_choice, attach_command_for, new_session_flag_invalid,
-# read_key, PENDING_KEY.
+# read_key, settings_input_read, PENDING_KEY.
 
 pick_selftest() {
   local -i fails=0
@@ -2265,6 +2265,89 @@ pick_selftest() {
   settings_input_buf='   '
   settings_commit_input
   expect settings/input-empty-cancels '/opt/overlay-root' "${project_roots[*]}"
+
+  # #96: settings overlay input must ignore CSI; only a true Esc cancels.
+  expect_settings_input_key() {
+    local label=$1 want=$2 seq=$3
+    local leftover=""
+    {
+      if settings_input_read; then
+        got=$REPLY
+      else
+        got=EOF
+      fi
+      sysread leftover || leftover=""
+    } < <(print -n -- "$seq")
+    expect "$label" "$want" "$got"
+    if [[ -n $leftover ]]; then
+      print -u2 "FAIL $label leftover=$(printf %q "$leftover")"
+      (( fails++ ))
+    fi
+  }
+  expect_settings_input_key settings/input-pagedown other $'\e[6~'
+  expect_settings_input_key settings/input-pageup other $'\e[5~'
+  expect_settings_input_key settings/input-home other $'\e[H'
+  expect_settings_input_key settings/input-end other $'\e[F'
+  expect_settings_input_key settings/input-left other $'\e[D'
+  expect_settings_input_key settings/input-csi-u-s-enter other $'\e[13;2u'
+  expect_settings_input_key settings/input-ss3-up other $'\eOA'
+  expect_settings_input_key settings/input-esc esc $'\e'
+  expect_settings_input_key settings/input-enter enter $'\r'
+  expect_settings_input_key settings/input-backspace backspace $'\x7f'
+  expect_settings_input_key settings/input-char char a
+  expect settings/input-char-byte a "$settings_input_char"
+
+  settings_input_on=1
+  settings_input_buf='/tmp/typed-root'
+  {
+    settings_input_read
+    got=$REPLY
+  } < <(print -n $'\e[6~')
+  case $got in
+    esc)
+      settings_input_on=0
+      settings_input_buf=
+      ;;
+  esac
+  expect settings/input-pagedown-keeps-on "1" "$settings_input_on"
+  expect settings/input-pagedown-keeps-buf '/tmp/typed-root' "$settings_input_buf"
+
+  local -a settings_input_keys
+  local settings_input_quit=0
+  settings_input_keys=()
+  settings_input_on=1
+  settings_input_buf='/tmp/typed-root'
+  {
+    while true; do
+      settings_input_read || break
+      settings_input_keys+=("$REPLY")
+      case $REPLY in
+        esc)
+          settings_input_on=0
+          settings_input_buf=
+          settings_input_quit=1
+          break
+          ;;
+      esac
+    done
+  } < <(print -n $'\e[6~\e[H\e[F\e[D\e[13;2u\e')
+  expect settings/input-csi-then-esc-quit 1 "$settings_input_quit"
+  expect settings/input-csi-then-esc-on "0" "$settings_input_on"
+  expect settings/input-csi-then-esc-buf '' "$settings_input_buf"
+  if (( ${#settings_input_keys} != 6 )); then
+    print -u2 "FAIL settings/input-csi-keys got=${settings_input_keys[*]} want=5 others then esc"
+    (( fails++ ))
+  elif [[ ${settings_input_keys[-1]} != esc ]]; then
+    print -u2 "FAIL settings/input-csi-last got=$(printf %q "${settings_input_keys[-1]}") want=esc"
+    (( fails++ ))
+  fi
+  for k in "${settings_input_keys[1,-2]}"; do
+    if [[ $k == esc ]]; then
+      print -u2 "FAIL settings/input-csi treated as esc got=${settings_input_keys[*]}"
+      (( fails++ ))
+      break
+    fi
+  done
 
   project_roots=('/opt/a' '/opt/b' '/opt/c')
   settings_remove_root 2
