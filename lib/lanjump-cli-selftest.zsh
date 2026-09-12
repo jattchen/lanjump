@@ -359,6 +359,7 @@ cli_dispatch go studio:lanjump --grok
 hay=$(read_log)
 assert_remote_open remote/go-grok "$hay" lanjump
 expect_contains remote/go-grok/start --start-grok "$hay"
+expect_contains remote/go-grok/shell '--attach --shell' "$hay"
 expect_contains remote/go-grok/ssh-print SSH "$hay"
 expect_absent remote/go-grok/no-local-tmux LOCAL_TMUX "$hay"
 unfunction cli_tmux
@@ -747,6 +748,7 @@ expect_contains go-host-session/attach 'REMOTE_PICK host=office' "$hay"
 expect_contains go-host-session/attach-flag '--attach' "$hay"
 expect_contains go-host-session/session lanjump "$hay"
 expect_contains go-host-session/last 'LAST host=office' "$hay"
+expect_absent go-host-session/no-shell '--shell' "$hay"
 expect_absent go-host-session/no-tabs --open-tabs "$hay"
 expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
 
@@ -767,6 +769,7 @@ expect_contains go-host-grok/has 'HAS host=office session=demo' "$hay"
 expect_contains go-host-grok/remote 'REMOTE_PRINT host=office argv=--start-grok demo' "$hay"
 expect_contains go-host-grok/attach 'REMOTE_PICK host=office' "$hay"
 expect_contains go-host-grok/attach-flag '--attach' "$hay"
+expect_contains go-host-grok/shell '--attach --shell demo' "$hay"
 expect_contains go-host-grok/last 'LAST host=office' "$hay"
 expect_absent go-host-grok/no-local-tmux 'TMUX ' "$hay"
 expect_absent go-host-grok/no-local-pick 'PICK --start-grok' "$hay"
@@ -1015,7 +1018,9 @@ if (( st != 0 )); then
 fi
 expect_contains go-auto-grok/send 'TMUX send-keys' "$hay"
 expect_contains go-auto-grok/fresh '-- grok Enter' "$hay"
+expect_contains go-auto-grok/shell 'PICK_EXEC --attach --shell auto7' "$hay"
 expect_absent go-auto-grok/no-c 'grok -c' "$hay"
+expect_absent go-auto-grok/no-resume 'PICK_EXEC --attach auto7' "$hay"
 
 CLI_GROK_DIR=1
 : >"$log"
@@ -1043,6 +1048,20 @@ hay=$(read_log)
 expect_contains go-exist-grok/send 'TMUX send-keys' "$hay"
 expect_contains go-exist-grok/fresh '-- grok Enter' "$hay"
 expect_absent go-exist-grok/no-c 'grok -c' "$hay"
+# #151: start-grok already typed grok; --attach must skip maybe_resume.
+expect_contains go-exist-grok/shell 'PICK_EXEC --attach --shell demo' "$hay"
+expect_absent go-exist-grok/no-resume 'PICK_EXEC --attach demo' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch go demo >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-exist-nogrok/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-exist-nogrok/attach 'PICK_EXEC --attach demo' "$hay"
+expect_absent go-exist-nogrok/no-shell 'PICK_EXEC --attach --shell demo' "$hay"
 
 TEST_PANE_CMD=grok
 : >"$log"
@@ -1080,7 +1099,7 @@ fi
 expect_absent go-exist-other-grok/no-send 'TMUX send-keys' "$hay"
 expect_contains go-exist-other-grok/list 'list-panes -s' "$hay"
 expect_contains go-exist-other-grok/select 'select-window -t %2' "$hay"
-expect_contains go-exist-other-grok/attach 'PICK_EXEC --attach demo' "$hay"
+expect_contains go-exist-other-grok/attach 'PICK_EXEC --attach --shell demo' "$hay"
 
 TEST_PANE_LIST=$'%1\tzsh\n%2\tgrok-1.0.24-mac'
 : >"$log"
