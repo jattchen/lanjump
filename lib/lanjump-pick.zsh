@@ -2909,12 +2909,15 @@ picker_boot_after_first_draw() {
 bulk_idle_unpinned_names() {
   local -i i
   local -a names
+  local name
   names=()
   for (( i = 1; i <= ${#items_kind}; i++ )); do
     [[ ${items_kind[$i]} == session ]] || continue
     [[ ${items_att[$i]} == 1 ]] && continue
     [[ ${items_pinned[$i]:-0} == 1 ]] && continue
-    names+=("${items_id[$i]}")
+    name=${items_id[$i]}
+    lanjump_foreign_session "$name" && continue
+    names+=("$name")
   done
   print -r -- "${names[*]}"
 }
@@ -2927,6 +2930,7 @@ delete_idle_unpinned_sessions() {
     [[ ${items_att[$i]} == 1 ]] && continue
     [[ ${items_pinned[$i]:-0} == 1 ]] && continue
     name=${items_id[$i]}
+    lanjump_foreign_session "$name" && continue
     if tmuxx kill-session -t "=$name" 2>/dev/null; then
       forget_killed_session "$name"
     fi

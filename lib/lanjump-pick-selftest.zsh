@@ -1127,6 +1127,31 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #158: bulk X skips idle unpinned foreign sessions (bmx-*).
+  pin_fixture
+  items_kind=(session session new shell hosts quit)
+  items_id=(bmx-foo demo new shell hosts quit)
+  items_name=("${items_id[@]}")
+  items_att=(0 0 '' '' '' '')
+  items_time=('01-01 00:00' '01-01 00:00' '' '' '' '')
+  items_activity=(1 2 '' '' '' '')
+  items_path=('~/bmx' '~/demo' '' '' '' '')
+  items_summary=(sa sb '' '' '' '')
+  items_cmd=(zsh zsh '' '' '' '')
+  items_pinned=(0 0 '' '' '' '')
+  expect pin/bulk-skip-foreign demo "$(bulk_idle_unpinned_names)"
+  : >"$tmux_log"
+  delete_idle_unpinned_sessions
+  killed=$(grep -E 'kill-session' "$tmux_log" | tr '\n' ' ')
+  if [[ $killed == *bmx-foo* ]]; then
+    print -u2 "FAIL pin/bulk-kill-foreign hit bmx-foo got=$(printf %q "$killed")"
+    (( fails++ ))
+  fi
+  if [[ $killed != *'kill-session -t =demo'* ]]; then
+    print -u2 "FAIL pin/bulk-kill-foreign missing demo got=$(printf %q "$killed")"
+    (( fails++ ))
+  fi
+
   # #93: last-session delete must persist an empty snapshot. load_items
   # skips snapshot_live_sessions when list-sessions is empty, so the
   # kill path itself has to drop the name from snap/pin.
