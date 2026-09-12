@@ -210,6 +210,7 @@ toggle_ime() {
   mkdir -p "$dir"
   if ime_enabled; then
     print -r -- off >"$f"
+    ime_switched=0
     notice="已关闭打开时切英文输入法。"
   else
     print -r -- on >"$f"
