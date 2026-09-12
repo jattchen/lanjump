@@ -3908,13 +3908,21 @@ create_named_session() {
   fi
 }
 
+# List n pin cwd: live pane then project, never picker $PWD (#130).
+prompt_new_pin_cwd() {
+  local name=$1 pane=
+  [[ -n $name ]] || return 0
+  pane=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_path}' 2>/dev/null || true)
+  resolve_session_cwd "$name" "${pane:-}"
+}
+
 prompt_new() {
   local want_new=${1:-0}
   [[ $HAS_TMUX -eq 1 ]] || return
   restore_tty
   print
   print -n "新 session 名称（回车=自动命名）: "
-  local name pinans created
+  local name pinans created cwd
   local -i pin=0
   read -r name
   name=${name##[[:space:]]#}
@@ -3937,7 +3945,8 @@ prompt_new() {
   if [[ -n $name ]] && tmuxx has-session -t "=$name" 2>/dev/null; then
     print "session「${name}」已存在，直接进入。"
     if (( pin )); then
-      add_pin_record "$name" "$PWD" ""
+      cwd=$(prompt_new_pin_cwd "$name")
+      add_pin_record "$name" "${cwd:-}" ""
       tmux_set_pinned "$name" 1
     fi
     attach_named_session "$name" 0 $want_new
@@ -3965,7 +3974,8 @@ prompt_new() {
       created=$name
     fi
     if (( pin )); then
-      add_pin_record "$created" "$PWD" ""
+      cwd=$(prompt_new_pin_cwd "$created")
+      add_pin_record "$created" "${cwd:-}" ""
       tmux_set_pinned "$created" 1
     fi
     mark_snapshot_occupied "$created"
