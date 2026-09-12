@@ -324,6 +324,7 @@ CLI_CREATE=1
 CLI_GROK_DIR=0
 TEST_PANE_CMD=zsh
 TEST_PANE_CWD=/tmp/typed-cwd
+TEST_PANE_LIST=
 
 cli_has_session() {
   print -r -- "HAS host=$1 session=$2" >>"$log"
@@ -375,6 +376,9 @@ cli_tmux() {
       elif [[ $* == *pane_current_path* ]]; then
         print -r -- "$TEST_PANE_CWD"
       fi
+      ;;
+    list-panes)
+      [[ -n ${TEST_PANE_LIST:-} ]] && print -r -- "$TEST_PANE_LIST"
       ;;
     new-session)
       print -r -- auto7
@@ -736,6 +740,40 @@ hay=$(read_log)
 expect_absent go-exist-unread/no-send 'TMUX send-keys' "$hay"
 expect_contains go-exist-unread/pane-target '-t =demo:.' "$hay"
 TEST_PANE_CMD=zsh
+
+# #82: another window already runs grok; jump there, do not start a second grok.
+TEST_PANE_LIST=$'%1\tzsh\n%2\tgrok'
+: >"$log"
+st=0
+cli_dispatch go demo --grok >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-exist-other-grok/status got $st want 0"
+  (( fails++ ))
+fi
+expect_absent go-exist-other-grok/no-send 'TMUX send-keys' "$hay"
+expect_contains go-exist-other-grok/list 'list-panes -s' "$hay"
+expect_contains go-exist-other-grok/select 'select-window -t %2' "$hay"
+expect_contains go-exist-other-grok/attach 'PICK_EXEC --attach demo' "$hay"
+
+TEST_PANE_LIST=$'%1\tzsh\n%2\tgrok-1.0.24-mac'
+: >"$log"
+st=0
+cli_dispatch go demo --grok >/dev/null || st=$?
+hay=$(read_log)
+expect_absent go-exist-other-ver/no-send 'TMUX send-keys' "$hay"
+expect_contains go-exist-other-ver/select 'select-window -t %2' "$hay"
+
+TEST_PANE_CMD=
+TEST_PANE_LIST=$'%1\t\n%2\tgrok'
+: >"$log"
+st=0
+cli_dispatch go demo --grok >/dev/null || st=$?
+hay=$(read_log)
+expect_absent go-exist-unread-other/no-send 'TMUX send-keys' "$hay"
+expect_contains go-exist-unread-other/select 'select-window -t %2' "$hay"
+TEST_PANE_CMD=zsh
+TEST_PANE_LIST=
 
 st=0
 err=$(/bin/zsh "${0:A:h}/lanjump.zsh" new 2>&1) || st=$?
