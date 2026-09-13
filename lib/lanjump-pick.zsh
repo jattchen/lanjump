@@ -2826,22 +2826,32 @@ open_workspace_tabs() {
 }
 
 # CLI --open-tabs. Remote host:name never attaches a local tmux session here.
+# Current-window (SSH / no local keyboard) can attach only one name: print
+# the rest and resume only the session we actually enter.
 open_named_tabs() {
   local n name keys
+  local -a rest
   (( $# )) || {
     print -u2 "没有可打开的 session。"
     return 1
   }
-  if (( ! attach_shell_only )) && ! attaching_remote_host; then
-    for n in "$@"; do
-      maybe_resume_last_command "$n"
-    done
-  fi
   if attaching_remote_host || [[ $(effective_open_target $# 1) != current ]]; then
+    if (( ! attach_shell_only )) && ! attaching_remote_host; then
+      for n in "$@"; do
+        maybe_resume_last_command "$n"
+      done
+    fi
     open_workspace_tabs "$@"
     return $?
   fi
+  if (( $# > 1 )); then
+    rest=("${@:2}")
+    print -u2 "当前窗口只能进入「$1」，未打开：${(j: :)rest}"
+  fi
   name=$1
+  if (( ! attach_shell_only )); then
+    maybe_resume_last_command "$name"
+  fi
   mark_snapshot_occupied "$name"
   remember_last_session "$name"
   tmux_prepare_color

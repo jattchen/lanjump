@@ -2625,10 +2625,53 @@ pick_selftest() {
   got=$(open_named_tabs a b 2>&1)
   expect open-tabs/remote-current-multi 'OPEN_TABS a b' "$got"
   unset LANJUMP_ATTACH_HOST
+
+  # #197: local SSH / no keyboard: current window can attach only the first
+  # name. Print the rest; do not resume sessions the user never entered.
+  _save_mark=$functions[mark_snapshot_occupied]
+  _save_remember=$functions[remember_last_session]
+  _save_color=$functions[tmux_prepare_color]
+  _save_tkeys=$functions[tmux_prepare_keys]
+  _save_kb=$functions[local_keyboard]
+  mark_snapshot_occupied() { : }
+  remember_last_session() { : }
+  tmux_prepare_color() { : }
+  tmux_prepare_keys() { : }
+  local_keyboard() { return 1 }
+  exec() {
+    print -r -- "ATTACH ${(q)@}"
+  }
+  got=$(open_named_tabs st197-one st197-two 2>&1)
+  if [[ $got == *OPEN_TABS* ]]; then
+    print -u2 "FAIL open-tabs/local-current-multi used workspace tabs got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got != *RESUME\ st197-one* ]]; then
+    print -u2 "FAIL open-tabs/local-current-multi missing resume of first got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got == *RESUME\ st197-two* ]]; then
+    print -u2 "FAIL open-tabs/local-current-multi resumed dropped session got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got != *未打开：st197-two* ]]; then
+    print -u2 "FAIL open-tabs/local-current-multi silently dropped extras got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got != *st197-one* || $got != *ATTACH* ]]; then
+    print -u2 "FAIL open-tabs/local-current-multi did not attach first got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  unfunction exec
+  functions[mark_snapshot_occupied]=$_save_mark
+  functions[remember_last_session]=$_save_remember
+  functions[tmux_prepare_color]=$_save_color
+  functions[tmux_prepare_keys]=$_save_tkeys
+  functions[local_keyboard]=$_save_kb
   functions[open_workspace_tabs]=$_save_open_tabs
   functions[effective_open_target]=$_save_eot
   functions[maybe_resume_last_command]=$_save_resume
-  unset _save_open_tabs _save_eot _save_resume
+  unset _save_open_tabs _save_eot _save_resume _save_mark _save_remember _save_color _save_tkeys _save_kb
   open_target=auto
 
   if pane_is_shell ''; then
