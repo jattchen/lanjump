@@ -1249,12 +1249,14 @@ grok_wrap_bin() {
 }
 
 ssh_tty() {
-  local grok=""
+  local grok="" child_term=${TERM:-}
   grok=$(grok_wrap_bin) || grok=""
   # Apple Terminal is 256-color. A non-256 TERM through wrap/ssh/tmux makes
   # Grok skip its background, so the TUI sits on a white terminal.
-  if [[ ${TERM:-} != *256color* && ${TERM:-} != *direct* && ${TERM:-} != *-kitty ]]; then
-    export TERM=xterm-256color
+  # Ghostty/kitty already advertise color; keep their TERM (#190). Prefix the
+  # child only — export would rewrite this lanjump process after SSH returns.
+  if [[ $child_term != *256color* && $child_term != *direct* && $child_term != *-kitty && $child_term != *ghostty* && ${TERM_PROGRAM:-} != ghostty ]]; then
+    child_term=xterm-256color
   fi
   if [[ ${TERM_PROGRAM:-} == Apple_Terminal ]]; then
     unset COLORTERM
@@ -1264,14 +1266,14 @@ ssh_tty() {
   if [[ -n $grok ]]; then
     print -u2 "剪贴板转发已开（grok wrap）。"
     if [[ -n ${LANJUMP_KEYS:-} ]]; then
-      "$grok" wrap "$LANJUMP_KEYS" ssh "$@"
+      TERM=$child_term "$grok" wrap "$LANJUMP_KEYS" ssh "$@"
     else
-      "$grok" wrap ssh "$@"
+      TERM=$child_term "$grok" wrap ssh "$@"
     fi
   elif [[ -n ${LANJUMP_KEYS:-} ]]; then
-    "$LANJUMP_KEYS" ssh "$@"
+    TERM=$child_term "$LANJUMP_KEYS" ssh "$@"
   else
-    command ssh "$@"
+    TERM=$child_term command ssh "$@"
   fi
 }
 
