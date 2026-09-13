@@ -2124,9 +2124,7 @@ read_last_session_name() {
 attach_named_session() {
   local name=$1 ask=${2:-0} want_new=${3:-0} live last ans
   [[ -n $name ]] || return 1
-  mark_snapshot_occupied "$name"
   load_session_snapshot
-  remember_last_session "$name"
   if (( ask )); then
     live=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_command}' 2>/dev/null || true)
     last=${snap_cmd[$name]:-}
@@ -2142,6 +2140,8 @@ attach_named_session() {
       print
     fi
   fi
+  mark_snapshot_occupied "$name"
+  remember_last_session "$name"
   maybe_resume_last_command "$name"
   if [[ $(effective_open_target 1 $want_new) != current ]]; then
     restore_tty
