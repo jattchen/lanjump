@@ -131,6 +131,101 @@ EOF
   expect_contains ssh/complete/keep-host 'Host keep-me' "$ssh_got"
   expect_contains ssh/complete/keep-hostname 'HostName other.local' "$ssh_got"
 
+  # #190: Ghostty TERM stays; Apple Terminal 256-color rewrite is ssh-child only.
+  local saved_path=$PATH
+  local saved_term=${TERM-}
+  local saved_term_program=${TERM_PROGRAM-}
+  local saved_no_wrap=${LANJUMP_NO_GROK_WRAP-}
+  local saved_keys=$LANJUMP_KEYS
+  local fake_bin=$tmpdir/bin
+  local child_term
+  mkdir -p "$fake_bin"
+  cat >"$fake_bin/ssh" <<EOF
+#!/bin/zsh
+print -r -- "\${TERM:-}" >"$tmpdir/child_term"
+exit 0
+EOF
+  chmod +x "$fake_bin/ssh"
+  PATH="$fake_bin:$PATH"
+  rehash
+  LANJUMP_NO_GROK_WRAP=1
+  LANJUMP_KEYS=""
+
+  TERM=xterm-ghostty
+  unset TERM_PROGRAM
+  : >"$tmpdir/child_term"
+  ssh_tty -o BatchMode=yes user@host
+  if [[ $TERM != xterm-ghostty ]]; then
+    print -u2 "FAIL ssh/ghostty-term parent mutated got=$(printf %q "$TERM")"
+    (( fails++ ))
+  fi
+  child_term=$(<"$tmpdir/child_term")
+  if [[ $child_term != xterm-ghostty ]]; then
+    print -u2 "FAIL ssh/ghostty-term child rewritten got=$(printf %q "$child_term")"
+    (( fails++ ))
+  fi
+
+  TERM=xterm
+  TERM_PROGRAM=ghostty
+  : >"$tmpdir/child_term"
+  ssh_tty -o BatchMode=yes user@host
+  if [[ $TERM != xterm ]]; then
+    print -u2 "FAIL ssh/ghostty-program parent mutated got=$(printf %q "$TERM")"
+    (( fails++ ))
+  fi
+  child_term=$(<"$tmpdir/child_term")
+  if [[ $child_term != xterm ]]; then
+    print -u2 "FAIL ssh/ghostty-program child rewritten got=$(printf %q "$child_term")"
+    (( fails++ ))
+  fi
+
+  TERM=xterm-kitty
+  unset TERM_PROGRAM
+  : >"$tmpdir/child_term"
+  ssh_tty -o BatchMode=yes user@host
+  if [[ $TERM != xterm-kitty ]]; then
+    print -u2 "FAIL ssh/kitty-term parent mutated got=$(printf %q "$TERM")"
+    (( fails++ ))
+  fi
+  child_term=$(<"$tmpdir/child_term")
+  if [[ $child_term != xterm-kitty ]]; then
+    print -u2 "FAIL ssh/kitty-term child rewritten got=$(printf %q "$child_term")"
+    (( fails++ ))
+  fi
+
+  TERM=xterm
+  unset TERM_PROGRAM
+  : >"$tmpdir/child_term"
+  ssh_tty -o BatchMode=yes user@host
+  if [[ $TERM != xterm ]]; then
+    print -u2 "FAIL ssh/xterm-parent parent mutated got=$(printf %q "$TERM")"
+    (( fails++ ))
+  fi
+  child_term=$(<"$tmpdir/child_term")
+  if [[ $child_term != xterm-256color ]]; then
+    print -u2 "FAIL ssh/xterm-child want xterm-256color got=$(printf %q "$child_term")"
+    (( fails++ ))
+  fi
+
+  PATH=$saved_path
+  rehash
+  if [[ -n $saved_term ]]; then
+    TERM=$saved_term
+  else
+    unset TERM
+  fi
+  if [[ -n $saved_term_program ]]; then
+    TERM_PROGRAM=$saved_term_program
+  else
+    unset TERM_PROGRAM
+  fi
+  if [[ -n $saved_no_wrap ]]; then
+    LANJUMP_NO_GROK_WRAP=$saved_no_wrap
+  else
+    unset LANJUMP_NO_GROK_WRAP
+  fi
+  LANJUMP_KEYS=$saved_keys
+
   SSH_CONFIG=$saved_ssh
   HOSTS_FILE=$saved_hosts
   KEY=$saved_key
