@@ -2396,6 +2396,7 @@ settings_remove_root() {
   local -i idx=$1 n
   (( idx >= 1 && idx <= ${#project_roots} )) || return 1
   project_roots[idx]=()
+  project_roots=("${project_roots[@]}")
   save_settings
   settings_n_rows
   n=$REPLY
