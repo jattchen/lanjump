@@ -2042,7 +2042,6 @@ cli_dispatch() {
       ;;
     list|ls)
       cli_list_names "$host" --print-sessions || return 1
-      mark_last "$host"
       ;;
     last)
       has_st=0
