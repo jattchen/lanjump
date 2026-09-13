@@ -3555,6 +3555,90 @@ pick_selftest() {
   functions -c _st194_resume maybe_resume_last_command
   unset -f _st194_restore _st194_tmux_tty _st194_snap _st194_eot _st194_resume
 
+  # #204: list n filling an existing name must ask before resume, like Enter.
+  # q does not resume and does not occupy.
+  functions -c restore_tty _st204_restore
+  functions -c setup_tty _st204_setup
+  functions -c draw _st204_draw
+  functions -c load_items _st204_load_items
+  functions -c tmux_prepare_color _st204_color
+  functions -c tmux_prepare_keys _st204_keys
+  functions -c tmux_tty _st204_tmux_tty
+  functions -c snapshot_live_sessions _st204_snap
+  functions -c effective_open_target _st204_eot
+  restore_tty() { : }
+  setup_tty() { : }
+  draw() { : }
+  load_items() { : }
+  tmux_prepare_color() { : }
+  tmux_prepare_keys() { : }
+  tmux_tty() { : }
+  snapshot_live_sessions() { : }
+  effective_open_target() { print -r -- current; }
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session) return 0 ;;
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- /proj/lanjump
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes)
+        print -r -- $'%1\tzsh'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  snap_names=(demo)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[demo]=/proj/lanjump
+  snap_occupied[demo]=0
+  snap_workspace[demo]=0
+  snap_cmd[demo]=grok-1.0.24-mac
+  snap_attached[demo]=123
+  pinned_names=()
+  HAS_TMUX=1
+  LANJUMP_GROK_BIN=grok
+  attach_shell_only=0
+  save_session_snapshot
+  out=$(print -l -- demo '' q | prompt_new)
+  load_session_snapshot
+  if [[ $out != *'上次在跑 grok'* ]]; then
+    print -u2 "FAIL resume/n-existing-ask missing prompt got=$(printf %q "$out")"
+    (( fails++ ))
+  fi
+  expect resume/n-existing-q-ws 0 "${snap_workspace[demo]:-}"
+  expect resume/n-existing-q-att 123 "${snap_attached[demo]:-}"
+  expect resume/n-existing-q-occ 0 "${snap_occupied[demo]:-}"
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log == *'respawn-pane'* || $restore_log == *'grok -c'* || $restore_log == *'grok --resume'* ]]; then
+    print -u2 "FAIL resume/n-existing-q still resumed got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  drop_snap_record demo
+  save_session_snapshot
+  functions -c _st204_restore restore_tty
+  functions -c _st204_setup setup_tty
+  functions -c _st204_draw draw
+  functions -c _st204_load_items load_items
+  functions -c _st204_color tmux_prepare_color
+  functions -c _st204_keys tmux_prepare_keys
+  functions -c _st204_tmux_tty tmux_tty
+  functions -c _st204_snap snapshot_live_sessions
+  functions -c _st204_eot effective_open_target
+  unset -f _st204_restore _st204_setup _st204_draw _st204_load_items \
+    _st204_color _st204_keys _st204_tmux_tty _st204_snap _st204_eot
+
   : >"$tmux_log"
   snap_cwd[reattach-cwd]=/proj/lanjump
   tmuxx() {

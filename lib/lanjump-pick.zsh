@@ -4136,7 +4136,7 @@ prompt_new() {
         tmux_set_pinned "$name" 1
       fi
     fi
-    attach_named_session "$name" 0 $want_new
+    attach_named_session "$name" 1 $want_new
   else
     if [[ -z $name ]]; then
       created=$(tmuxx new-session -d -P -F '#{session_name}' 2>/dev/null) || created=
