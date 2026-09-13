@@ -2026,11 +2026,15 @@ cli_dispatch() {
       ;;
     work)
       names=("${(@f)$(cli_list_names "$host" --print-workspace)}") || return 1
+      # Mark before open: current-window exec-attach never returns.
+      mark_last "$host"
       cli_open_tabs "$host" "${names[@]}" || return 1
       mark_last "$host"
       ;;
     pins)
       names=("${(@f)$(cli_list_names "$host" --print-pinned)}") || return 1
+      # Mark before open: current-window exec-attach never returns.
+      mark_last "$host"
       cli_open_tabs "$host" "${names[@]}" || return 1
       mark_last "$host"
       ;;

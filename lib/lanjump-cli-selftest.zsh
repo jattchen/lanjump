@@ -1546,9 +1546,39 @@ if (( st != 0 )); then
 fi
 expect_contains last-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=studio-recent1' "$hay"
 
+# #188: work/pins exec-attach in the current window (no Ghostty over SSH)
+# and never return to a later mark_last. Same as go/attach/last (#168).
+_lj_save_cli_open_tabs=$functions[cli_open_tabs]
+cli_open_tabs() {
+  print -r -- "OPEN_DURING last=$(read_last) host=$1" >>"$log"
+}
+
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+cli_dispatch work local >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL work-local-mark-before-open/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains work-local-mark-before-open/during 'OPEN_DURING last=local host=local' "$hay"
+
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+cli_dispatch pins local >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL pins-local-mark-before-open/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains pins-local-mark-before-open/during 'OPEN_DURING last=local host=local' "$hay"
+
 functions[mark_last]=$_lj_save_mark_last
 functions[cli_attach_one]=$_lj_save_cli_attach_one
-unset _lj_save_mark_last _lj_save_cli_attach_one
+functions[cli_open_tabs]=$_lj_save_cli_open_tabs
+unset _lj_save_mark_last _lj_save_cli_attach_one _lj_save_cli_open_tabs
 TEST_LAST_HOST=local
 
 st=0
