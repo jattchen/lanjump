@@ -2055,8 +2055,9 @@ cli_dispatch() {
       fi
       session=$(cli_recent_select "${names[@]}") || return 1
       # Mark before attach: remote SSH blocks until it returns.
+      # --shell skips maybe_resume, same as go/attach.
       mark_last "$host"
-      cli_attach_one "$host" "$session" 0 || return 1
+      cli_attach_one "$host" "$session" $shell || return 1
       mark_last "$host"
       ;;
     *)
