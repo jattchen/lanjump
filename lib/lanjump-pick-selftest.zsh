@@ -3884,6 +3884,27 @@ pick_selftest() {
   settings_delete_key
   expect settings/delete-key-noop '/opt/keep' "${project_roots[*]}"
 
+  # #196: deleting the first root must compact so a second d removes the rest.
+  project_roots=('/opt/a' '/opt/b')
+  settings_cursor=3
+  settings_delete_key
+  expect settings/delete-consecutive-first '/opt/b' "${project_roots[*]}"
+  expect settings/delete-consecutive-first-len 1 "${#project_roots}"
+  expect settings/delete-consecutive-first-idx1 '/opt/b' "${project_roots[1]-}"
+  settings_n_rows
+  if (( settings_cursor < 1 || settings_cursor > REPLY )); then
+    print -u2 "FAIL settings/delete-consecutive-first-cursor got=$settings_cursor n=$REPLY"
+    (( fails++ ))
+  fi
+  settings_delete_key
+  expect settings/delete-consecutive-second '' "${project_roots[*]}"
+  expect settings/delete-consecutive-second-len 0 "${#project_roots}"
+  settings_n_rows
+  if (( settings_cursor < 1 || settings_cursor > REPLY )); then
+    print -u2 "FAIL settings/delete-consecutive-second-cursor got=$settings_cursor n=$REPLY"
+    (( fails++ ))
+  fi
+
   project_roots=('/tmp/only')
   save_settings
   project_roots=()
