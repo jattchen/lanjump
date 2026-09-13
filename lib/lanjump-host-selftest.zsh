@@ -267,6 +267,33 @@ host_selftest() {
     (( fails++ ))
   fi
 
+  # #186: 「已保存 · 上次」 follows LAST_FILE (read_last), not max h_last.
+  local saved_last_file=$LAST_FILE
+  local last_tmp office_status studio_status
+  last_tmp=$(mktemp) || return 1
+  LAST_FILE=$last_tmp
+  print -r -- office >"$LAST_FILE"
+  h_alias=(office studio)
+  h_user=(mac mac)
+  h_hostname=(office.local studio.local)
+  h_ip=(10.0.0.1 10.0.0.2)
+  h_mac=('' '')
+  h_last=(100 200)
+  build_items
+  office_status=
+  studio_status=
+  for (( i = 1; i <= ${#items_kind}; i++ )); do
+    if [[ ${items_kind[$i]} == host && ${items_alias[$i]} == office ]]; then
+      office_status=${items_status[$i]}
+    elif [[ ${items_kind[$i]} == host && ${items_alias[$i]} == studio ]]; then
+      studio_status=${items_status[$i]}
+    fi
+  done
+  expect host/last-badge/office '已保存 · 上次' "$office_status"
+  expect host/last-badge/studio '已保存' "$studio_status"
+  LAST_FILE=$saved_last_file
+  rm -f "$last_tmp"
+
   if (( fails )); then
     print -u2 "host-selftest: $fails failed"
     return 1
