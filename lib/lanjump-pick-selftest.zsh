@@ -3948,10 +3948,25 @@ pick_selftest() {
     (( fails++ ))
   fi
 
-  project_roots=('/tmp/only')
+  # #200: clearing every root must persist. No project_root key still defaults.
+  project_roots=("$r1" "$r2")
+  save_settings
+  settings_cursor=3
+  settings_delete_key
+  settings_delete_key
   save_settings
   project_roots=()
-  save_settings
+  load_settings
+  expect settings/cleared-stays-empty '' "${project_roots[*]}"
+  expect settings/cleared-stays-empty-len 0 "${#project_roots}"
+
+  print -r -- $'open_target auto\nopen_placement window\nproject_root\n' >"$HOME/Library/Application Support/lanjump/settings"
+  project_roots=(leftover)
+  load_settings
+  expect settings/empty-sentinel '' "${project_roots[*]}"
+
+  print -r -- $'open_target auto\nopen_placement window\n' >"$HOME/Library/Application Support/lanjump/settings"
+  project_roots=()
   load_settings
   expect settings/empty-redefault "$HOME/Documents/projects" "${project_roots[*]}"
 
