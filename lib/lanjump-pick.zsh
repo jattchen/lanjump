@@ -4106,7 +4106,7 @@ prompt_new() {
   restore_tty
   print
   print -n "新 session 名称（回车=自动命名）: "
-  local name pinans created cwd
+  local name pinans created cwd live last
   local -i pin=0
   read -r name
   name=${name##[[:space:]]#}
@@ -4127,7 +4127,14 @@ prompt_new() {
   tmux_prepare_color
   tmux_prepare_keys
   if [[ -n $name ]] && tmuxx has-session -t "=$name" 2>/dev/null; then
-    print "session「${name}」已存在，直接进入。"
+    load_session_snapshot
+    live=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_command}' 2>/dev/null || true)
+    last=${snap_cmd[$name]:-}
+    if pane_is_idle_shell "$live" && last_command_resumable "$last" && ! select_live_grok_pane "$name"; then
+      print "session「${name}」已存在。"
+    else
+      print "session「${name}」已存在，直接进入。"
+    fi
     if (( pin )); then
       if ensure_pinnable_session_name "$name"; then
         name=$REPLY
