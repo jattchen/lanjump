@@ -658,7 +658,6 @@ build_items() {
       idx_order+=("${h_last[$i]}/${i}")
     done
     idx_order=("${(@nO)idx_order}")
-    local first=${idx_order[1]##*/}
     for i in "${idx_order[@]}"; do
       idx=${i##*/}
       items_kind+=("host")
@@ -667,7 +666,7 @@ build_items() {
       items_hostname+=("${h_hostname[$idx]}")
       items_ip+=("${h_ip[$idx]}")
       items_mac+=("${h_mac[$idx]}")
-      if [[ $idx == "$first" && $last != local ]]; then
+      if [[ ${h_alias[$idx]} == "$last" && $last != local ]]; then
         items_status+=("已保存 · 上次")
       else
         items_status+=("已保存")
