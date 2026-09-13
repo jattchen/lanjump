@@ -349,6 +349,9 @@ expect_eq default-host/sentinel local "$(default_cli_host)"
 rm -f "$LAST_FILE"
 expect_eq default-host/missing local "$(default_cli_host)"
 
+# #90: omitted-host list with a forgotten last alias still lists local
+# (default_cli_host), not 「没有保存的机器」.
+# #192: listing is not entering; do not rewrite LAST_FILE.
 print -r -- studio >"$LAST_FILE"
 : >"$log"
 st=0
@@ -358,7 +361,7 @@ if (( st != 0 )); then
   (( fails++ ))
 fi
 expect_absent list-forgotten/no-missing '没有保存的机器' "$err"
-expect_eq list-forgotten/last local "$(read_last)"
+expect_eq list-forgotten/last studio "$(read_last)"
 
 _lj_save_restore_tty=$functions[restore_tty]
 _lj_save_setup_tty=$functions[setup_tty]
@@ -1523,6 +1526,7 @@ if (( st != 0 )); then
   (( fails++ ))
 fi
 expect_contains go-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=demo' "$hay"
+expect_eq go-remote-mark-before-attach/last-file studio "$(read_last)"
 
 print -r -- office >"$LAST_FILE"
 : >"$log"
@@ -1534,6 +1538,7 @@ if (( st != 0 )); then
   (( fails++ ))
 fi
 expect_contains attach-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=demo' "$hay"
+expect_eq attach-remote-mark-before-attach/last-file studio "$(read_last)"
 
 print -r -- office >"$LAST_FILE"
 : >"$log"
@@ -1545,6 +1550,7 @@ if (( st != 0 )); then
   (( fails++ ))
 fi
 expect_contains last-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=studio-recent1' "$hay"
+expect_eq last-remote-mark-before-attach/last-file studio "$(read_last)"
 
 # #188: work/pins exec-attach in the current window (no Ghostty over SSH)
 # and never return to a later mark_last. Same as go/attach/last (#168).
@@ -1563,6 +1569,7 @@ if (( st != 0 )); then
   (( fails++ ))
 fi
 expect_contains work-local-mark-before-open/during 'OPEN_DURING last=local host=local' "$hay"
+expect_eq work-local-mark-before-open/last-file local "$(read_last)"
 
 print -r -- office >"$LAST_FILE"
 : >"$log"
@@ -1574,6 +1581,60 @@ if (( st != 0 )); then
   (( fails++ ))
 fi
 expect_contains pins-local-mark-before-open/during 'OPEN_DURING last=local host=local' "$hay"
+expect_eq pins-local-mark-before-open/last-file local "$(read_last)"
+
+# #192: list/ls is not entering. LAST_FILE stays the previously entered host.
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+cli_dispatch list local >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL list-local-no-mark/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains list-local-no-mark/list 'LIST host=local flag=--print-sessions' "$hay"
+expect_absent list-local-no-mark/no-last 'LAST ' "$hay"
+expect_eq list-local-no-mark/last office "$(read_last)"
+
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+cli_dispatch list studio >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL list-saved-no-mark/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains list-saved-no-mark/list 'LIST host=studio flag=--print-sessions' "$hay"
+expect_absent list-saved-no-mark/no-last 'LAST ' "$hay"
+expect_eq list-saved-no-mark/last office "$(read_last)"
+
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+cli_dispatch ls studio >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL ls-saved-no-mark/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains ls-saved-no-mark/list 'LIST host=studio flag=--print-sessions' "$hay"
+expect_absent ls-saved-no-mark/no-last 'LAST ' "$hay"
+expect_eq ls-saved-no-mark/last office "$(read_last)"
+
+print -r -- office >"$LAST_FILE"
+: >"$log"
+st=0
+err=$(cli_dispatch list nosuchhost 2>&1) || st=$?
+hay=$(read_log)
+if (( st == 0 )); then
+  print -u2 "FAIL list-unknown-no-mark/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains list-unknown-no-mark/msg '没有保存的机器「nosuchhost」。' "$err"
+expect_absent list-unknown-no-mark/no-last 'LAST ' "$hay"
+expect_eq list-unknown-no-mark/last office "$(read_last)"
 
 functions[mark_last]=$_lj_save_mark_last
 functions[cli_attach_one]=$_lj_save_cli_attach_one
