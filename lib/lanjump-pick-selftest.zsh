@@ -3617,6 +3617,11 @@ pick_selftest() {
     print -u2 "FAIL resume/n-existing-ask missing prompt got=$(printf %q "$out")"
     (( fails++ ))
   fi
+  # #206: do not say 直接进入 when the resume prompt follows.
+  if [[ $out == *'直接进入'* ]]; then
+    print -u2 "FAIL resume/n-existing-direct-enter still said 直接进入 got=$(printf %q "$out")"
+    (( fails++ ))
+  fi
   expect resume/n-existing-q-ws 0 "${snap_workspace[demo]:-}"
   expect resume/n-existing-q-att 123 "${snap_attached[demo]:-}"
   expect resume/n-existing-q-occ 0 "${snap_occupied[demo]:-}"
