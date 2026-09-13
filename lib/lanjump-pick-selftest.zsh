@@ -3433,6 +3433,85 @@ pick_selftest() {
   unset -f _st105_mark _st105_load _st105_remember _st105_restore \
     _st105_tmux_tty _st105_snap _st105_eot
 
+  # #194: resume prompt q must not occupy the snapshot; y/enter still must.
+  functions -c restore_tty _st194_restore
+  functions -c tmux_tty _st194_tmux_tty
+  functions -c snapshot_live_sessions _st194_snap
+  functions -c effective_open_target _st194_eot
+  functions -c maybe_resume_last_command _st194_resume
+  restore_tty() { : }
+  tmux_tty() { : }
+  snapshot_live_sessions() { : }
+  effective_open_target() { print -r -- current; }
+  maybe_resume_last_command() { : }
+  tmuxx() {
+    case $1 in
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- /proj/lanjump
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      list-panes)
+        print -r -- $'%1\tzsh'
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  snap_names=(idle-grok)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[idle-grok]=/proj/lanjump
+  snap_occupied[idle-grok]=0
+  snap_workspace[idle-grok]=0
+  snap_cmd[idle-grok]=grok-1.0.24-mac
+  snap_attached[idle-grok]=123
+  pinned_names=()
+  save_session_snapshot
+  print -r -- q | attach_named_session idle-grok 1 0 >/dev/null
+  load_session_snapshot
+  expect resume/cancel-q-ws 0 "${snap_workspace[idle-grok]:-}"
+  expect resume/cancel-q-att 123 "${snap_attached[idle-grok]:-}"
+  expect resume/cancel-q-occ 0 "${snap_occupied[idle-grok]:-}"
+  snap_workspace[idle-grok]=0
+  snap_occupied[idle-grok]=0
+  snap_attached[idle-grok]=123
+  save_session_snapshot
+  print -r -- y | attach_named_session idle-grok 1 0 >/dev/null
+  load_session_snapshot
+  expect resume/enter-y-ws 1 "${snap_workspace[idle-grok]:-}"
+  expect resume/enter-y-occ 1 "${snap_occupied[idle-grok]:-}"
+  if [[ ${snap_attached[idle-grok]:-0} == 123 || ${snap_attached[idle-grok]:-0} == 0 ]]; then
+    print -u2 "FAIL resume/enter-y-att still old got=${snap_attached[idle-grok]:-}"
+    (( fails++ ))
+  fi
+  snap_workspace[idle-grok]=0
+  snap_occupied[idle-grok]=0
+  snap_attached[idle-grok]=123
+  save_session_snapshot
+  print -r -- '' | attach_named_session idle-grok 1 0 >/dev/null
+  load_session_snapshot
+  expect resume/enter-empty-ws 1 "${snap_workspace[idle-grok]:-}"
+  expect resume/enter-empty-occ 1 "${snap_occupied[idle-grok]:-}"
+  if [[ ${snap_attached[idle-grok]:-0} == 123 || ${snap_attached[idle-grok]:-0} == 0 ]]; then
+    print -u2 "FAIL resume/enter-empty-att still old got=${snap_attached[idle-grok]:-}"
+    (( fails++ ))
+  fi
+  drop_snap_record idle-grok
+  save_session_snapshot
+  functions -c _st194_restore restore_tty
+  functions -c _st194_tmux_tty tmux_tty
+  functions -c _st194_snap snapshot_live_sessions
+  functions -c _st194_eot effective_open_target
+  functions -c _st194_resume maybe_resume_last_command
+  unset -f _st194_restore _st194_tmux_tty _st194_snap _st194_eot _st194_resume
+
   : >"$tmux_log"
   snap_cwd[reattach-cwd]=/proj/lanjump
   tmuxx() {
