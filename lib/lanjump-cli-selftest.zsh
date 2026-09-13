@@ -1180,6 +1180,37 @@ expect_absent last-host/not-local 'LAST host=local' "$hay"
 expect_absent last-host/not-local-list 'LIST host=local' "$hay"
 TEST_LAST_HOST=local
 
+# #202: last --shell must skip resume, same as go name --shell.
+: >"$log"
+st=0
+cli_dispatch last --shell >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL last-shell/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains last-shell/list 'LIST host=local flag=--print-recent' "$hay"
+expect_contains last-shell/select 'SELECT local-recent1 local-recent2' "$hay"
+expect_contains last-shell/attach 'PICK_EXEC --attach --shell local-recent1' "$hay"
+expect_absent last-shell/no-resume 'PICK_EXEC --attach local-recent1' "$hay"
+expect_contains last-shell/last 'LAST host=local' "$hay"
+
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+cli_dispatch last office --shell >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL last-host-shell/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains last-host-shell/list 'LIST host=office flag=--print-recent' "$hay"
+expect_contains last-host-shell/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains last-host-shell/shell '--attach --shell office-recent1' "$hay"
+expect_absent last-host-shell/no-resume 'argv=--attach office-recent1' "$hay"
+expect_contains last-host-shell/last 'LAST host=office' "$hay"
+TEST_LAST_HOST=local
+
 # #178: last must not treat connect failure as an empty recent list.
 # work/list already return on cli_list_names failure; last did not.
 : >"$log"
