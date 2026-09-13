@@ -2314,8 +2314,8 @@ load_settings() {
         project_root)
           val=${val##[[:space:]]#}
           val=${val%%[[:space:]]#}
-          [[ -n $val ]] || continue
           saw_project_root=1
+          [[ -n $val ]] || continue
           project_roots+=("$val")
           ;;
       esac
@@ -2332,9 +2332,13 @@ save_settings() {
   mkdir -p "$dir"
   print -r -- "open_target ${open_target}" >"$file"
   print -r -- "open_placement ${open_placement}" >>"$file"
-  for root in "${project_roots[@]}"; do
-    print -r -- "project_root ${root}" >>"$file"
-  done
+  if (( ${#project_roots} )); then
+    for root in "${project_roots[@]}"; do
+      print -r -- "project_root ${root}" >>"$file"
+    done
+  else
+    print -r -- "project_root" >>"$file"
+  fi
 }
 
 settings_value_label() {
