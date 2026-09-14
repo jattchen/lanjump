@@ -4124,8 +4124,8 @@ prompt_new() {
   [[ $HAS_TMUX -eq 1 ]] || return
   restore_tty
   print
-  print -n "新 session 名称（回车=自动命名）: "
-  local name pinans created cwd live last
+  print -n "新 session 名称（回车=自动命名；答完常驻后 Enter=当前窗口、t=新窗口）: "
+  local name pinans openans created cwd live last
   local -i pin=0
   read -r name
   name=${name##[[:space:]]#}
@@ -4143,6 +4143,17 @@ prompt_new() {
   if [[ $pinans == y || $pinans == Y ]]; then
     pin=1
   fi
+  print -n "打开方式（Enter 当前窗口，t 新窗口，q 取消）: "
+  read -r openans || openans=
+  case $openans in
+    t|T) want_new=1 ;;
+    q|Q)
+      setup_tty
+      load_items
+      draw
+      return
+      ;;
+  esac
   tmux_prepare_color
   tmux_prepare_keys
   if [[ -n $name ]] && tmuxx has-session -t "=$name" 2>/dev/null; then
