@@ -2823,9 +2823,55 @@ pick_selftest() {
     (( fails++ ))
   fi
   attach_shell_only=0
+  # #127: Terminal do script interpolates zsh ${(q)} into AppleScript "...";
+  # acc\ test is not a valid AppleScript string (osacompile -2741).
+  saved_placement=$open_placement
+  open_placement=tab
+  script=$(terminal_osascript_for_sessions 'acc test' clipkeep)
+  if [[ $script == *'acc\ test'* ]]; then
+    print -u2 "FAIL terminal/space-tab raw acc\\ test inside AppleScript quotes got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'acc\\ test'* ]]; then
+    print -u2 "FAIL terminal/space-tab missing AppleScript-escaped acc test got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'front window'* && $script != *'count of windows'* ]]; then
+    print -u2 "FAIL terminal/space-tab missing front window placement got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'do script'*' in '* ]]; then
+    print -u2 "FAIL terminal/space-tab missing do script in window got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  print -r -- "$script" >"$testhome/terminal-space-tab.applescript"
+  if ! /usr/bin/osacompile -o "$testhome/terminal-space-tab.scpt" "$testhome/terminal-space-tab.applescript" 2>"$testhome/osacompile-terminal-space-tab.err"; then
+    print -u2 "FAIL terminal/space-tab-compile $(<"$testhome/osacompile-terminal-space-tab.err") got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  open_placement=window
+  script=$(terminal_osascript_for_sessions 'acc test' clipkeep)
+  if [[ $script == *'acc\ test'* ]]; then
+    print -u2 "FAIL terminal/space-window raw acc\\ test inside AppleScript quotes got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script == *'front window'* ]]; then
+    print -u2 "FAIL terminal/space-window attached first session to front window got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  print -r -- "$script" >"$testhome/terminal-space-window.applescript"
+  if ! /usr/bin/osacompile -o "$testhome/terminal-space-window.scpt" "$testhome/terminal-space-window.applescript" 2>"$testhome/osacompile-terminal-space-window.err"; then
+    print -u2 "FAIL terminal/space-window-compile $(<"$testhome/osacompile-terminal-space-window.err") got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  open_placement=$saved_placement
   script=$(terminal_osascript_for_sessions 'my app')
-  if [[ $script != *"$(printf %q 'my app')"* ]]; then
-    print -u2 "FAIL terminal/space-name missing quoted my app got=$(printf %q "$script")"
+  if [[ $script == *'my\ app'* ]]; then
+    print -u2 "FAIL terminal/space-name raw my\\ app inside AppleScript quotes got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'my\\ app'* ]]; then
+    print -u2 "FAIL terminal/space-name missing AppleScript-escaped my app got=$(printf %q "$script")"
     (( fails++ ))
   fi
   local helper_src helper_got helper_home

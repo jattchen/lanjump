@@ -2568,8 +2568,10 @@ ghostty_attach_helper() {
   print -r -- "$helper"
 }
 
+# AppleScript "..." treats \ as escape and doubles ".
 ghostty_applescript_string() {
   local s=$1
+  s=${s//\\/\\\\}
   s=${s//\"/\"\"}
   print -r -- "\"$s\""
 }
@@ -2728,22 +2730,22 @@ terminal_osascript_for_sessions() {
     print -r -- '    if (count of windows) > 0 then set w to front window'
     print -r -- '  end try'
     print -r -- '  if w is missing value then'
-    print -r -- "    set t to do script \"${cmd}\""
+    print -r -- "    set t to do script $(ghostty_applescript_string "$cmd")"
     if (( $# )); then
       print -r -- '    set w to window of t'
     fi
     print -r -- '  else'
-    print -r -- "    set t to do script \"${cmd}\" in w"
+    print -r -- "    set t to do script $(ghostty_applescript_string "$cmd") in w"
     print -r -- '  end if'
   else
-    print -r -- "  set t to do script \"${cmd}\""
+    print -r -- "  set t to do script $(ghostty_applescript_string "$cmd")"
     if (( $# )); then
       print -r -- '  set w to window of t'
     fi
   fi
   for n in "$@"; do
     cmd=$(attach_command_for "$n")
-    print -r -- "  do script \"${cmd}\" in w"
+    print -r -- "  do script $(ghostty_applescript_string "$cmd") in w"
   done
   print -r -- 'end tell'
 }
