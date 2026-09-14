@@ -2540,13 +2540,32 @@ ghostty_attach_bin() {
 }
 
 ghostty_attach_helper() {
-  local bin
+  local bin helper app
   if [[ -n ${LANJUMP_GHOSTTY_ATTACH:-} ]]; then
     print -r -- "$LANJUMP_GHOSTTY_ATTACH"
     return
   fi
   bin=$(ghostty_attach_bin)
-  print -r -- "${bin:h}/lanjump-ghostty-attach"
+  helper=${bin:h}/lanjump-ghostty-attach
+  if [[ -x $helper ]]; then
+    print -r -- "$helper"
+    return
+  fi
+  # Ghostty login/bash -c needs a space-free command; restore ~/.local/bin (#32).
+  app="$HOME/Library/Application Support/lanjump/lanjump-ghostty-attach"
+  if [[ -x $app ]]; then
+    mkdir -p "${helper:h}" 2>/dev/null || true
+    if cp -f "$app" "$helper" 2>/dev/null; then
+      chmod 755 "$helper" 2>/dev/null || true
+      if [[ -x $helper ]]; then
+        print -r -- "$helper"
+        return
+      fi
+    fi
+    print -r -- "$app"
+    return
+  fi
+  print -r -- "$helper"
 }
 
 ghostty_applescript_string() {

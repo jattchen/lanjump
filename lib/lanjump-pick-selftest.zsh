@@ -2841,6 +2841,60 @@ pick_selftest() {
   expect ghostty/helper-plain 'ATTACH attach lanjump' "$helper_got"
   rm -rf "$helper_home"
 
+  # #32: ~/.local/bin helper missing; use Application Support copy and self-heal.
+  local helper_app helper_bin saved_attach_bin saved_ghostty_attach
+  helper_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-ghostty-missing-bin.XXXXXX")
+  mkdir -p "$helper_home/Library/Application Support/lanjump"
+  helper_app="$helper_home/Library/Application Support/lanjump/lanjump-ghostty-attach"
+  helper_bin="$helper_home/.local/bin/lanjump-ghostty-attach"
+  print -r -- $'#!/bin/zsh\nexit 0' >"$helper_app"
+  chmod 755 "$helper_app"
+  saved_attach_bin=${LANJUMP_ATTACH_BIN:-}
+  saved_ghostty_attach=${LANJUMP_GHOSTTY_ATTACH:-}
+  HOME=$helper_home
+  LANJUMP_ATTACH_BIN=$HOME/.local/bin/lanjump
+  unset LANJUMP_GHOSTTY_ATTACH
+  helper_got=$(ghostty_attach_helper)
+  expect ghostty/helper-missing-bin-path "$helper_bin" "$helper_got"
+  if [[ ! -x $helper_got ]]; then
+    print -u2 "FAIL ghostty/helper-missing-bin path is not executable got=$(printf %q "$helper_got")"
+    (( fails++ ))
+  fi
+  if [[ $helper_got == *[[:space:]]* ]]; then
+    print -u2 "FAIL ghostty/helper-missing-bin command path has spaces got=$(printf %q "$helper_got")"
+    (( fails++ ))
+  fi
+  if [[ ! -x $helper_bin ]]; then
+    print -u2 "FAIL ghostty/helper-missing-bin did not restore ~/.local/bin copy"
+    (( fails++ ))
+  fi
+  script=$(ghostty_osascript_for_sessions somename)
+  cmd=$(print -r -- "$script" | ghostty_command_of_cfg)
+  if [[ $cmd != "$helper_got" ]]; then
+    print -u2 "FAIL ghostty/helper-missing-bin script command mismatch got=$(printf %q "$cmd") helper=$(printf %q "$helper_got")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'set command of cfg to "'$helper_got'"'* ]]; then
+    print -u2 "FAIL ghostty/helper-missing-bin script missing existing helper command got=$(printf %q "$script") helper=$(printf %q "$helper_got")"
+    (( fails++ ))
+  fi
+  if [[ $cmd == *[[:space:]]* ]]; then
+    print -u2 "FAIL ghostty/helper-missing-bin script command has spaces got=$(printf %q "$cmd")"
+    (( fails++ ))
+  fi
+  HOME=$testhome
+  if [[ -n $saved_attach_bin ]]; then
+    LANJUMP_ATTACH_BIN=$saved_attach_bin
+  else
+    unset LANJUMP_ATTACH_BIN
+  fi
+  if [[ -n $saved_ghostty_attach ]]; then
+    LANJUMP_GHOSTTY_ATTACH=$saved_ghostty_attach
+  else
+    unset LANJUMP_GHOSTTY_ATTACH
+  fi
+  rm -rf "$helper_home"
+
   snap_names=(keep drop)
   snap_cwd=()
   snap_occupied=()
