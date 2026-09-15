@@ -2537,6 +2537,14 @@ pick_selftest() {
     print -u2 "FAIL terminal/tab-placement missing session tab titles got=$(printf %q "$script")"
     (( fails++ ))
   fi
+  if [[ $script != *'title displays custom title of t to true'* ]]; then
+    print -u2 "FAIL terminal/tab-placement missing title displays custom title got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'exec -a a '* || $script != *'exec -a b '* ]]; then
+    print -u2 "FAIL terminal/tab-placement missing exec -a session argv0 got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
   print -r -- "$script" >"$testhome/terminal-tab.applescript"
   if ! /usr/bin/osacompile -o "$testhome/terminal-tab.scpt" "$testhome/terminal-tab.applescript" 2>"$testhome/osacompile-terminal-tab.err"; then
     print -u2 "FAIL terminal/tab-compile $(<"$testhome/osacompile-terminal-tab.err") got=$(printf %q "$script")"
@@ -2851,6 +2859,10 @@ pick_selftest() {
   fi
   if [[ $script != *'custom title of t to "acc test"'* || $script != *'custom title of t to "clipkeep"'* ]]; then
     print -u2 "FAIL terminal/space-tab missing session titles got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'title displays custom title of t to true'* ]]; then
+    print -u2 "FAIL terminal/space-tab missing title displays custom title got=$(printf %q "$script")"
     (( fails++ ))
   fi
   print -r -- "$script" >"$testhome/terminal-space-tab.applescript"

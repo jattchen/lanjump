@@ -2599,6 +2599,18 @@ attach_command_for() {
   fi
 }
 
+# Terminal tab chips show argv0. exec -a so the pill is the session name (#127).
+terminal_attach_command_for() {
+  local name=$1 spec bin
+  spec=$(attach_spec_for "$name")
+  bin=$(ghostty_attach_bin)
+  if (( attach_shell_only )); then
+    print -r -- "exec -a ${(q)name} -- ${(q)bin} attach --shell ${(q)spec}"
+  else
+    print -r -- "exec -a ${(q)name} -- ${(q)bin} attach ${(q)spec}"
+  fi
+}
+
 workspace_restore_prompt_text() {
   print -r -- "工作区：${(j:、:)@}"
   print -r -- "1  打开窗口；能续的续上，其余进空 shell"
@@ -2720,6 +2732,19 @@ ghostty_osascript_for_sessions() {
   fi
 }
 
+terminal_apply_tab_title() {
+  # Tab chips otherwise show `tmux attach-session -t =name`. Force the session name.
+  print -r -- "  set custom title of t to $(ghostty_applescript_string "$1")"
+  print -r -- '  set title displays custom title of t to true'
+  print -r -- '  try'
+  print -r -- '    set title displays file name of t to false'
+  print -r -- '    set title displays window size of t to false'
+  print -r -- '    set title displays settings name of t to false'
+  print -r -- '    set title displays device name of t to false'
+  print -r -- '    set title displays shell path of t to false'
+  print -r -- '  end try'
+}
+
 terminal_tab_do_script() {
   # Extra sessions: Cmd+T in the window we just opened, never the picker tty.
   print -r -- 'tell application "System Events"'
@@ -2731,7 +2756,7 @@ terminal_tab_do_script() {
   print -r -- 'delay 0.4'
   print -r -- 'tell application "Terminal"'
   print -r -- "  set t to do script $(ghostty_applescript_string "$1") in selected tab of front window"
-  print -r -- "  set custom title of t to $(ghostty_applescript_string "$2")"
+  terminal_apply_tab_title "$2"
   print -r -- 'end tell'
 }
 
@@ -2740,25 +2765,25 @@ terminal_osascript_for_sessions() {
   (( $# )) || return 1
   first=$1
   shift
-  cmd=$(attach_command_for "$first")
+  cmd=$(terminal_attach_command_for "$first")
   print -r -- 'tell application "Terminal" to activate'
   print -r -- 'delay 0.15'
   # Ghostty work: new window, then tabs in that window. Match that (#127).
   print -r -- 'tell application "Terminal"'
   print -r -- "  set t to do script $(ghostty_applescript_string "$cmd")"
-  print -r -- "  set custom title of t to $(ghostty_applescript_string "$first")"
+  terminal_apply_tab_title "$first"
   print -r -- 'end tell'
   if [[ $open_placement == tab ]]; then
     for n in "$@"; do
-      cmd=$(attach_command_for "$n")
+      cmd=$(terminal_attach_command_for "$n")
       terminal_tab_do_script "$cmd" "$n"
     done
   else
     print -r -- 'tell application "Terminal"'
     for n in "$@"; do
-      cmd=$(attach_command_for "$n")
+      cmd=$(terminal_attach_command_for "$n")
       print -r -- "  set t to do script $(ghostty_applescript_string "$cmd")"
-      print -r -- "  set custom title of t to $(ghostty_applescript_string "$n")"
+      terminal_apply_tab_title "$n"
     done
     print -r -- 'end tell'
   fi
