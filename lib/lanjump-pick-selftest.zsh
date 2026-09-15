@@ -21,7 +21,7 @@
 # preview_grok_lines, preview_generic_lines, preview_select_lines,
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
 # draw_on_winch,
-# resume_prompt_choice, attach_command_for, new_session_flag_invalid, prompt_new,
+# attach_command_for, new_session_flag_invalid, prompt_new,
 # prompt_new_pin_cwd, create_named_session, unique_non_numeric_session_name,
 # ensure_pinnable_session_name, pin_named_session, toggle_session_pin, read_key, settings_input_read,
 # PENDING_KEY.
@@ -1399,7 +1399,7 @@ pick_selftest() {
     esac
   }
   snapshot_live_sessions
-  expect snap/rename-live-keeps-grok grok-1.0.24-mac "${snap_cmd[new]:-}"
+  expect snap/rename-live-follows-shell zsh "${snap_cmd[new]:-}"
   if [[ ${snap_names[(Ie)old]} -ne 0 ]]; then
     print -u2 "FAIL snap/rename-live still has old got=${snap_names[*]}"
     (( fails++ ))
@@ -2460,7 +2460,7 @@ pick_selftest() {
     (( fails++ ))
   fi
   unset SSH_CONNECTION
-  expect ghostty/prompt $'工作区：lanjump、sysmtn\n1  打开窗口；能续的续上，其余进空 shell\n2  打开窗口，全部只要空 shell\n回车  先不打开' "$(workspace_restore_prompt_text lanjump sysmtn)"
+  expect ghostty/prompt $'工作区：lanjump、sysmtn\n1  打开窗口\n2  打开窗口，全部只要空 shell\n回车  先不打开' "$(workspace_restore_prompt_text lanjump sysmtn)"
   LANJUMP_ATTACH_BIN=/Users/mac/.local/bin/lanjump
   local script
   script=$(ghostty_osascript_for_sessions lanjump sysmtn)
@@ -2713,34 +2713,27 @@ pick_selftest() {
   expect cmd/short-zsh zsh "$(short_command_name zsh)"
   expect summary/cmd grok "$(useful_summary '对话标题 - grok' grok-1.0.24-mac grok-1.0.24-mac)"
   expect summary/zsh zsh "$(useful_summary '' zsh zsh)"
-  if last_command_resumable grok-1.0.24-mac; then
-    :
-  else
-    print -u2 "FAIL resume/grok should be resumable"
-    (( fails++ ))
-  fi
-  if last_command_resumable zsh; then
-    print -u2 "FAIL resume/zsh should not be resumable"
-    (( fails++ ))
-  fi
-  if last_command_resumable codex; then
-    print -u2 "FAIL resume/codex v1 should not be resumable"
-    (( fails++ ))
-  fi
-  LANJUMP_GROK_BIN=grok
-  expect resume/line-project 'grok -c' "$(resume_line_for grok-1.0.24-mac /proj/lanjump)"
-  expect resume/line-home 'grok --resume' "$(resume_line_for grok-1.0.24-mac "$HOME")"
-  expect resume/line-tilde 'grok --resume' "$(resume_line_for grok '~')"
-  expect resume/path-keep '/opt/x/bin:/bin' "$(PATH='/opt/x/bin:/bin' resume_pane_path)"
-  expect resume/path-fill '/opt/lanjump-nopath:/usr/bin:/bin:/usr/sbin:/sbin' "$(PATH='/opt/lanjump-nopath' resume_pane_path)"
-  expect resume/path-empty '/usr/bin:/bin:/usr/sbin:/sbin' "$(PATH='' resume_pane_path)"
+  for leftover in last_command_resumable resume_line_for resume_pane_path \
+      enter_resume_prompt_text resume_prompt_choice; do
+    if (( ${+functions[$leftover]} )); then
+      print -u2 "FAIL resume/leftover $leftover still defined"
+      (( fails++ ))
+    fi
+  done
   mkdir -p "$HOME/Documents/projects/inferme"
   snap_cwd[inferme]=$HOME
   pinned_cwd[inferme]=$HOME
   load_settings
   expect resolve/named-project "$HOME/Documents/projects/inferme" "$(resolve_session_cwd inferme "$HOME")"
   expect resolve/keep-explicit /proj/keep "$(resolve_session_cwd nosuch /proj/keep)"
-  expect enter/prompt $'上次在跑 grok。\nEnter/y  续上    s  只要 shell    q  取消' "$(enter_resume_prompt_text grok-1.0.24-mac)"
+  if [[ ${functions[maybe_resume_last_command]} == *respawn-pane* ]]; then
+    print -u2 "FAIL resume/no-respawn maybe_resume still respawns got=$(printf %q "${functions[maybe_resume_last_command]}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[attach_named_session]} == *enter_resume_prompt_text* ]]; then
+    print -u2 "FAIL resume/no-ask attach_named_session still prompts got=$(printf %q "${functions[attach_named_session]}")"
+    (( fails++ ))
+  fi
 
   LANJUMP_ATTACH_BIN=/Users/mac/.local/bin/lanjump
   attach_shell_only=0
@@ -2989,7 +2982,7 @@ pick_selftest() {
   snapshot_live_sessions
   expect snap/ws-keep 1 "${snap_workspace[keep]}"
   expect snap/ws-drop 0 "${snap_workspace[drop]}"
-  expect snap/cmd-keep-grok grok-1.0.24-mac "${snap_cmd[keep]}"
+  expect snap/cmd-follow-shell zsh "${snap_cmd[keep]}"
   tmuxx() {
     case $1 in
       list-sessions)
@@ -3216,27 +3209,8 @@ pick_selftest() {
   }
   maybe_resume_last_command idle-grok
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'respawn-pane -t =idle-grok:. -k'* ]]; then
-    print -u2 "FAIL resume/send missing respawn-pane got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log != *'grok -c'* ]]; then
-    print -u2 "FAIL resume/send missing grok -c got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log != *'-e PATH='* ]]; then
-    print -u2 "FAIL resume/path missing -e PATH got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log != *'/bin'* ]]; then
-    print -u2 "FAIL resume/path missing /bin got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  : >"$tmux_log"
-  PATH=/opt/lanjump-nopath maybe_resume_last_command idle-grok
-  restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'-e PATH=/opt/lanjump-nopath:/usr/bin:/bin:/usr/sbin:/sbin '* ]]; then
-    print -u2 "FAIL resume/path-fill-argv got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'respawn-pane'* || $restore_log == *'grok -c'* || $restore_log == *'grok --resume'* ]]; then
+    print -u2 "FAIL resume/idle still spawned grok got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
   : >"$tmux_log"
@@ -3293,12 +3267,8 @@ pick_selftest() {
   }
   maybe_resume_last_command home-grok
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'grok --resume'* ]]; then
-    print -u2 "FAIL resume/home missing grok --resume got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log == *'grok -c'* ]]; then
-    print -u2 "FAIL resume/home used grok -c got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'respawn-pane'* || $restore_log == *'grok --resume'* || $restore_log == *'grok -c'* ]]; then
+    print -u2 "FAIL resume/home still spawned grok got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
@@ -3324,12 +3294,8 @@ pick_selftest() {
   }
   maybe_resume_last_command inferme
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *"-c $HOME/Documents/projects/inferme"* ]]; then
-    print -u2 "FAIL resume/named-project missing respawn -c got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log != *'grok -c'* ]]; then
-    print -u2 "FAIL resume/named-project missing grok -c after cd got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'respawn-pane'* || $restore_log == *'grok -c'* || $restore_log == *'grok --resume'* ]]; then
+    print -u2 "FAIL resume/named-project still spawned grok got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
@@ -3354,12 +3320,8 @@ pick_selftest() {
   }
   maybe_resume_last_command wrong-cwd
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'-c /proj/keep'* ]]; then
-    print -u2 "FAIL resume/cd missing respawn -c to project got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log != *'grok -c'* ]]; then
-    print -u2 "FAIL resume/cd-project missing grok -c got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'respawn-pane'* || $restore_log == *'grok -c'* || $restore_log == *'grok --resume'* ]]; then
+    print -u2 "FAIL resume/cd still spawned grok got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
@@ -3454,16 +3416,8 @@ pick_selftest() {
   }
   maybe_resume_last_command split-idle
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log == *'respawn-pane -t %1 '* ]]; then
-    print -u2 "FAIL resume/split-idle killed first pane got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log != *'respawn-pane -t =split-idle:. -k'* ]]; then
-    print -u2 "FAIL resume/split-idle missing current-pane respawn got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log != *'grok -c'* ]]; then
-    print -u2 "FAIL resume/split-idle missing grok -c got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'respawn-pane'* || $restore_log == *'grok -c'* || $restore_log == *'grok --resume'* ]]; then
+    print -u2 "FAIL resume/split-idle still spawned grok got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
@@ -3597,7 +3551,7 @@ pick_selftest() {
   unset -f _st105_mark _st105_load _st105_remember _st105_restore \
     _st105_tmux_tty _st105_snap _st105_eot
 
-  # #194: resume prompt q must not occupy the snapshot; y/enter still must.
+  # Attach occupies the snapshot. There is no resume prompt to cancel with q.
   functions -c restore_tty _st194_restore
   functions -c tmux_tty _st194_tmux_tty
   functions -c snapshot_live_sessions _st194_snap
@@ -3638,16 +3592,7 @@ pick_selftest() {
   snap_attached[idle-grok]=123
   pinned_names=()
   save_session_snapshot
-  print -r -- q | attach_named_session idle-grok 1 0 >/dev/null
-  load_session_snapshot
-  expect resume/cancel-q-ws 0 "${snap_workspace[idle-grok]:-}"
-  expect resume/cancel-q-att 123 "${snap_attached[idle-grok]:-}"
-  expect resume/cancel-q-occ 0 "${snap_occupied[idle-grok]:-}"
-  snap_workspace[idle-grok]=0
-  snap_occupied[idle-grok]=0
-  snap_attached[idle-grok]=123
-  save_session_snapshot
-  print -r -- y | attach_named_session idle-grok 1 0 >/dev/null
+  attach_named_session idle-grok 1 0 >/dev/null
   load_session_snapshot
   expect resume/enter-y-ws 1 "${snap_workspace[idle-grok]:-}"
   expect resume/enter-y-occ 1 "${snap_occupied[idle-grok]:-}"
@@ -3676,8 +3621,7 @@ pick_selftest() {
   functions -c _st194_resume maybe_resume_last_command
   unset -f _st194_restore _st194_tmux_tty _st194_snap _st194_eot _st194_resume
 
-  # #204: list n filling an existing name must ask before resume, like Enter.
-  # q does not resume and does not occupy.
+  # n filling an existing name enters it; no grok-resume prompt.
   functions -c restore_tty _st204_restore
   functions -c setup_tty _st204_setup
   functions -c draw _st204_draw
@@ -3732,23 +3676,19 @@ pick_selftest() {
   LANJUMP_GROK_BIN=grok
   attach_shell_only=0
   save_session_snapshot
-  out=$(print -l -- demo '' q | prompt_new)
+  out=$(print -l -- demo '' | prompt_new)
   load_session_snapshot
-  if [[ $out != *'上次在跑 grok'* ]]; then
-    print -u2 "FAIL resume/n-existing-ask missing prompt got=$(printf %q "$out")"
+  if [[ $out == *'上次在跑 grok'* ]]; then
+    print -u2 "FAIL resume/n-existing still asked to resume grok got=$(printf %q "$out")"
     (( fails++ ))
   fi
-  # #206: do not say 直接进入 when the resume prompt follows.
-  if [[ $out == *'直接进入'* ]]; then
-    print -u2 "FAIL resume/n-existing-direct-enter still said 直接进入 got=$(printf %q "$out")"
+  if [[ $out != *'直接进入'* ]]; then
+    print -u2 "FAIL resume/n-existing missing 直接进入 got=$(printf %q "$out")"
     (( fails++ ))
   fi
-  expect resume/n-existing-q-ws 0 "${snap_workspace[demo]:-}"
-  expect resume/n-existing-q-att 123 "${snap_attached[demo]:-}"
-  expect resume/n-existing-q-occ 0 "${snap_occupied[demo]:-}"
   restore_log=$(<"$tmux_log")
   if [[ $restore_log == *'respawn-pane'* || $restore_log == *'grok -c'* || $restore_log == *'grok --resume'* ]]; then
-    print -u2 "FAIL resume/n-existing-q still resumed got=$(printf %q "$restore_log")"
+    print -u2 "FAIL resume/n-existing still spawned grok got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
   drop_snap_record demo
@@ -5140,68 +5080,12 @@ pick_selftest() {
     unset _pw_save_draw _pw_save_stty_orig _pw_winch_draws _pw_overlay
   fi
 
-  attach_shell_only=1
-  if resume_prompt_choice y; then
-    expect resume/choice-y 0 "$attach_shell_only"
-  else
-    print -u2 "FAIL resume/choice-y cancelled"
+  if [[ ${functions[attach_named_session]} == *resume_prompt_choice* || ${functions[attach_named_session]} == *enter_resume_prompt_text* ]]; then
+    print -u2 "FAIL resume/attach still asks to resume grok got=$(printf %q "${functions[attach_named_session]}")"
     (( fails++ ))
   fi
-  attach_shell_only=1
-  if resume_prompt_choice Y; then
-    expect resume/choice-Y 0 "$attach_shell_only"
-  else
-    print -u2 "FAIL resume/choice-Y cancelled"
-    (( fails++ ))
-  fi
-  attach_shell_only=1
-  if resume_prompt_choice ''; then
-    expect resume/choice-empty 0 "$attach_shell_only"
-  else
-    print -u2 "FAIL resume/choice-empty cancelled"
-    (( fails++ ))
-  fi
-  attach_shell_only=0
-  if resume_prompt_choice s; then
-    expect resume/choice-s 1 "$attach_shell_only"
-  else
-    print -u2 "FAIL resume/choice-s cancelled"
-    (( fails++ ))
-  fi
-  attach_shell_only=0
-  if resume_prompt_choice S; then
-    expect resume/choice-S 1 "$attach_shell_only"
-  else
-    print -u2 "FAIL resume/choice-S cancelled"
-    (( fails++ ))
-  fi
-  attach_shell_only=0
-  if resume_prompt_choice q; then
-    print -u2 "FAIL resume/choice-q should cancel"
-    (( fails++ ))
-  fi
-  if resume_prompt_choice Q; then
-    print -u2 "FAIL resume/choice-Q should cancel"
-    (( fails++ ))
-  fi
-  if resume_prompt_choice n; then
-    print -u2 "FAIL resume/choice-n should cancel"
-    (( fails++ ))
-  fi
-  if [[ ${functions[attach_named_session]} != *resume_prompt_choice* ]]; then
-    print -u2 "FAIL resume/attach missing resume_prompt_choice got=$(printf %q "${functions[attach_named_session]}")"
-    (( fails++ ))
-  fi
-  if [[ ${functions[attach_named_session]} != *pane_is_idle_shell* ]]; then
-    print -u2 "FAIL resume/attach missing pane_is_idle_shell got=$(printf %q "${functions[attach_named_session]}")"
-    (( fails++ ))
-  fi
-  if [[ ${functions[attach_named_session]} != *'! select_live_grok_pane'* ]]; then
-    print -u2 "FAIL resume/attach prompt not gated on live grok pane got=$(printf %q "${functions[attach_named_session]}")"
-    (( fails++ ))
-  fi
-  if [[ ${functions[attach_named_session]} != *session_pane_target* ]]; then
-    print -u2 "FAIL resume/attach missing session_pane_target got=$(printf %q "${functions[attach_named_session]}")"
+  if [[ ${functions[maybe_resume_last_command]} != *select_live_grok_pane* ]]; then
+    print -u2 "FAIL resume/jump missing select_live_grok_pane got=$(printf %q "${functions[maybe_resume_last_command]}")"
     (( fails++ ))
   fi
   if [[ ${functions[attach_named_session]} == *'改在当前窗口进入'* ]]; then

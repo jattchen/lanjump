@@ -549,7 +549,7 @@ pane_is_shell() {
   [[ -z $cmd || $cmd == zsh || $cmd == bash || $cmd == sh || $cmd == fish || $cmd == dash || $cmd == login ]]
 }
 
-# Unreadable pane command is not an idle shell; do not respawn.
+# Unreadable pane command is not an idle shell.
 pane_is_idle_shell() {
   [[ -n ${1:-} ]] || return 1
   pane_is_shell "$1"
@@ -558,10 +558,6 @@ pane_is_idle_shell() {
 # tmux 3.7c: session-only -t '=$name' leaves pane formats empty.
 session_pane_target() {
   print -r -- "=${1}:."
-}
-
-last_command_resumable() {
-  [[ $(short_command_name "$1") == grok ]]
 }
 
 cwd_is_home() {
@@ -679,33 +675,6 @@ start_grok_session() {
     line="$bin"
   fi
   tmuxx send-keys -t "$target" -- "$line" Enter
-}
-
-resume_line_for() {
-  local cmd=$1 cwd=${2:-} bin
-  last_command_resumable "$cmd" || return 1
-  bin=$(grok_bin)
-  if cwd_is_home "$cwd"; then
-    print -r -- "$bin --resume"
-  else
-    print -r -- "$bin -c"
-  fi
-}
-
-# tmux session env often has no PATH. Respawned grok then cannot find `sh`,
-# so Grok SessionStart hooks fail with ENOENT. Keep a unix baseline.
-resume_pane_path() {
-  local p=${PATH:-}
-  case :$p: in
-    *:/bin:*|*:/usr/bin:*) print -r -- "$p" ;;
-    *)
-      if [[ -n $p ]]; then
-        print -r -- "$p:/usr/bin:/bin:/usr/sbin:/sbin"
-      else
-        print -r -- '/usr/bin:/bin:/usr/sbin:/sbin'
-      fi
-      ;;
-  esac
 }
 
 useful_summary() {
@@ -1659,11 +1628,7 @@ snapshot_live_sessions() {
     snap_cwd[$name]=${prev_cwd[$name]:-}
     snap_cwd[$name]=$(resolve_session_cwd "$name" "${cwd:-${prev_cwd[$name]:-}}")
     snap_occupied[$name]=$att
-    if pane_is_shell "$cmd" && last_command_resumable "${prev_cmd[$name]:-}"; then
-      snap_cmd[$name]=${prev_cmd[$name]}
-    else
-      snap_cmd[$name]=$cmd
-    fi
+    snap_cmd[$name]=$cmd
     if lanjump_foreign_session "$name"; then
       snap_workspace[$name]=${prev_ws[$name]:-0}
       snap_attached[$name]=${prev_att[$name]:-0}
@@ -1697,7 +1662,7 @@ snapshot_live_sessions() {
 }
 
 mark_snapshot_occupied() {
-  local name=$1 cwd cmd prev target
+  local name=$1 cwd cmd target
   [[ -n $name ]] || return 0
   load_session_snapshot
   target=$(session_pane_target "$name")
@@ -1707,12 +1672,7 @@ mark_snapshot_occupied() {
     snap_names+=("$name")
   fi
   [[ -n $cwd ]] && snap_cwd[$name]=$(resolve_session_cwd "$name" "$cwd")
-  prev=${snap_cmd[$name]:-}
-  if pane_is_shell "$cmd" && last_command_resumable "$prev"; then
-    :
-  elif [[ -n $cmd ]]; then
-    snap_cmd[$name]=$cmd
-  fi
+  [[ -n $cmd ]] && snap_cmd[$name]=$cmd
   snap_occupied[$name]=1
   snap_workspace[$name]=1
   snap_attached[$name]=$EPOCHSECONDS
@@ -2058,43 +2018,14 @@ ensure_session_cwd() {
 }
 
 maybe_resume_last_command() {
-  local name=$1 live last line want pane_cwd target
-  local -a args
+  local name=$1 live target
   [[ -n $name ]] || return 0
   target=$(session_pane_target "$name")
   live=$(tmuxx display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
-  if [[ -n ${LANJUMP_DEBUG:-} ]]; then
-    print -u2 "lanjump-resume enter name=$name live=${live:-empty}"
-  fi
   pane_is_idle_shell "$live" || return 0
-  pane_cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
-  want=$(resolve_session_cwd "$name" "$pane_cwd")
-  (( attach_shell_only )) && {
-    if [[ -n $want && -n $pane_cwd && $pane_cwd != "$want" ]]; then
-      tmuxx send-keys -t "$target" -- "cd ${(q)want}" Enter 2>/dev/null || true
-    fi
-    return 0
-  }
-  last=${snap_cmd[$name]:-}
-  line=$(resume_line_for "$last" "${want:-$pane_cwd}") || {
-    if [[ -n ${LANJUMP_DEBUG:-} ]]; then
-      print -u2 "lanjump-resume skip name=$name last=$last want=$want"
-    fi
-    if [[ -n $want && -n $pane_cwd && $pane_cwd != "$want" ]]; then
-      tmuxx send-keys -t "$target" -- "cd ${(q)want}" Enter 2>/dev/null || true
-    fi
-    return 0
-  }
-  # Live grok elsewhere in the session: jump there instead of respawning this idle pane.
-  select_live_grok_pane "$name" && return 0
-  args=(respawn-pane -t "$target" -k)
-  [[ -n $want ]] && args+=(-c "$want")
-  args+=(-e "PATH=$(resume_pane_path)")
-  args+=("${(z)line}")
-  if [[ -n ${LANJUMP_DEBUG:-} ]]; then
-    print -u2 "lanjump-resume ${args[*]}"
-  fi
-  tmuxx "${args[@]}" || print -u2 "无法在 session「${name}」启动上次的程序。"
+  (( attach_shell_only )) && return 0
+  # Idle pane: jump to a grok still running in another pane. Never respawn.
+  select_live_grok_pane "$name" || true
 }
 
 last_session_file() {
@@ -2122,23 +2053,12 @@ read_last_session_name() {
 }
 
 attach_named_session() {
-  local name=$1 ask=${2:-0} want_new=${3:-0} live last ans
+  local name=$1 ask=${2:-0} want_new=${3:-0}
   [[ -n $name ]] || return 1
   load_session_snapshot
   if (( ask )); then
-    live=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_command}' 2>/dev/null || true)
-    last=${snap_cmd[$name]:-}
-    if pane_is_idle_shell "$live" && last_command_resumable "$last" && ! select_live_grok_pane "$name"; then
-      restore_tty
-      print
-      enter_resume_prompt_text "$last"
-      print -n "> "
-      read -r ans || ans=
-      resume_prompt_choice "$ans" || return 0
-    else
-      restore_tty
-      print
-    fi
+    restore_tty
+    print
   fi
   mark_snapshot_occupied "$name"
   remember_last_session "$name"
@@ -2613,26 +2533,9 @@ terminal_attach_command_for() {
 
 workspace_restore_prompt_text() {
   print -r -- "工作区：${(j:、:)@}"
-  print -r -- "1  打开窗口；能续的续上，其余进空 shell"
+  print -r -- "1  打开窗口"
   print -r -- "2  打开窗口，全部只要空 shell"
   print -r -- "回车  先不打开"
-}
-
-resume_prompt_choice() {
-  case ${1:-} in
-    ''|y|Y) attach_shell_only=0 ;;
-    s|S) attach_shell_only=1 ;;
-    q|Q) return 1 ;;
-    *) return 1 ;;
-  esac
-  return 0
-}
-
-enter_resume_prompt_text() {
-  local short
-  short=$(short_command_name "$1")
-  print -r -- "上次在跑 ${short}。"
-  print -r -- "Enter/y  续上    s  只要 shell    q  取消"
 }
 
 ghostty_restore_prompt_text() {
@@ -4167,7 +4070,7 @@ prompt_new() {
   restore_tty
   print
   print -n "新 session 名称（回车=自动命名）: "
-  local name openans created cwd live last
+  local name openans created cwd
   read -r name
   name=${name##[[:space:]]#}
   name=${name%%[[:space:]]#}
@@ -4196,13 +4099,7 @@ prompt_new() {
   tmux_prepare_keys
   if [[ -n $name ]] && tmuxx has-session -t "=$name" 2>/dev/null; then
     load_session_snapshot
-    live=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_command}' 2>/dev/null || true)
-    last=${snap_cmd[$name]:-}
-    if pane_is_idle_shell "$live" && last_command_resumable "$last" && ! select_live_grok_pane "$name"; then
-      print "session「${name}」已存在。"
-    else
-      print "session「${name}」已存在，直接进入。"
-    fi
+    print "session「${name}」已存在，直接进入。"
     attach_named_session "$name" 1 $want_new
   else
     if [[ -z $name ]]; then
