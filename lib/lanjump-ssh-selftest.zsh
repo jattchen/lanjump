@@ -207,6 +207,77 @@ EOF
     (( fails++ ))
   fi
 
+  # Ghostty TERM stays on the SSH child (#190), but tmux attach on a host
+  # without that terminfo fails: missing or unsuitable terminal: xterm-ghostty.
+  # Connecting copies the entry with tic; stock names skip the extra SSH.
+  print -r -- 0 >"$tmpdir/ssh_n"
+  cat >"$fake_bin/ssh" <<EOF
+#!/bin/zsh
+n=\$(( \$(<"$tmpdir/ssh_n") + 1 ))
+print -r -- \$n >"$tmpdir/ssh_n"
+print -r -- "\$*" >"$tmpdir/ssh_args_\$n"
+cat >"$tmpdir/ssh_stdin_\$n"
+exit 0
+EOF
+  chmod +x "$fake_bin/ssh"
+  rehash
+
+  local saved_picker=$PICKER
+  PICKER=$tmpdir/fake-pick
+  print -r -- 'picker-src' >"$PICKER"
+  terminfo_source() { print -r -- "terminfo-src-$1" }
+
+  print -r -- 0 >"$tmpdir/ssh_n"
+  TERM=xterm-ghostty
+  unset TERM_PROGRAM
+  sync_terminfo host.local mac
+  if [[ $(<"$tmpdir/ssh_n") != 1 ]]; then
+    print -u2 "FAIL ssh/terminfo-ghostty/count got=$(<"$tmpdir/ssh_n") want=1"
+    (( fails++ ))
+  fi
+  if [[ $(<"$tmpdir/ssh_args_1") != *mac@host.local* ]]; then
+    print -u2 "FAIL ssh/terminfo-ghostty/target got=$(printf %q "$(<"$tmpdir/ssh_args_1")")"
+    (( fails++ ))
+  fi
+  if [[ $(<"$tmpdir/ssh_args_1") != *tic* ]]; then
+    print -u2 "FAIL ssh/terminfo-ghostty/tic got=$(printf %q "$(<"$tmpdir/ssh_args_1")")"
+    (( fails++ ))
+  fi
+  if [[ $(<"$tmpdir/ssh_stdin_1") != terminfo-src-xterm-ghostty ]]; then
+    print -u2 "FAIL ssh/terminfo-ghostty/src got=$(printf %q "$(<"$tmpdir/ssh_stdin_1")")"
+    (( fails++ ))
+  fi
+
+  print -r -- 0 >"$tmpdir/ssh_n"
+  TERM=xterm-256color
+  sync_terminfo host.local mac
+  if [[ $(<"$tmpdir/ssh_n") != 0 ]]; then
+    print -u2 "FAIL ssh/terminfo-stock extra ssh got=$(<"$tmpdir/ssh_n") args=$(printf %q "$(<"$tmpdir/ssh_args_1" 2>/dev/null || true)")"
+    (( fails++ ))
+  fi
+
+  print -r -- 0 >"$tmpdir/ssh_n"
+  TERM=xterm-ghostty
+  sync_picker host.local mac
+  if [[ $(<"$tmpdir/ssh_n") != 2 ]]; then
+    print -u2 "FAIL ssh/sync-picker-terminfo/count got=$(<"$tmpdir/ssh_n") want=2"
+    (( fails++ ))
+  fi
+  if [[ $(<"$tmpdir/ssh_stdin_1") != picker-src ]]; then
+    print -u2 "FAIL ssh/sync-picker-terminfo/picker got=$(printf %q "$(<"$tmpdir/ssh_stdin_1")")"
+    (( fails++ ))
+  fi
+  if [[ $(<"$tmpdir/ssh_args_2") != *tic* ]]; then
+    print -u2 "FAIL ssh/sync-picker-terminfo/tic got=$(printf %q "$(<"$tmpdir/ssh_args_2")")"
+    (( fails++ ))
+  fi
+  if [[ $(<"$tmpdir/ssh_stdin_2") != terminfo-src-xterm-ghostty ]]; then
+    print -u2 "FAIL ssh/sync-picker-terminfo/src got=$(printf %q "$(<"$tmpdir/ssh_stdin_2")")"
+    (( fails++ ))
+  fi
+  PICKER=$saved_picker
+  unfunction terminfo_source 2>/dev/null || true
+
   PATH=$saved_path
   rehash
   if [[ -n $saved_term ]]; then

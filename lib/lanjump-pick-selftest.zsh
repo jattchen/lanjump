@@ -5429,6 +5429,101 @@ pick_selftest() {
     command "$TMUX_BIN" "$@" </dev/null
   }
 
+  # tmux attach needs a terminfo entry. Ghostty's xterm-ghostty is missing on
+  # older remotes; keep the picker TERM, attach with a stock name instead.
+  local client_term_saved=${TERM-} client_term_program=${TERM_PROGRAM-}
+  local client_got client_log
+  local -i client_has_tmux=$HAS_TMUX
+  HAS_TMUX=1
+  client_log=$(mktemp "${TMPDIR:-/tmp}/lanjump-client-term.XXXXXX") || return 1
+  functions -c terminfo_available _st_terminfo_available 2>/dev/null || true
+  functions -c tmux_prepare_color _st_tmux_prepare_color
+  functions -c tmux_prepare_keys _st_tmux_prepare_keys
+  functions -c run_interactive _st_run_interactive
+  functions -c tmuxx _st_client_tmuxx
+  terminfo_available() { [[ $1 == xterm-256color || $1 == screen-256color ]] }
+  tmux_prepare_color() { : }
+  tmux_prepare_keys() { : }
+  tmuxx() { print -r -- "$*" >>"$client_log" }
+  run_interactive() { print -r -- "TERM=${TERM:-} $*" >>"$client_log" }
+
+  TERM=xterm-ghostty
+  TERM_PROGRAM=ghostty
+  client_got=$(tmux_client_term)
+  if [[ $client_got != xterm-256color ]]; then
+    print -u2 "FAIL client-term/missing-ghostty got=$(printf %q "$client_got") want=xterm-256color"
+    (( fails++ ))
+  fi
+  if [[ $TERM != xterm-ghostty ]]; then
+    print -u2 "FAIL client-term/missing-ghostty-parent mutated got=$(printf %q "$TERM")"
+    (( fails++ ))
+  fi
+
+  : >"$client_log"
+  TMUX_BIN=tmux
+  tmux_tty attach-session -t '=test'
+  client_got=$(<"$client_log")
+  if [[ $client_got != *'TERM=xterm-256color tmux attach-session -t =test'* ]]; then
+    print -u2 "FAIL client-term/attach-fallback got=$(printf %q "$client_got")"
+    (( fails++ ))
+  fi
+  if [[ $client_got != *xterm-256color:RGB* ]]; then
+    print -u2 "FAIL client-term/attach-rgb got=$(printf %q "$client_got")"
+    (( fails++ ))
+  fi
+  if [[ $TERM != xterm-ghostty ]]; then
+    print -u2 "FAIL client-term/attach-parent mutated got=$(printf %q "$TERM")"
+    (( fails++ ))
+  fi
+
+  terminfo_available() { return 0 }
+  client_got=$(tmux_client_term)
+  if [[ $client_got != xterm-ghostty ]]; then
+    print -u2 "FAIL client-term/keep-ghostty got=$(printf %q "$client_got") want=xterm-ghostty"
+    (( fails++ ))
+  fi
+
+  : >"$client_log"
+  tmux_tty attach-session -t '=test'
+  client_got=$(<"$client_log")
+  if [[ $client_got != *'TERM=xterm-ghostty tmux attach-session -t =test'* ]]; then
+    print -u2 "FAIL client-term/attach-keep got=$(printf %q "$client_got")"
+    (( fails++ ))
+  fi
+  if [[ $client_got == *xterm-256color:RGB* ]]; then
+    print -u2 "FAIL client-term/attach-keep-no-fallback-rgb got=$(printf %q "$client_got")"
+    (( fails++ ))
+  fi
+
+  if [[ ${functions[open_named_tabs]} != *tmux_client_term* ]]; then
+    print -u2 "FAIL client-term/open-tabs-exec missing tmux_client_term"
+    (( fails++ ))
+  fi
+
+  if [[ -n ${functions[_st_terminfo_available]:-} ]]; then
+    functions -c _st_terminfo_available terminfo_available
+    unfunction _st_terminfo_available
+  else
+    unfunction terminfo_available 2>/dev/null || true
+  fi
+  functions -c _st_tmux_prepare_color tmux_prepare_color
+  functions -c _st_tmux_prepare_keys tmux_prepare_keys
+  functions -c _st_run_interactive run_interactive
+  functions -c _st_client_tmuxx tmuxx
+  unfunction _st_tmux_prepare_color _st_tmux_prepare_keys _st_run_interactive _st_client_tmuxx
+  HAS_TMUX=$client_has_tmux
+  rm -f "$client_log"
+  if [[ -n $client_term_saved ]]; then
+    TERM=$client_term_saved
+  else
+    unset TERM
+  fi
+  if [[ -n $client_term_program ]]; then
+    TERM_PROGRAM=$client_term_program
+  else
+    unset TERM_PROGRAM
+  fi
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1
