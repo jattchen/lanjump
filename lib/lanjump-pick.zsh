@@ -2669,6 +2669,10 @@ ghostty_osascript_for_sessions() {
     print -r -- 'end tell'
   fi
   print -r -- 'tell application "Ghostty"'
+  print -r -- '  activate'
+  print -r -- 'end tell'
+  print -r -- 'delay 0.15'
+  print -r -- 'tell application "Ghostty"'
   if (( ghostty_close_others )); then
     print -r -- '  set preexisting to {}'
     print -r -- '  try'
@@ -2717,8 +2721,14 @@ ghostty_osascript_for_sessions() {
 }
 
 terminal_tab_do_script() {
-  print -r -- 'tell application "System Events" to keystroke "t" using command down'
-  print -r -- 'delay 0.3'
+  # Cmd+T first so we never run attach in the picker tab (#132).
+  print -r -- 'tell application "System Events"'
+  print -r -- '  tell process "Terminal"'
+  print -r -- '    set frontmost to true'
+  print -r -- '    keystroke "t" using command down'
+  print -r -- '  end tell'
+  print -r -- 'end tell'
+  print -r -- 'delay 0.4'
   print -r -- 'tell application "Terminal"'
   print -r -- "  do script $(ghostty_applescript_string "$1") in selected tab of front window"
   print -r -- 'end tell'
@@ -2731,7 +2741,7 @@ terminal_osascript_for_sessions() {
   shift
   cmd=$(attach_command_for "$first")
   print -r -- 'tell application "Terminal" to activate'
-  print -r -- 'delay 0.1'
+  print -r -- 'delay 0.15'
   if [[ $open_placement == tab ]]; then
     print -r -- 'set haveWin to false'
     print -r -- 'tell application "Terminal"'
@@ -2823,7 +2833,8 @@ open_ghostty_session_tabs() {
 
 open_terminal_session_tabs() {
   (( $# )) || return 0
-  terminal_osascript_for_sessions "$@" | osascript
+  # do script returns a tab; hide that so it does not land in the picker tty.
+  terminal_osascript_for_sessions "$@" | osascript >/dev/null
 }
 
 open_workspace_tabs() {
