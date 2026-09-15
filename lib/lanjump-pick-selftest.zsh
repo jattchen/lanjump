@@ -3711,7 +3711,7 @@ pick_selftest() {
   LANJUMP_GROK_BIN=grok
   attach_shell_only=0
   save_session_snapshot
-  out=$(print -l -- demo '' '' q | prompt_new)
+  out=$(print -l -- demo '' q | prompt_new)
   load_session_snapshot
   if [[ $out != *'上次在跑 grok'* ]]; then
     print -u2 "FAIL resume/n-existing-ask missing prompt got=$(printf %q "$out")"
@@ -4461,9 +4461,9 @@ pick_selftest() {
     print -u2 "FAIL prompt_new/pin-cwd still pins \$PWD"
     (( fails++ ))
   fi
-  # #136: list n asks Enter/t after 常驻 so create can open a new window.
-  if [[ ${functions[prompt_new]} != *打开方式* ]]; then
-    print -u2 "FAIL prompt_new/open-mode missing 打开方式 prompt got=$(printf %q "${functions[prompt_new]}")"
+  # #136: name prompt must not say t=新窗口 while the user is still typing the name.
+  if [[ ${functions[prompt_new]} == *t=新窗口* || ${functions[prompt_new]} == *打开方式* ]]; then
+    print -u2 "FAIL prompt_new/name-hint still mentions t during name input got=$(printf %q "${functions[prompt_new]}")"
     (( fails++ ))
   fi
 
@@ -4646,61 +4646,34 @@ pick_selftest() {
     (( fails++ ))
   fi
 
-  # #136: list n after 常驻 asks Enter=当前窗口 / t=新窗口; t sets want_new=1.
+  # #136: n opens in the current window; t on 「新建 session」 passes want_new=1.
+  # The name prompt must not claim t=新窗口 (that key is for the list, not name input).
   attach_log=$testhome/attach.log
   attach_named_session() {
     print -r -- "$*" >>"$attach_log"
   }
   : >"$attach_log"
   : >"$tmux_log"
-  out=$(print -l -- inferme '' t | prompt_new)
-  if [[ $out != *打开方式* ]]; then
-    print -u2 "FAIL prompt_new/n-open-t missing 打开方式 got=$(printf %q "$out")"
-    (( fails++ ))
-  fi
-  if [[ $out != *'Enter 当前窗口'* || $out != *'t 新窗口'* ]]; then
-    print -u2 "FAIL prompt_new/n-open-t missing Enter/t hint got=$(printf %q "$out")"
-    (( fails++ ))
-  fi
-  if [[ $out != *答完常驻后* ]]; then
-    print -u2 "FAIL prompt_new/n-open-t missing name-prompt hint got=$(printf %q "$out")"
+  out=$(print -l -- inferme '' | prompt_new)
+  if [[ $out == *打开方式* || $out == *t=新窗口* || $out == *答完常驻后* ]]; then
+    print -u2 "FAIL prompt_new/n-name-hint still talks about t during create got=$(printf %q "$out")"
     (( fails++ ))
   fi
   attach_got=$(<"$attach_log")
-  if [[ $attach_got != *'inferme 0 1'* ]]; then
-    print -u2 "FAIL prompt_new/n-open-t want_new got=$(printf %q "$attach_got") want=*inferme 0 1*"
+  if [[ $attach_got != *'inferme 0 0'* ]]; then
+    print -u2 "FAIL prompt_new/n-default-current want_new got=$(printf %q "$attach_got") want=*inferme 0 0*"
     (( fails++ ))
   fi
   restore_log=$(<"$tmux_log")
   if [[ $restore_log != *'new-session -d -s inferme'* ]]; then
-    print -u2 "FAIL prompt_new/n-open-t missing create got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  : >"$attach_log"
-  : >"$tmux_log"
-  print -l -- inferme '' q | prompt_new >/dev/null
-  attach_got=$(<"$attach_log")
-  restore_log=$(<"$tmux_log")
-  if [[ -n $attach_got ]]; then
-    print -u2 "FAIL prompt_new/n-open-q still attached got=$(printf %q "$attach_got")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log == *new-session* ]]; then
-    print -u2 "FAIL prompt_new/n-open-q still created got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  : >"$attach_log"
-  print -l -- inferme '' | prompt_new >/dev/null
-  attach_got=$(<"$attach_log")
-  if [[ $attach_got != *'inferme 0 0'* ]]; then
-    print -u2 "FAIL prompt_new/n-open-eof-keep-default got=$(printf %q "$attach_got")"
+    print -u2 "FAIL prompt_new/n-default-current missing create got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
   : >"$attach_log"
   print -l -- inferme '' | prompt_new 1 >/dev/null
   attach_got=$(<"$attach_log")
   if [[ $attach_got != *'inferme 0 1'* ]]; then
-    print -u2 "FAIL prompt_new/n-open-eof-keep-want-new got=$(printf %q "$attach_got")"
+    print -u2 "FAIL prompt_new/t-on-new-row want_new got=$(printf %q "$attach_got") want=*inferme 0 1*"
     (( fails++ ))
   fi
   attach_named_session() { : }
