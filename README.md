@@ -34,7 +34,7 @@ tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 当前窗口进入�
 
 从列表 Enter 进入：窗格保持原样，不把已退出的 Grok 再拉起来。窗格里 Grok 还在跑则跳到那一格。`,` 打开设置：新窗口用 Ghostty 还是系统终端，新开窗口还是在已有窗口加标签，以及多个项目根（顺序即优先级；Enter 添加，d 删除）。
 
-命令：`lanjump help` 查看说明；`lanjump list [机器]` 列出 session；`lanjump last [机器]` 最近 5 个 session 里选一个进入；`lanjump update` 同 `upgrade`；`lanjump go [机器:]名字 [--grok]` 打开指定 session，不写名字则本机自动新建，`--grok` 再开 grok（当前窗口进入；已打开则跳到那个窗口）；`lanjump work [机器]` 打开工作区；`lanjump pins [机器]` 打开常驻。默认机器是上次进的那台。名字不存在会问要不要新建（回车或 y=是，再问常驻）。
+命令：`lanjump help` 查看说明；`lanjump list [机器]` 列出 session；`lanjump last [机器]` 最近 5 个 session 里选一个进入；`lanjump update` 同 `upgrade`；`lanjump go [机器:]名字 [--grok]` 打开指定 session，不写名字则本机自动新建，`--grok` 再开 grok（当前窗口进入；已打开则跳到那个窗口）；`lanjump work [机器]` 打开近 24 小时占用过的 session（不含常驻）；`lanjump pins [机器]` 打开常驻。默认机器是上次进的那台。名字不存在会问要不要新建（回车或 y=是，再问常驻）。
 
 上次连的是本机还是远程，下次打开会记住并跳过扫描。
 

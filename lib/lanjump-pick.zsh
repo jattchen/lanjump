@@ -51,12 +51,13 @@ sort_mode=time
 filter_include=
 filter_exclude=
 typeset -i filter_on=0 filter_match_count=0 filter_total_count=0
-typeset -a pinned_names snap_names restore_names ghostty_names open_window_names
+typeset -a pinned_names snap_names restore_names ghostty_names open_window_names work_names
 typeset -a restore_pick_kind restore_pick_name restore_pick_checked restore_pick_row
 typeset -A pinned_cwd pinned_grok snap_cwd snap_occupied snap_workspace snap_cmd snap_attached restore_cwd
 typeset -i restore_pick_cursor=1 restore_mouse_col=0 restore_mouse_row=0
 restore_pick_action=skip
 RESTORE_RECENT_SECS=172800
+WORK_RECENT_SECS=86400
 stamp_boot=
 stamp_token=
 stamp_gen=
@@ -1707,9 +1708,26 @@ collect_restore_names() {
 
 session_is_recent() {
   local n=$1 ts
+  local -i window=${2:-$RESTORE_RECENT_SECS}
   ts=${snap_attached[$n]:-0}
   [[ $ts == [0-9]## ]] || return 1
-  (( ts > 0 && EPOCHSECONDS - ts < RESTORE_RECENT_SECS ))
+  (( ts > 0 && EPOCHSECONDS - ts < window ))
+}
+
+collect_work_session_names() {
+  work_names=()
+  local n
+  typeset -A seen
+  for n in "${snap_names[@]}"; do
+    [[ -n $n ]] || continue
+    numeric_session_name "$n" && continue
+    lanjump_foreign_session "$n" && continue
+    pin_record_exists "$n" && continue
+    session_is_recent "$n" "$WORK_RECENT_SECS" || continue
+    (( ${seen[$n]:-0} )) && continue
+    seen[$n]=1
+    work_names+=("$n")
+  done
 }
 
 collect_open_window_names() {
@@ -4255,9 +4273,9 @@ print_workspace_names() {
     restore_pinned_sessions
   fi
   collect_restore_names
-  collect_ghostty_session_names
+  collect_work_session_names
   local n
-  for n in "${ghostty_names[@]}"; do
+  for n in "${work_names[@]}"; do
     tmuxx has-session -t "=$n" 2>/dev/null || continue
     print -r -- "$n"
   done

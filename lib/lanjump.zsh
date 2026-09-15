@@ -1902,7 +1902,7 @@ cli_usage() {
   print -r -- '  list [机器]       列出 session'
   print -r -- '  last [机器]       最近 5 个 session，选一个进入'
   print -r -- '  go [机器:]名字 [--grok]  打开；不写名字则本机自动新建；--grok 再开 grok'
-  print -r -- '  work [机器]       打开工作区'
+  print -r -- '  work [机器]       打开近 24 小时占用过的 session（不含常驻）'
   print -r -- '  pins [机器]       打开常驻'
   print -r -- '  upgrade           升级到最新版本'
   print -r -- '  update            同 upgrade'

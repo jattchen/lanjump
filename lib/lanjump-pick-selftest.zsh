@@ -6,7 +6,7 @@
 # forget_killed_session, drop_snap_record, rename_snap_record,
 # session_delete_needs_pin_warning, pin_delete_warning_text,
 # rename_pin_record, restore_pinned_sessions, numeric_session_name,
-# collect_restore_names, should_restore_sessions, restore_saved_sessions,
+# collect_restore_names, collect_work_session_names, should_restore_sessions, restore_saved_sessions,
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
 # has_named_session, ensure_named_session_for_attach, print_recent_names,
 # print_session_list,
@@ -1933,12 +1933,12 @@ pick_selftest() {
     print -u2 "FAIL pin/restore-partial-work restored unpinned workspace got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
-  if [[ $got != *lj-pin-keep* ]]; then
-    print -u2 "FAIL pin/restore-partial-work missing live pin got=$(printf %q "$got")"
+  if [[ $got == *lj-pin-keep* ]]; then
+    print -u2 "FAIL pin/restore-partial-work listed live pin got=$(printf %q "$got")"
     (( fails++ ))
   fi
-  if [[ $got != *lj-pin-gone* ]]; then
-    print -u2 "FAIL pin/restore-partial-work missing restored pin got=$(printf %q "$got")"
+  if [[ $got == *lj-pin-gone* ]]; then
+    print -u2 "FAIL pin/restore-partial-work listed restored pin got=$(printf %q "$got")"
     (( fails++ ))
   fi
   if [[ $got != *ws-live* ]]; then
@@ -1989,6 +1989,107 @@ pick_selftest() {
     (( fails++ ))
   fi
   expect work/print-empty-names ws-empty "$got"
+
+  # work: last 24h unpinned only. pins stay on `lanjump pins`.
+  # Restore-window list stays 48h and still includes pins.
+  : >"$tmux_log"
+  mock_live=()
+  mock_live[pinlive]=1
+  mock_live[ws23h]=1
+  mock_live[ws30h]=1
+  mock_live[ws50h]=1
+  did_restore=0
+  snap_names=(pinlive ws23h ws30h ws50h)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  for wn in pinlive ws23h ws30h ws50h; do
+    snap_cwd[$wn]=/tmp/$wn
+    snap_occupied[$wn]=1
+    snap_workspace[$wn]=1
+  done
+  snap_attached[pinlive]=$EPOCHSECONDS
+  snap_attached[ws23h]=$((EPOCHSECONDS - 82800))
+  snap_attached[ws30h]=$((EPOCHSECONDS - 108000))
+  snap_attached[ws50h]=$((EPOCHSECONDS - 180000))
+  save_session_snapshot
+  print -r -- $'name pinlive\ncwd /tmp/pinlive\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions) return 1 ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  got=$(print_workspace_names)
+  expect work/print-24h-names ws23h "$got"
+  if [[ $got == *pinlive* ]]; then
+    print -u2 "FAIL work/print-24h listed pin got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got == *ws30h* ]]; then
+    print -u2 "FAIL work/print-24h listed 30h session got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got == *ws50h* ]]; then
+    print -u2 "FAIL work/print-24h listed 50h session got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  load_pinned_sessions
+  load_session_snapshot
+  collect_open_window_names
+  expect open/window-48h-names 'pinlive ws23h ws30h' "${open_window_names[*]}"
+
+  # kill-server: work restores a 30h workspace member but does not open it.
+  : >"$tmux_log"
+  mock_live=()
+  did_restore=0
+  snap_names=(ws-30h)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[ws-30h]=/tmp/ws-30h
+  snap_occupied[ws-30h]=1
+  snap_workspace[ws-30h]=1
+  snap_attached[ws-30h]=$((EPOCHSECONDS - 108000))
+  save_session_snapshot
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      list-sessions) return 1 ;;
+      has-session)
+        [[ $2 == -t ]] || return 1
+        (( ${mock_live[${3#=}]:-0} )) && return 0
+        return 1
+        ;;
+      new-session)
+        mock_live_from_new_session "$@"
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  got=$(print_workspace_names)
+  restore_log=$(<"$tmux_log")
+  if [[ $restore_log != *'new-session -d -s ws-30h -c /tmp/ws-30h'* ]]; then
+    print -u2 "FAIL work/print-30h-restore missing ws-30h new-session got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  expect work/print-30h-names '' "$got"
 
   # #120: go --has-session must restore like work/print before answering.
   if [[ ${functions[has_named_session]:-} != *should_restore_sessions* ]]; then
