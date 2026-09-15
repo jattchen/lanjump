@@ -4461,9 +4461,12 @@ pick_selftest() {
     print -u2 "FAIL prompt_new/pin-cwd still pins \$PWD"
     (( fails++ ))
   fi
-  # #136: name prompt must not say t=新窗口 while the user is still typing the name.
-  if [[ ${functions[prompt_new]} == *t=新窗口* || ${functions[prompt_new]} == *打开方式* ]]; then
-    print -u2 "FAIL prompt_new/name-hint still mentions t during name input got=$(printf %q "${functions[prompt_new]}")"
+  if [[ ${functions[prompt_new]} == *'常驻（y=是'* ]]; then
+    print -u2 "FAIL prompt_new still asks 常驻 on create got=$(printf %q "${functions[prompt_new]}")"
+    (( fails++ ))
+  fi
+  if [[ ${functions[prompt_new]} != *'新窗口？'* ]]; then
+    print -u2 "FAIL prompt_new missing 新窗口 prompt got=$(printf %q "${functions[prompt_new]}")"
     (( fails++ ))
   fi
 
@@ -4561,93 +4564,21 @@ pick_selftest() {
     (( fails++ ))
   fi
 
-  # #130: n + pin from picker cwd must store project dir, not $PWD.
+  # Create does not pin; 常驻 is list p only.
   pinned_names=()
   pinned_cwd=()
   : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
   oldpwd=$PWD
   cd "$testhome"
   : >"$tmux_log"
-  print -l -- inferme y | prompt_new >/dev/null
+  print -l -- inferme '' | prompt_new >/dev/null
   load_pinned_sessions
-  expect prompt_new/n-pin-named-cwd "$HOME/Documents/projects/inferme" "${pinned_cwd[inferme]:-}"
-  : >"$tmux_log"
-  restore_pinned_sessions
-  restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s inferme -c '"$HOME/Documents/projects/inferme"* ]]; then
-    print -u2 "FAIL prompt_new/n-pin-restore-cwd got=$(printf %q "$restore_log")"
+  if (( ${#pinned_names} )); then
+    print -u2 "FAIL prompt_new/n-no-pin still pinned got=${pinned_names[*]}"
     (( fails++ ))
   fi
 
-  tmuxx() {
-    print -r -- "$*" >>"$tmux_log"
-    case $1 in
-      has-session) return 0 ;;
-      display-message)
-        print -r -- /opt/live-pane
-        return 0
-        ;;
-      *) return 0 ;;
-    esac
-  }
-  pinned_names=()
-  pinned_cwd=()
-  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
-  print -l -- inferme y | prompt_new >/dev/null
-  load_pinned_sessions
-  expect prompt_new/n-pin-existing-cwd /opt/live-pane "${pinned_cwd[inferme]:-}"
-
-  tmuxx() {
-    print -r -- "$*" >>"$tmux_log"
-    case $1 in
-      has-session) return 1 ;;
-      new-session)
-        [[ $* == *-P* ]] && print -r -- 0
-        return 0
-        ;;
-      display-message)
-        print -r -- /tmp/picker-pane
-        return 0
-        ;;
-      *) return 0 ;;
-    esac
-  }
-  pinned_names=()
-  pinned_cwd=()
-  pinned_grok=()
-  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
-  : >"$tmux_log"
-  print -l -- '' y | prompt_new >/dev/null
-  load_pinned_sessions
-  created=${pinned_names[1]:-}
-  if [[ -z $created ]]; then
-    print -u2 "FAIL prompt_new/n-pin-empty missing pin record"
-    (( fails++ ))
-  fi
-  if numeric_session_name "$created"; then
-    print -u2 "FAIL prompt_new/n-pin-empty still numeric got=$(printf %q "$created")"
-    (( fails++ ))
-  fi
-  if [[ $created == *:* || $created == *.* || $created == *' '* ]]; then
-    print -u2 "FAIL prompt_new/n-pin-empty invalid name got=$(printf %q "$created")"
-    (( fails++ ))
-  fi
-  expect prompt_new/n-pin-empty-cwd /tmp/picker-pane "${pinned_cwd[$created]:-}"
-  restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'rename-session -t =0 '* ]]; then
-    print -u2 "FAIL prompt_new/n-pin-empty-rename got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  : >"$tmux_log"
-  restore_pinned_sessions
-  restore_log=$(<"$tmux_log")
-  if [[ -n $created && $restore_log != *'new-session -d -s '"$created"' -c /tmp/picker-pane'* ]]; then
-    print -u2 "FAIL prompt_new/n-pin-empty-restore got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-
-  # #136: n opens in the current window; t on 「新建 session」 passes want_new=1.
-  # The name prompt must not claim t=新窗口 (that key is for the list, not name input).
+  # #136: after the name, n asks 新窗口？ Enter=current, t=new. No 常驻. t on 新建 skips the question.
   attach_log=$testhome/attach.log
   attach_named_session() {
     print -r -- "$*" >>"$attach_log"
@@ -4655,22 +4586,47 @@ pick_selftest() {
   : >"$attach_log"
   : >"$tmux_log"
   out=$(print -l -- inferme '' | prompt_new)
-  if [[ $out == *打开方式* || $out == *t=新窗口* || $out == *答完常驻后* ]]; then
-    print -u2 "FAIL prompt_new/n-name-hint still talks about t during create got=$(printf %q "$out")"
+  if [[ $out == *常驻* ]]; then
+    print -u2 "FAIL prompt_new/n-open still asks 常驻 got=$(printf %q "$out")"
+    (( fails++ ))
+  fi
+  if [[ $out != *新窗口？* ]]; then
+    print -u2 "FAIL prompt_new/n-open missing 新窗口 prompt got=$(printf %q "$out")"
     (( fails++ ))
   fi
   attach_got=$(<"$attach_log")
   if [[ $attach_got != *'inferme 0 0'* ]]; then
-    print -u2 "FAIL prompt_new/n-default-current want_new got=$(printf %q "$attach_got") want=*inferme 0 0*"
+    print -u2 "FAIL prompt_new/n-enter-current want_new got=$(printf %q "$attach_got") want=*inferme 0 0*"
+    (( fails++ ))
+  fi
+  : >"$attach_log"
+  : >"$tmux_log"
+  print -l -- inferme t | prompt_new >/dev/null
+  attach_got=$(<"$attach_log")
+  if [[ $attach_got != *'inferme 0 1'* ]]; then
+    print -u2 "FAIL prompt_new/n-t-new-window want_new got=$(printf %q "$attach_got") want=*inferme 0 1*"
     (( fails++ ))
   fi
   restore_log=$(<"$tmux_log")
   if [[ $restore_log != *'new-session -d -s inferme'* ]]; then
-    print -u2 "FAIL prompt_new/n-default-current missing create got=$(printf %q "$restore_log")"
+    print -u2 "FAIL prompt_new/n-t-new-window missing create got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
   : >"$attach_log"
-  print -l -- inferme '' | prompt_new 1 >/dev/null
+  : >"$tmux_log"
+  print -l -- inferme q | prompt_new >/dev/null
+  attach_got=$(<"$attach_log")
+  restore_log=$(<"$tmux_log")
+  if [[ -n $attach_got ]]; then
+    print -u2 "FAIL prompt_new/n-q still attached got=$(printf %q "$attach_got")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *new-session* ]]; then
+    print -u2 "FAIL prompt_new/n-q still created got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  : >"$attach_log"
+  print -l -- inferme | prompt_new 1 >/dev/null
   attach_got=$(<"$attach_log")
   if [[ $attach_got != *'inferme 0 1'* ]]; then
     print -u2 "FAIL prompt_new/t-on-new-row want_new got=$(printf %q "$attach_got") want=*inferme 0 1*"

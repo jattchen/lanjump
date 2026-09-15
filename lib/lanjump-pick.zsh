@@ -4127,8 +4127,7 @@ prompt_new() {
   restore_tty
   print
   print -n "新 session 名称（回车=自动命名）: "
-  local name pinans created cwd live last
-  local -i pin=0
+  local name openans created cwd live last
   read -r name
   name=${name##[[:space:]]#}
   name=${name%%[[:space:]]#}
@@ -4140,10 +4139,18 @@ prompt_new() {
     draw
     return
   fi
-  print -n "常驻（y=是，回车=否）: "
-  read -r pinans || pinans=
-  if [[ $pinans == y || $pinans == Y ]]; then
-    pin=1
+  if (( ! want_new )); then
+    print -n "新窗口？（回车=当前窗口，t=新窗口，q=取消）: "
+    read -r openans || openans=
+    case $openans in
+      t|T) want_new=1 ;;
+      q|Q)
+        setup_tty
+        load_items
+        draw
+        return
+        ;;
+    esac
   fi
   tmux_prepare_color
   tmux_prepare_keys
@@ -4155,14 +4162,6 @@ prompt_new() {
       print "session「${name}」已存在。"
     else
       print "session「${name}」已存在，直接进入。"
-    fi
-    if (( pin )); then
-      if ensure_pinnable_session_name "$name"; then
-        name=$REPLY
-        cwd=$(prompt_new_pin_cwd "$name")
-        add_pin_record "$name" "${cwd:-}" ""
-        tmux_set_pinned "$name" 1
-      fi
     fi
     attach_named_session "$name" 1 $want_new
   else
@@ -4187,14 +4186,6 @@ prompt_new() {
         return
       fi
       created=$name
-    fi
-    if (( pin )); then
-      if ensure_pinnable_session_name "$created"; then
-        created=$REPLY
-        cwd=$(prompt_new_pin_cwd "$created")
-        add_pin_record "$created" "${cwd:-}" ""
-        tmux_set_pinned "$created" 1
-      fi
     fi
     mark_snapshot_occupied "$created"
     attach_named_session "$created" 0 $want_new

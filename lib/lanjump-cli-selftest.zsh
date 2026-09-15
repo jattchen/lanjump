@@ -950,13 +950,15 @@ if (( st != 0 )); then
   print -u2 "FAIL go-create-y/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains go-create-y/prompt '回车或 y=是' "$out"
-expect_contains go-create-y/pin '常驻（y=是，回车=否）' "$out"
+expect_contains go-create-y/prompt '回车或 y=当前窗口' "$out"
+expect_contains go-create-y/t-hint 't=新窗口' "$out"
+expect_absent go-create-y/no-pin '常驻（y=是，回车=否）' "$out"
 hay=$(read_log)
 expect_contains go-create-y/new 'NEW host=local session=dummytest' "$hay"
 expect_contains go-create-y/attach 'PICK_EXEC --attach dummytest' "$hay"
 expect_contains go-create-y/last 'LAST host=local' "$hay"
 expect_absent go-create-y/no-open 'OPEN ' "$hay"
+expect_absent go-create-y/no-pin-pick 'PICK --pin-session' "$hay"
 
 CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=('' '')
@@ -973,24 +975,22 @@ expect_contains go-create-empty/attach 'PICK_EXEC --attach dummytest' "$hay"
 expect_contains go-create-empty/last 'LAST host=local' "$hay"
 expect_absent go-create-empty/no-open 'OPEN ' "$hay"
 
-# #149: go create+pin numeric must attach the renamed name, not 42.
+# Create no longer pins; numeric go 42 stays 42.
 CLI_HAS_SESSION=0
-CLI_TTY_REPLIES=(y y)
+CLI_TTY_REPLIES=(y)
 TEST_LAST_HOST=local
 : >"$log"
 st=0
 cli_dispatch go 42 >/dev/null || st=$?
 if (( st != 0 )); then
-  print -u2 "FAIL go-create-pin-numeric/status got $st want 0"
+  print -u2 "FAIL go-create-numeric/status got $st want 0"
   (( fails++ ))
 fi
 hay=$(read_log)
-expect_contains go-create-pin-numeric/new 'NEW host=local session=42' "$hay"
-expect_contains go-create-pin-numeric/pin 'PICK --pin-session 42' "$hay"
-expect_contains go-create-pin-numeric/attach 'PICK_EXEC --attach s-renamed-42' "$hay"
-expect_absent go-create-pin-numeric/no-old-attach 'PICK_EXEC --attach 42' "$hay"
-expect_contains go-create-pin-numeric/last 'LAST host=local' "$hay"
-expect_absent go-create-pin-numeric/no-open 'OPEN ' "$hay"
+expect_contains go-create-numeric/new 'NEW host=local session=42' "$hay"
+expect_absent go-create-numeric/no-pin 'PICK --pin-session' "$hay"
+expect_contains go-create-numeric/attach 'PICK_EXEC --attach 42' "$hay"
+expect_contains go-create-numeric/last 'LAST host=local' "$hay"
 
 # Unpinned numeric go 42 stays 42 and does not pin.
 CLI_HAS_SESSION=0
@@ -1007,37 +1007,51 @@ expect_contains go-create-numeric-nopin/new 'NEW host=local session=42' "$hay"
 expect_absent go-create-numeric-nopin/no-pin 'PICK --pin-session' "$hay"
 expect_contains go-create-numeric-nopin/attach 'PICK_EXEC --attach 42' "$hay"
 
-# Named create+pin still attaches the given name.
+# Named create still attaches the given name and does not pin.
 CLI_HAS_SESSION=0
-CLI_TTY_REPLIES=(y y)
+CLI_TTY_REPLIES=(y)
 : >"$log"
 st=0
 cli_dispatch go dummytest >/dev/null || st=$?
 if (( st != 0 )); then
-  print -u2 "FAIL go-create-pin-named/status got $st want 0"
+  print -u2 "FAIL go-create-named/status got $st want 0"
   (( fails++ ))
 fi
 hay=$(read_log)
-expect_contains go-create-pin-named/pin 'PICK --pin-session dummytest' "$hay"
-expect_contains go-create-pin-named/attach 'PICK_EXEC --attach dummytest' "$hay"
+expect_absent go-create-named/no-pin 'PICK --pin-session' "$hay"
+expect_contains go-create-named/attach 'PICK_EXEC --attach dummytest' "$hay"
 
-# Remote go create+pin numeric attaches the renamed name.
+# t on missing go opens a new window instead of exec-attach.
 CLI_HAS_SESSION=0
-CLI_TTY_REPLIES=(y y)
+CLI_TTY_REPLIES=(t)
+: >"$log"
+st=0
+cli_dispatch go dummytest >/dev/null || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-create-t/status got $st want 0"
+  (( fails++ ))
+fi
+hay=$(read_log)
+expect_contains go-create-t/new 'NEW host=local session=dummytest' "$hay"
+expect_contains go-create-t/tabs 'OPEN host=local names=dummytest' "$hay"
+expect_absent go-create-t/no-attach 'PICK_EXEC --attach dummytest' "$hay"
+expect_absent go-create-t/no-pin 'PICK --pin-session' "$hay"
+
+# Remote go create numeric stays 42 and does not pin.
+CLI_HAS_SESSION=0
+CLI_TTY_REPLIES=(y)
 : >"$log"
 st=0
 cli_dispatch go office:42 >/dev/null || st=$?
 if (( st != 0 )); then
-  print -u2 "FAIL go-remote-pin-numeric/status got $st want 0"
+  print -u2 "FAIL go-remote-create-numeric/status got $st want 0"
   (( fails++ ))
 fi
 hay=$(read_log)
-expect_contains go-remote-pin-numeric/new 'NEW host=office session=42' "$hay"
-expect_contains go-remote-pin-numeric/pin 'REMOTE_PRINT host=office argv=--pin-session 42' "$hay"
-expect_contains go-remote-pin-numeric/attach 'REMOTE_PICK host=office' "$hay"
-expect_contains go-remote-pin-numeric/attach-flag '--attach' "$hay"
-expect_contains go-remote-pin-numeric/new-name s-renamed-42 "$hay"
-expect_absent go-remote-pin-numeric/no-old-attach '--attach 42' "$hay"
+expect_contains go-remote-create-numeric/new 'NEW host=office session=42' "$hay"
+expect_absent go-remote-create-numeric/no-pin 'REMOTE_PRINT host=office argv=--pin-session' "$hay"
+expect_contains go-remote-create-numeric/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains go-remote-create-numeric/attach-flag '--attach' "$hay"
 
 CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=(n)
@@ -1103,7 +1117,7 @@ if (( st == 0 )); then
   print -u2 "FAIL go-remote-missing/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains go-remote-missing/prompt '回车或 y=是' "$out"
+expect_contains go-remote-missing/prompt '回车或 y=当前窗口' "$out"
 expect_contains go-remote-missing/session-msg '没有 session「demo」' "$out"
 hay=$(read_log)
 expect_absent go-remote-missing/no-new 'NEW ' "$hay"

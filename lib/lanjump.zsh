@@ -1878,7 +1878,12 @@ cli_list_names() {
 
 cli_attach_one() {
   local host=$1 session=$2 shell=$3
+  local want_new=${4:-0}
   local -a args
+  if (( want_new )); then
+    cli_open_tabs "$host" "$session"
+    return
+  fi
   args=(--attach)
   (( shell )) && args+=(--shell)
   args+=("$session")
@@ -1907,10 +1912,12 @@ cli_usage() {
   print -r -- '主机列表按 i 开关打开时切英文输入法（默认开；手机 SSH 进来时不切）。'
 }
 
-# Empty / y / Y / 是 = yes. Used by go create; 常驻 stays y=yes, empty=no.
+# Empty / y / Y / 是 = create in current window. t/T = create in a new window.
 cli_confirm_create() {
   local ans=$1
-  [[ -z $ans || $ans == y || $ans == Y || $ans == 是 ]]
+  CREATE_WANT_NEW=0
+  [[ $ans == t || $ans == T ]] && CREATE_WANT_NEW=1
+  [[ -z $ans || $ans == y || $ans == Y || $ans == 是 || $ans == t || $ans == T ]]
 }
 
 cli_tty_read() {
@@ -1990,6 +1997,7 @@ cli_dispatch() {
         cli_attach_one local "$session" $(( want_grok || shell ))
         return
       fi
+      CREATE_WANT_NEW=0
       has_st=0
       cli_has_session "$host" "$session" || has_st=$?
       if (( has_st )); then
@@ -2002,20 +2010,12 @@ cli_dispatch() {
           return 1
         fi
         print "没有 session「${session}」。"
-        print -n "要新建并打开吗？（回车或 y=是，其他键=否） "
+        print -n "要新建并打开吗？（回车或 y=当前窗口，t=新窗口，其他=否） "
         cli_tty_read ans
         if ! cli_confirm_create "$ans"; then
           return 1
         fi
-        print -n "常驻（y=是，回车=否）: "
-        cli_tty_read pinans
-        [[ $pinans == y || $pinans == Y ]] && pin=1
         cli_new_session "$host" "$session" || return 1
-        if (( pin )); then
-          if cli_pin_session "$host" "$session"; then
-            [[ -n $REPLY ]] && session=$REPLY
-          fi
-        fi
       fi
       if (( want_grok )); then
         cli_start_grok "$host" "$session" || return 1
@@ -2023,7 +2023,7 @@ cli_dispatch() {
       # Mark before attach: remote SSH blocks until it returns.
       # --grok already started/selected grok; --shell skips maybe_resume.
       mark_last "$host"
-      cli_attach_one "$host" "$session" $(( want_grok || shell )) || return 1
+      cli_attach_one "$host" "$session" $(( want_grok || shell )) ${CREATE_WANT_NEW:-0} || return 1
       mark_last "$host"
       ;;
     work)
