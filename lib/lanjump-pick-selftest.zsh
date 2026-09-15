@@ -2521,8 +2521,8 @@ pick_selftest() {
   esac
   open_placement=tab
   script=$(terminal_osascript_for_sessions a b)
-  if [[ $script != *'count of windows'* ]]; then
-    print -u2 "FAIL terminal/tab-placement missing window count got=$(printf %q "$script")"
+  if [[ $script == *'count of windows'* || $script == *haveWin* ]]; then
+    print -u2 "FAIL terminal/tab-placement still joins an existing window got=$(printf %q "$script")"
     (( fails++ ))
   fi
   if [[ $script != *'keystroke "t" using command down'* ]]; then
@@ -2531,6 +2531,10 @@ pick_selftest() {
   fi
   if [[ $script != *'selected tab of front window'* ]]; then
     print -u2 "FAIL terminal/tab-placement missing selected tab got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'custom title of t to "a"'* || $script != *'custom title of t to "b"'* ]]; then
+    print -u2 "FAIL terminal/tab-placement missing session tab titles got=$(printf %q "$script")"
     (( fails++ ))
   fi
   print -r -- "$script" >"$testhome/terminal-tab.applescript"
@@ -2546,6 +2550,10 @@ pick_selftest() {
   fi
   if [[ $script != *'do script'* ]]; then
     print -u2 "FAIL terminal/window-placement missing do script got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'custom title of t to "a"'* ]]; then
+    print -u2 "FAIL terminal/window-placement missing tab title got=$(printf %q "$script")"
     (( fails++ ))
   fi
   expect attach/spec-local lanjump "$(attach_spec_for lanjump)"
@@ -2833,12 +2841,16 @@ pick_selftest() {
     print -u2 "FAIL terminal/space-tab missing AppleScript-escaped acc test got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'count of windows'* ]]; then
-    print -u2 "FAIL terminal/space-tab missing window count got=$(printf %q "$script")"
+  if [[ $script == *'count of windows'* || $script == *haveWin* ]]; then
+    print -u2 "FAIL terminal/space-tab still joins an existing window got=$(printf %q "$script")"
     (( fails++ ))
   fi
   if [[ $script != *'keystroke "t" using command down'* ]]; then
     print -u2 "FAIL terminal/space-tab missing Cmd+T got=$(printf %q "$script")"
+    (( fails++ ))
+  fi
+  if [[ $script != *'custom title of t to "acc test"'* || $script != *'custom title of t to "clipkeep"'* ]]; then
+    print -u2 "FAIL terminal/space-tab missing session titles got=$(printf %q "$script")"
     (( fails++ ))
   fi
   print -r -- "$script" >"$testhome/terminal-space-tab.applescript"

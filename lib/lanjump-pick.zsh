@@ -2721,7 +2721,7 @@ ghostty_osascript_for_sessions() {
 }
 
 terminal_tab_do_script() {
-  # Cmd+T first so we never run attach in the picker tab (#132).
+  # Extra sessions: Cmd+T in the window we just opened, never the picker tty.
   print -r -- 'tell application "System Events"'
   print -r -- '  tell process "Terminal"'
   print -r -- '    set frontmost to true'
@@ -2730,7 +2730,8 @@ terminal_tab_do_script() {
   print -r -- 'end tell'
   print -r -- 'delay 0.4'
   print -r -- 'tell application "Terminal"'
-  print -r -- "  do script $(ghostty_applescript_string "$1") in selected tab of front window"
+  print -r -- "  set t to do script $(ghostty_applescript_string "$1") in selected tab of front window"
+  print -r -- "  set custom title of t to $(ghostty_applescript_string "$2")"
   print -r -- 'end tell'
 }
 
@@ -2742,28 +2743,22 @@ terminal_osascript_for_sessions() {
   cmd=$(attach_command_for "$first")
   print -r -- 'tell application "Terminal" to activate'
   print -r -- 'delay 0.15'
+  # Ghostty work: new window, then tabs in that window. Match that (#127).
+  print -r -- 'tell application "Terminal"'
+  print -r -- "  set t to do script $(ghostty_applescript_string "$cmd")"
+  print -r -- "  set custom title of t to $(ghostty_applescript_string "$first")"
+  print -r -- 'end tell'
   if [[ $open_placement == tab ]]; then
-    print -r -- 'set haveWin to false'
-    print -r -- 'tell application "Terminal"'
-    print -r -- '  if (count of windows) > 0 then set haveWin to true'
-    print -r -- 'end tell'
-    print -r -- 'if haveWin then'
-    terminal_tab_do_script "$cmd"
-    print -r -- 'else'
-    print -r -- '  tell application "Terminal"'
-    print -r -- "    do script $(ghostty_applescript_string "$cmd")"
-    print -r -- '  end tell'
-    print -r -- 'end if'
     for n in "$@"; do
       cmd=$(attach_command_for "$n")
-      terminal_tab_do_script "$cmd"
+      terminal_tab_do_script "$cmd" "$n"
     done
   else
     print -r -- 'tell application "Terminal"'
-    print -r -- "  do script $(ghostty_applescript_string "$cmd")"
     for n in "$@"; do
       cmd=$(attach_command_for "$n")
-      print -r -- "  do script $(ghostty_applescript_string "$cmd")"
+      print -r -- "  set t to do script $(ghostty_applescript_string "$cmd")"
+      print -r -- "  set custom title of t to $(ghostty_applescript_string "$n")"
     done
     print -r -- 'end tell'
   fi
