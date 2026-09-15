@@ -1321,11 +1321,65 @@ setup_access() {
     "${user}@${target}" "$(lan_pub_install_cmd)"
 }
 
+# Stock names exist on every macOS. Ghostty/kitty do not; tmux attach then
+# dies with: missing or unsuitable terminal: xterm-ghostty.
+terminfo_is_stock() {
+  case ${1:-} in
+    xterm|xterm-256color|screen|screen-256color|tmux|tmux-256color|vt100|vt102|dumb|ansi|linux)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+terminfo_source() {
+  local term=${1:-} dir src
+  [[ -n $term ]] || return 1
+  if src=$(infocmp -x "$term" 2>/dev/null); then
+    print -r -- "$src"
+    return 0
+  fi
+  if src=$(infocmp "$term" 2>/dev/null); then
+    print -r -- "$src"
+    return 0
+  fi
+  for dir in \
+    "${LANJUMP_GHOSTTY_APP:-/Applications/Ghostty.app}/Contents/Resources/terminfo" \
+    "$HOME/Applications/Ghostty.app/Contents/Resources/terminfo"
+  do
+    [[ -d $dir ]] || continue
+    if src=$(TERMINFO=$dir infocmp -x "$term" 2>/dev/null); then
+      print -r -- "$src"
+      return 0
+    fi
+    if src=$(TERMINFO=$dir infocmp "$term" 2>/dev/null); then
+      print -r -- "$src"
+      return 0
+    fi
+  done
+  return 1
+}
+
+sync_terminfo() {
+  local target=$1 user=$2
+  local term=${TERM:-} src
+  [[ -n $term ]] || return 0
+  terminfo_is_stock "$term" && return 0
+  src=$(terminfo_source "$term") || return 0
+  [[ -n $src ]] || return 0
+  print -r -- "$src" | ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" \
+    "${user}@${target}" \
+    'tmp=$(mktemp "${TMPDIR:-/tmp}/lanjump-terminfo.XXXXXX") && cat >"$tmp" && { tic -x "$tmp" 2>/dev/null || tic "$tmp" 2>/dev/null || true; }; rm -f "$tmp"' \
+    || true
+}
+
 sync_picker() {
   local target=$1 user=$2
   ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
     'mkdir -p "$HOME/.local/bin" && cat > "$HOME/.local/bin/lanjump-pick" && chmod 755 "$HOME/.local/bin/lanjump-pick"' \
-    <"$PICKER"
+    <"$PICKER" || return $?
+  sync_terminfo "$target" "$user"
+  return 0
 }
 
 connect_item() {

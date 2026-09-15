@@ -123,6 +123,39 @@ run_interactive() {
   fi
 }
 
+terminfo_available() {
+  local term=${1:-}
+  [[ -n $term ]] || return 1
+  infocmp "$term" >/dev/null 2>&1
+}
+
+# tmux attach opens the client TERM. Ghostty's xterm-ghostty is often missing
+# on remotes without Ghostty.app. Keep the picker TERM for #190; only the
+# tmux client falls back.
+tmux_client_term() {
+  local term=${TERM:-} cand
+  if [[ -n $term ]] && terminfo_available "$term"; then
+    print -r -- "$term"
+    return 0
+  fi
+  for cand in xterm-256color screen-256color; do
+    if terminfo_available "$cand"; then
+      print -r -- "$cand"
+      return 0
+    fi
+  done
+  print -r -- "$term"
+}
+
+tmux_apply_client_term() {
+  local client_term=$1
+  [[ -n $client_term ]] || return 0
+  [[ $client_term == ${TERM:-} ]] && return 0
+  [[ ${TERM_PROGRAM:-} == Apple_Terminal ]] && return 0
+  tmuxx set-option -as terminal-features ",${client_term}:RGB" 2>/dev/null || true
+  tmuxx set-option -ag terminal-overrides ",${client_term}:Tc" 2>/dev/null || true
+}
+
 tmux_has_feature() {
   local all
   all=$(tmuxx show-options -g terminal-features 2>/dev/null || true)
@@ -226,9 +259,21 @@ run_session_snapshot() {
 }
 
 tmux_tty() {
+  local client_term saved_term st=0
+  client_term=$(tmux_client_term)
   tmux_prepare_color
   tmux_prepare_keys
+  tmux_apply_client_term "$client_term"
+  saved_term=${TERM:-}
+  TERM=$client_term
   run_interactive "$TMUX_BIN" "$@"
+  st=$?
+  if [[ -n $saved_term ]]; then
+    TERM=$saved_term
+  else
+    unset TERM
+  fi
+  return $st
 }
 
 # Apple Terminal (macOS 12) is 256-color. Advertising RGB makes Grok emit
@@ -2815,7 +2860,7 @@ open_workspace_tabs() {
 # Current-window (SSH / no local keyboard) can attach only one name: print
 # the rest and resume only the session we actually enter.
 open_named_tabs() {
-  local n name keys
+  local n name keys client_term
   local -a rest
   (( $# )) || {
     print -u2 "没有可打开的 session。"
@@ -2842,11 +2887,13 @@ open_named_tabs() {
   remember_last_session "$name"
   tmux_prepare_color
   tmux_prepare_keys
+  client_term=$(tmux_client_term)
+  tmux_apply_client_term "$client_term"
   keys=
   if local_keyboard && keys=$(keys_bin); then
-    exec "$keys" "$TMUX_BIN" attach-session -t "=$name"
+    TERM=$client_term exec "$keys" "$TMUX_BIN" attach-session -t "=$name"
   else
-    exec "$TMUX_BIN" attach-session -t "=$name"
+    TERM=$client_term exec "$TMUX_BIN" attach-session -t "=$name"
   fi
 }
 
