@@ -2488,7 +2488,9 @@ pick_selftest() {
     print -u2 "FAIL ghostty/script missing attach sysmtn spec got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  # #127: Terminal `do script` returns a tab; later sessions must target that tab's window.
+  # #127: Terminal `do script in window` reuses the current tab. Extra sessions
+  # must Cmd+T (tab) or untargeted do script (window).
+  open_placement=window
   script=$(terminal_osascript_for_sessions a b)
   if [[ $script != *'/Users/mac/.local/bin/lanjump attach a'* ]]; then
     print -u2 "FAIL terminal/script missing attach a got=$(printf %q "$script")"
@@ -2498,12 +2500,12 @@ pick_selftest() {
     print -u2 "FAIL terminal/script missing attach b got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script == *'set win to do script'* && $script == *'do script'*' in win'* ]]; then
-    print -u2 "FAIL terminal/script later do script targets the first tab got=$(printf %q "$script")"
+  if [[ $script == *' in w'* || $script == *'window of'* ]]; then
+    print -u2 "FAIL terminal/window-placement still reuses one window got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'window of'* ]]; then
-    print -u2 "FAIL terminal/script missing window of for later tabs got=$(printf %q "$script")"
+  if [[ $script == *keystroke* ]]; then
+    print -u2 "FAIL terminal/window-placement used Cmd+T got=$(printf %q "$script")"
     (( fails++ ))
   fi
   script=$(terminal_osascript_for_sessions a)
@@ -2517,19 +2519,18 @@ pick_selftest() {
       (( fails++ ))
       ;;
   esac
-  # #132: Terminal open_placement=tab uses front window; window stays a new window.
   open_placement=tab
   script=$(terminal_osascript_for_sessions a b)
-  if [[ $script != *'front window'* && $script != *'count of windows'* ]]; then
-    print -u2 "FAIL terminal/tab-placement missing front window got=$(printf %q "$script")"
+  if [[ $script != *'count of windows'* ]]; then
+    print -u2 "FAIL terminal/tab-placement missing window count got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'do script'*' in '* ]]; then
-    print -u2 "FAIL terminal/tab-placement missing do script in window got=$(printf %q "$script")"
+  if [[ $script != *'keystroke "t" using command down'* ]]; then
+    print -u2 "FAIL terminal/tab-placement missing Cmd+T for extra tabs got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script == *$'\n  set t to do script '* && $script != *'front window'* && $script != *'count of windows'* ]]; then
-    print -u2 "FAIL terminal/tab-placement only untargeted do script got=$(printf %q "$script")"
+  if [[ $script != *'selected tab of front window'* ]]; then
+    print -u2 "FAIL terminal/tab-placement missing selected tab got=$(printf %q "$script")"
     (( fails++ ))
   fi
   print -r -- "$script" >"$testhome/terminal-tab.applescript"
@@ -2543,12 +2544,8 @@ pick_selftest() {
     print -u2 "FAIL terminal/window-placement attached first session to front window got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'set t to do script'* ]]; then
-    print -u2 "FAIL terminal/window-placement missing new do script got=$(printf %q "$script")"
-    (( fails++ ))
-  fi
-  if [[ $script != *'window of'* ]]; then
-    print -u2 "FAIL terminal/window-placement missing window of for extras got=$(printf %q "$script")"
+  if [[ $script != *'do script'* ]]; then
+    print -u2 "FAIL terminal/window-placement missing do script got=$(printf %q "$script")"
     (( fails++ ))
   fi
   expect attach/spec-local lanjump "$(attach_spec_for lanjump)"
@@ -2836,12 +2833,12 @@ pick_selftest() {
     print -u2 "FAIL terminal/space-tab missing AppleScript-escaped acc test got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'front window'* && $script != *'count of windows'* ]]; then
-    print -u2 "FAIL terminal/space-tab missing front window placement got=$(printf %q "$script")"
+  if [[ $script != *'count of windows'* ]]; then
+    print -u2 "FAIL terminal/space-tab missing window count got=$(printf %q "$script")"
     (( fails++ ))
   fi
-  if [[ $script != *'do script'*' in '* ]]; then
-    print -u2 "FAIL terminal/space-tab missing do script in window got=$(printf %q "$script")"
+  if [[ $script != *'keystroke "t" using command down'* ]]; then
+    print -u2 "FAIL terminal/space-tab missing Cmd+T got=$(printf %q "$script")"
     (( fails++ ))
   fi
   print -r -- "$script" >"$testhome/terminal-space-tab.applescript"

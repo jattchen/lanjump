@@ -2716,38 +2716,47 @@ ghostty_osascript_for_sessions() {
   fi
 }
 
+terminal_tab_do_script() {
+  print -r -- 'tell application "System Events" to keystroke "t" using command down'
+  print -r -- 'delay 0.3'
+  print -r -- 'tell application "Terminal"'
+  print -r -- "  do script $(ghostty_applescript_string "$1") in selected tab of front window"
+  print -r -- 'end tell'
+}
+
 terminal_osascript_for_sessions() {
   local first n cmd
   (( $# )) || return 1
   first=$1
   shift
   cmd=$(attach_command_for "$first")
-  print -r -- 'tell application "Terminal"'
-  print -r -- '  activate'
+  print -r -- 'tell application "Terminal" to activate'
+  print -r -- 'delay 0.1'
   if [[ $open_placement == tab ]]; then
-    print -r -- '  set w to missing value'
-    print -r -- '  try'
-    print -r -- '    if (count of windows) > 0 then set w to front window'
-    print -r -- '  end try'
-    print -r -- '  if w is missing value then'
-    print -r -- "    set t to do script $(ghostty_applescript_string "$cmd")"
-    if (( $# )); then
-      print -r -- '    set w to window of t'
-    fi
-    print -r -- '  else'
-    print -r -- "    set t to do script $(ghostty_applescript_string "$cmd") in w"
-    print -r -- '  end if'
+    print -r -- 'set haveWin to false'
+    print -r -- 'tell application "Terminal"'
+    print -r -- '  if (count of windows) > 0 then set haveWin to true'
+    print -r -- 'end tell'
+    print -r -- 'if haveWin then'
+    terminal_tab_do_script "$cmd"
+    print -r -- 'else'
+    print -r -- '  tell application "Terminal"'
+    print -r -- "    do script $(ghostty_applescript_string "$cmd")"
+    print -r -- '  end tell'
+    print -r -- 'end if'
+    for n in "$@"; do
+      cmd=$(attach_command_for "$n")
+      terminal_tab_do_script "$cmd"
+    done
   else
-    print -r -- "  set t to do script $(ghostty_applescript_string "$cmd")"
-    if (( $# )); then
-      print -r -- '  set w to window of t'
-    fi
+    print -r -- 'tell application "Terminal"'
+    print -r -- "  do script $(ghostty_applescript_string "$cmd")"
+    for n in "$@"; do
+      cmd=$(attach_command_for "$n")
+      print -r -- "  do script $(ghostty_applescript_string "$cmd")"
+    done
+    print -r -- 'end tell'
   fi
-  for n in "$@"; do
-    cmd=$(attach_command_for "$n")
-    print -r -- "  do script $(ghostty_applescript_string "$cmd") in w"
-  done
-  print -r -- 'end tell'
 }
 
 ghostty_tab_titles() {
