@@ -291,6 +291,18 @@ host_selftest() {
   expect host/scan/ip-fallback-keeps-hostname office.local "${h_hostname[1]}"
   expect host/scan/ip-fallback-keeps-mac 'aa:bb:cc:dd:ee:01' "${h_mac[1]}"
 
+  # #217: /23 is the interface prefix; 192.168.3.10/23 must include 192.168.2.x.
+  if ! (( ${+functions[scan_lan_prefixes]} )); then
+    print -u2 "FAIL host/scan/netmask-23 missing scan_lan_prefixes"
+    (( fails++ ))
+  else
+    expect host/scan/netmask-23 $'192.168.2\n192.168.3' "$(scan_lan_prefixes 192.168.3.10 255.255.254.0)"
+  fi
+  if [[ ${functions[scan_port22]} != *scan_lan_prefixes* ]]; then
+    print -u2 "FAIL host/scan/netmask-23 scan_port22 still scans one /24"
+    (( fails++ ))
+  fi
+
   # #186: 「已保存 · 上次」 follows LAST_FILE (read_last), not max h_last.
   local saved_last_file=$LAST_FILE
   local last_tmp office_status studio_status
