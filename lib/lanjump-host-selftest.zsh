@@ -267,6 +267,30 @@ host_selftest() {
     (( fails++ ))
   fi
 
+  # #211: DHCP reuse of a saved IP must not steal that alias's MAC/hostname.
+  h_alias=(office)
+  h_user=(mac)
+  h_hostname=(office.local)
+  h_ip=(192.168.1.5)
+  h_mac=('aa:bb:cc:dd:ee:01')
+  h_last=(100)
+  items_kind=(host local scan quit)
+  items_alias=(office 进入本机 '扫描局域网…' 退出)
+  items_user=(mac '' '' '')
+  items_hostname=(office.local '' '' '')
+  items_ip=(192.168.1.5 '' '' '')
+  items_mac=('aa:bb:cc:dd:ee:01' '' '' '')
+  items_status=('已保存' '' '' '')
+  items_saved=(1 '' '' '')
+  s_alias=() s_host=() s_ip=() s_mac=()
+  MYIPS=(127.0.0.1)
+  MYIP=""
+  record_seen pi pi.local 192.168.1.5 'ff:ee:dd:cc:bb:aa'
+  add_discovered pi pi.local 192.168.1.5 'ff:ee:dd:cc:bb:aa'
+  expect host/scan/ip-fallback-keeps-alias office "${h_alias[1]}"
+  expect host/scan/ip-fallback-keeps-hostname office.local "${h_hostname[1]}"
+  expect host/scan/ip-fallback-keeps-mac 'aa:bb:cc:dd:ee:01' "${h_mac[1]}"
+
   # #186: 「已保存 · 上次」 follows LAST_FILE (read_last), not max h_last.
   local saved_last_file=$LAST_FILE
   local last_tmp office_status studio_status
