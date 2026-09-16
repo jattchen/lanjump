@@ -3979,6 +3979,13 @@ read_key() {
           [[ $c == [A-Za-z~] ]] && break
         done
         REPLY=$key
+      elif [[ $k3 == '<' ]]; then
+        # #260: SGR mouse ESC [ < … M/m. Picker treats the click as other.
+        while read_byte 0.2; do
+          c=$REPLY
+          [[ $c == M || $c == m ]] && break
+        done
+        REPLY=other
       fi
       return 0
     fi
