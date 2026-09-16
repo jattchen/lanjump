@@ -468,6 +468,7 @@ detect_lan() {
 is_self_ip() {
   local ip=$1 x
   [[ -z $ip ]] && return 1
+  (( ${#MYIPS} )) || collect_self_ips
   for x in "${MYIPS[@]}"; do
     [[ $ip == "$x" ]] && return 0
   done
@@ -2277,7 +2278,6 @@ if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins || ${
     exit 0
   fi
   ensure_setup
-  detect_lan
   load_hosts
   find_lanjump_keys || true
   cli_dispatch "$@"
