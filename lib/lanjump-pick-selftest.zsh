@@ -3288,6 +3288,87 @@ pick_selftest() {
   pinned_cwd=()
   pinned_grok=()
 
+  # #213: truncate-then-append exposes an empty/partial dest to readers.
+  # After each print during save, dest must stay a complete snapshot
+  # (the old bytes, or the full new file).
+  session_snapshot_file
+  local snap213=$REPLY
+  mkdir -p "${snap213:h}"
+  snap_names=(old-a old-b)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[old-a]=/tmp/a
+  snap_cwd[old-b]=/tmp/b
+  snap_occupied[old-a]=0
+  snap_occupied[old-b]=1
+  snap_workspace[old-a]=1
+  snap_workspace[old-b]=0
+  snap_cmd[old-a]=zsh
+  snap_cmd[old-b]=grok
+  snap_attached[old-a]=1
+  snap_attached[old-b]=2
+  save_session_snapshot
+  local snap213_old snap213_mid snap213_n snap213_line
+  local -a snap213_lines
+  local -i snap213_torn=0 snap213_names=0 snap213_cwd=0 snap213_cmd=0
+  local -i snap213_occ=0 snap213_ws=0 snap213_att=0
+  snap213_old=$(<"$snap213")
+  snap_names=(new-a new-b new-c)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  for snap213_n in new-a new-b new-c; do
+    snap_cwd[$snap213_n]=/tmp/$snap213_n
+    snap_occupied[$snap213_n]=0
+    snap_workspace[$snap213_n]=1
+    snap_cmd[$snap213_n]=zsh
+    snap_attached[$snap213_n]=9
+  done
+  print() {
+    builtin print "$@"
+    snap213_mid=$(<"$snap213")
+    if [[ $snap213_mid == "$snap213_old" ]]; then
+      return 0
+    fi
+    if [[ -z $snap213_mid ]]; then
+      snap213_torn=1
+      return 0
+    fi
+    snap213_names=0
+    snap213_cwd=0
+    snap213_cmd=0
+    snap213_occ=0
+    snap213_ws=0
+    snap213_att=0
+    snap213_lines=("${(@f)snap213_mid}")
+    for snap213_line in "${snap213_lines[@]}"; do
+      case $snap213_line in
+        name\ *) (( snap213_names++ )) ;;
+        cwd\ *) (( snap213_cwd++ )) ;;
+        cmd\ *) (( snap213_cmd++ )) ;;
+        occupied\ *) (( snap213_occ++ )) ;;
+        workspace\ *) (( snap213_ws++ )) ;;
+        attached\ *) (( snap213_att++ )) ;;
+      esac
+    done
+    if (( snap213_names != 3 || snap213_cwd != 3 || snap213_cmd != 3 || snap213_occ != 3 || snap213_ws != 3 || snap213_att != 3 )); then
+      snap213_torn=1
+    fi
+  }
+  save_session_snapshot
+  unfunction print
+  if (( snap213_torn )); then
+    print -u2 "FAIL snap/atomic-write dest was torn mid-save"
+    (( fails++ ))
+  fi
+  load_session_snapshot
+  expect snap/atomic-write-count 3 "${#snap_names[@]}"
+
   : >"$tmux_log"
   snap_cmd[idle-grok]=grok-1.0.24-mac
   snap_cwd[idle-grok]=/proj/lanjump

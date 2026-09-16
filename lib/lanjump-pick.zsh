@@ -1265,20 +1265,35 @@ load_pinned_sessions() {
   fi
 }
 
+# Same-dir temp + rename so concurrent readers never see a torn dest (#213).
+replace_file_atomic() {
+  local dest=$1 dir tmp
+  dir=${dest:h}
+  mkdir -p "$dir"
+  tmp=$(mktemp "${dir}/.${dest:t}.XXXXXX") || return 1
+  cat >"$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  mv -f "$tmp" "$dest" || {
+    rm -f "$tmp"
+    return 1
+  }
+}
+
 save_pinned_sessions() {
-  local file dir n
+  local file n
   pinned_sessions_file
   file=$REPLY
-  dir=${file:h}
-  mkdir -p "$dir"
-  : >"$file"
-  for n in "${pinned_names[@]}"; do
-    [[ -n $n ]] || continue
-    print -r -- "name $n" >>"$file"
-    print -r -- "cwd ${pinned_cwd[$n]:-}" >>"$file"
-    print -r -- "grok ${pinned_grok[$n]:-}" >>"$file"
-    print -r -- "" >>"$file"
-  done
+  {
+    for n in "${pinned_names[@]}"; do
+      [[ -n $n ]] || continue
+      print -r -- "name $n"
+      print -r -- "cwd ${pinned_cwd[$n]:-}"
+      print -r -- "grok ${pinned_grok[$n]:-}"
+      print -r -- ""
+    done
+  } | replace_file_atomic "$file"
 }
 
 add_pin_record() {
@@ -1596,22 +1611,21 @@ forget_killed_session() {
 }
 
 save_session_snapshot() {
-  local file dir n
+  local file n
   session_snapshot_file
   file=$REPLY
-  dir=${file:h}
-  mkdir -p "$dir"
-  : >"$file"
-  for n in "${snap_names[@]}"; do
-    [[ -n $n ]] || continue
-    print -r -- "name $n" >>"$file"
-    print -r -- "cwd ${snap_cwd[$n]:-}" >>"$file"
-    print -r -- "cmd ${snap_cmd[$n]:-}" >>"$file"
-    print -r -- "occupied ${snap_occupied[$n]:-0}" >>"$file"
-    print -r -- "workspace ${snap_workspace[$n]:-${snap_occupied[$n]:-0}}" >>"$file"
-    print -r -- "attached ${snap_attached[$n]:-0}" >>"$file"
-    print -r -- "" >>"$file"
-  done
+  {
+    for n in "${snap_names[@]}"; do
+      [[ -n $n ]] || continue
+      print -r -- "name $n"
+      print -r -- "cwd ${snap_cwd[$n]:-}"
+      print -r -- "cmd ${snap_cmd[$n]:-}"
+      print -r -- "occupied ${snap_occupied[$n]:-0}"
+      print -r -- "workspace ${snap_workspace[$n]:-${snap_occupied[$n]:-0}}"
+      print -r -- "attached ${snap_attached[$n]:-0}"
+      print -r -- ""
+    done
+  } | replace_file_atomic "$file"
 }
 
 session_in_workspace() {
@@ -2308,20 +2322,20 @@ load_settings() {
 }
 
 save_settings() {
-  local file dir root
+  local file root
   settings_file
   file=$REPLY
-  dir=${file:h}
-  mkdir -p "$dir"
-  print -r -- "open_target ${open_target}" >"$file"
-  print -r -- "open_placement ${open_placement}" >>"$file"
-  if (( ${#project_roots} )); then
-    for root in "${project_roots[@]}"; do
-      print -r -- "project_root ${root}" >>"$file"
-    done
-  else
-    print -r -- "project_root" >>"$file"
-  fi
+  {
+    print -r -- "open_target ${open_target}"
+    print -r -- "open_placement ${open_placement}"
+    if (( ${#project_roots} )); then
+      for root in "${project_roots[@]}"; do
+        print -r -- "project_root ${root}"
+      done
+    else
+      print -r -- "project_root"
+    fi
+  } | replace_file_atomic "$file"
 }
 
 settings_value_label() {
