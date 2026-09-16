@@ -1729,6 +1729,38 @@ if grep -E -q '^[[:space:]]*read_key \|\| continue' "${0:A:h}/lanjump.zsh"; then
   (( fails++ ))
 fi
 
+# #226: go/list/last do not need the LAN prefix. CLI entry must not probe
+# interfaces; is_self_ip lazy-loads collect_self_ips when MYIPS is empty.
+_lj_cli=$(awk '
+  index($0, "if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then") {
+    p=1
+  }
+  p { print }
+  p && index($0, "cli_dispatch") { exit }
+' "${0:A:h}/lanjump.zsh")
+if [[ -z $_lj_cli ]]; then
+  print -u2 "FAIL cli-entry/no-detect-lan missing go/list/last branch"
+  (( fails++ ))
+elif [[ $_lj_cli == *detect_lan* ]]; then
+  print -u2 "FAIL cli-entry/no-detect-lan still calls detect_lan before go/list/last"
+  (( fails++ ))
+fi
+unset _lj_cli
+
+_lj_save_collect=$functions[collect_self_ips]
+_lj_save_myips=("${MYIPS[@]}")
+collect_self_ips() {
+  MYIPS=(10.9.8.7)
+}
+MYIPS=()
+if ! is_self_ip 10.9.8.7; then
+  print -u2 "FAIL is_self_ip/lazy-self-ips did not collect when MYIPS empty"
+  (( fails++ ))
+fi
+functions[collect_self_ips]=$_lj_save_collect
+MYIPS=("${_lj_save_myips[@]}")
+unset _lj_save_collect _lj_save_myips
+
 if (( fails )); then
   print -u2 "cli-selftest: $fails failed"
   exit 1
