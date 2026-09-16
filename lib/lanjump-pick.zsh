@@ -2796,7 +2796,7 @@ ghostty_focus_session() {
 tell application "Ghostty"
   repeat with w in windows
     repeat with t in tabs of w
-      if name of t is "$name" or name of w is "$name" then
+      if name of t is $(ghostty_applescript_string "$name") or name of w is $(ghostty_applescript_string "$name") then
         try
           set selected of t to true
         end try
