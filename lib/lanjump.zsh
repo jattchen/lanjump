@@ -1452,9 +1452,11 @@ ssh_tty() {
 }
 
 lan_pub_install_cmd() {
-  local pub
+  local pub b64
   pub=$(cat "$KEY.pub")
-  print -r -- "umask 077; mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; grep -Fqx '$pub' ~/.ssh/authorized_keys 2>/dev/null || printf '%s\n' '$pub' >> ~/.ssh/authorized_keys"
+  # #256: comment may contain '; base64 stays single-quote-safe.
+  b64=$(print -rn -- "$pub" | base64 | tr -d '\n')
+  print -r -- "umask 077; mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; pub=\$(printf '%s' '$b64' | base64 -d 2>/dev/null || printf '%s' '$b64' | base64 -D); grep -Fqx \"\$pub\" ~/.ssh/authorized_keys 2>/dev/null || printf '%s\n' \"\$pub\" >> ~/.ssh/authorized_keys"
 }
 
 try_ssh() {
