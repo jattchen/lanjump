@@ -1973,7 +1973,7 @@ restore_read_key() {
       k3=$REPLY
       if [[ $k3 == '<' ]]; then
         buf=
-        while read_byte; do
+        while read_byte 0.2; do
           c=$REPLY
           buf+=$c
           [[ $c == M || $c == m ]] && break
