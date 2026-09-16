@@ -4048,6 +4048,20 @@ pick_selftest() {
   settings_commit_input
   expect settings/input-empty-cancels '/opt/overlay-root' "${project_roots[*]}"
 
+  # #214: local path= is tied to PATH; first-time save_settings then cannot mkdir.
+  local firsthome
+  firsthome=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-first-settings.XXXXXX")
+  HOME=$firsthome
+  project_roots=()
+  settings_input_on=1
+  settings_input_buf='/opt/first-root'
+  settings_commit_input
+  project_roots=()
+  load_settings
+  expect settings/first-write-persists /opt/first-root "${project_roots[1]-}"
+  HOME=$testhome
+  rm -rf "$firsthome"
+
   # #96: settings overlay input must ignore CSI; only a true Esc cancels.
   expect_settings_input_key() {
     local label=$1 want=$2 seq=$3
