@@ -99,12 +99,37 @@ trap 'print -u2 "${mode}失败。"' ERR
 
 # 系统若开了「显示所有文件扩展名」，.command 的「隐藏扩展名」不会在桌面上生效。
 # 真正的脚本放进 Application Support，桌面放无后缀的访达替身，显示名就是「启动 lanjump」。
-is_lanjump_desktop_script() {
-  local f=$1 first
+# 只清官方启动器文件名或与官方启动器内容完全一致的副本，不删只是提到 lanjump 目录的用户脚本。
+is_official_desktop_launcher_name() {
+  local name=${1:t}
+  [[ $name == 'Lanjump.command' || $name == '启动 lanjump.command' ]]
+}
+
+is_official_desktop_launcher_content() {
+  local f=$1
   [[ -f $f ]] || return 1
-  first=$(head -n 1 "$f" 2>/dev/null) || return 1
-  [[ $first == '#!/bin/zsh' ]] || return 1
-  grep -qF 'Application Support/lanjump' "$f"
+  if [[ -n ${APP_LAUNCHER:-} && -f $APP_LAUNCHER ]]; then
+    cmp -s "$f" "$APP_LAUNCHER" && return 0
+  fi
+  [[ -f $ROOT/bin/lanjump.command ]] && cmp -s "$f" "$ROOT/bin/lanjump.command"
+}
+
+is_lanjump_desktop_script() {
+  local f=$1
+  [[ -f $f ]] || return 1
+  is_official_desktop_launcher_name "$f" && return 0
+  is_official_desktop_launcher_content "$f"
+}
+
+# HOME 指向测试假家目录时也能进 $HOME/.Trash；失败再 rm。
+trash_desktop_script() {
+  local f=$1 dest
+  mkdir -p "$HOME/.Trash"
+  dest="$HOME/.Trash/${f:t}"
+  if [[ -e $dest ]]; then
+    dest="$HOME/.Trash/${f:t}.${RANDOM}"
+  fi
+  mv -f "$f" "$dest" 2>/dev/null || rm -f "$f"
 }
 
 remove_desktop_lanjump_scripts() {
@@ -112,9 +137,8 @@ remove_desktop_lanjump_scripts() {
   setopt localoptions nullglob
   for f in "$HOME/Desktop/"*; do
     is_lanjump_desktop_script "$f" || continue
-    rm -f "$f"
+    trash_desktop_script "$f"
   done
-  rm -f "$HOME/Desktop/Lanjump.command" "$HOME/Desktop/启动 lanjump.command"
 }
 
 # 已有指向本脚本的替身就改名为「启动 lanjump」，没有则新建。不进废纸篓。

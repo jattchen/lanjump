@@ -18,15 +18,34 @@ desktop_names() {
   done
 }
 
+# APFS is usually case-insensitive, so -e Lanjump.command is also true for lanjump.command.
+has_desktop_name() {
+  local dir=$1 name=$2 f
+  for f in "$dir/"*(N); do
+    [[ ${f:t} == "$name" ]] && return 0
+  done
+  return 1
+}
+
 fakehome=$(mktemp -d)
 mkdir -p "$fakehome/Desktop" "$fakehome/.ssh" "$fakehome/Library/Application Support"
 cp "$ROOT/bin/lanjump.command" "$fakehome/Desktop/启动 xx.command"
 chmod 755 "$fakehome/Desktop/启动 xx.command"
 print old >"$fakehome/Desktop/Lanjump.command"
+# #215: a user script that only mentions the app dir must survive install.
+cat >"$fakehome/Desktop/my-custom-tool.command" <<'EOF'
+#!/bin/zsh
+# helper that mentions Application Support/lanjump but is not the launcher
+print custom
+EOF
+chmod 755 "$fakehome/Desktop/my-custom-tool.command"
 HOME=$fakehome /bin/zsh "$ROOT/install.zsh" >/dev/null
 
 if [[ -e "$fakehome/Desktop/启动 xx.command" || -e "$fakehome/Desktop/Lanjump.command" || -e "$fakehome/Desktop/启动 lanjump.command" ]]; then
   fail "old desktop scripts still present: $(desktop_names "$fakehome/Desktop")"
+fi
+if [[ ! -f "$fakehome/Desktop/my-custom-tool.command" ]]; then
+  fail "install deleted custom desktop script that only mentioned lanjump"
 fi
 if [[ ! -x "$fakehome/Library/Application Support/lanjump/install.zsh" ]]; then
   fail "installer was not saved to app dir"
@@ -61,6 +80,16 @@ fi
 if [[ $out != *$(print -r -- ${local_sha[1,7]})* ]]; then
   fail "skip message missing current version: $out"
 fi
+
+# After official Lanjump.command is gone, a user-copied lanjump.command with one
+# extra env line must survive upgrade. Cannot coexist with Lanjump.command on
+# a case-insensitive volume.
+{
+  print '#!/bin/zsh'
+  print 'LANJUMP_NO_GROK_WRAP=1'
+  tail -n +2 "$ROOT/bin/lanjump.command"
+} >"$fakehome/Desktop/lanjump.command"
+chmod 755 "$fakehome/Desktop/lanjump.command"
 
 # Old GitHub payload: old CLI + an install.zsh that would drop Lanjump.command
 # if we mistakenly ran it. Upgrade must use the saved installer instead.
@@ -97,11 +126,17 @@ fi
 if [[ $out != *已从\ ${local_sha[1,7]}\ 升级到\ aaaaaaa* ]]; then
   fail "missing from-to result: $out"
 fi
-if [[ -e "$fakehome/Desktop/Lanjump.command" || -e "$fakehome/Desktop/启动 lanjump.command" ]]; then
+if has_desktop_name "$fakehome/Desktop" 'Lanjump.command' || has_desktop_name "$fakehome/Desktop" '启动 lanjump.command'; then
   fail "upgrade created a .command on desktop: $(desktop_names "$fakehome/Desktop")"
 fi
 if [[ ! -e "$fakehome/Desktop/启动 lanjump" ]]; then
   fail "alias missing after upgrade"
+fi
+if [[ ! -f "$fakehome/Desktop/my-custom-tool.command" ]]; then
+  fail "upgrade deleted custom desktop script that only mentioned lanjump"
+fi
+if [[ ! -f "$fakehome/Desktop/lanjump.command" ]]; then
+  fail "upgrade deleted user-copied lanjump.command with extra env line"
 fi
 n=0
 for f in "$fakehome/Desktop/"*; do
@@ -121,7 +156,7 @@ fi
 if [[ $out == *RAN-OLD-INSTALLER* ]]; then
   fail "second upgrade ran old installer"
 fi
-if [[ -e "$fakehome/Desktop/Lanjump.command" ]]; then
+if has_desktop_name "$fakehome/Desktop" 'Lanjump.command'; then
   fail "second upgrade created Lanjump.command"
 fi
 
