@@ -72,6 +72,9 @@ if [[ $mode == 升级 ]]; then
   else
     want_ver=
   fi
+  if [[ -z ${LANJUMP_ARCHIVE_URL:-} && -n $want_ver ]]; then
+    ARCHIVE_URL="https://github.com/jattchen/lanjump/archive/${want_ver}.tar.gz"
+  fi
   if [[ -n $have_ver && -n $want_ver && $have_ver == "$want_ver" ]]; then
     print "没有新版本。当前已是 $(short_ver "$have_ver")。"
     exit 0

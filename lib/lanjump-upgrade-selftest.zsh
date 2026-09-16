@@ -185,6 +185,63 @@ if ! grep -q 'FETCHED-INSTALLER-MARKER' "$fakehome/Library/Application Support/l
   fail "upgrade kept first-install install.zsh; tarball installer was ignored"
 fi
 
+# #229: upgrade must download archive/<sha>.tar.gz, not heads/main.tar.gz.
+# If those two requests diverge (CDN lag), version is new while files stay old
+# and later upgrades keep saying 没有新版本.
+sha229=dddddddddddddddddddddddddddddddddddddddd
+curl_log=$(mktemp)
+fakebin=$(mktemp -d)
+mainpkg=$(mktemp -d)
+shapkg=$(mktemp -d)
+mkdir -p "$mainpkg/lanjump-main"/{bin,lib,src} "$shapkg/lanjump-main"/{bin,lib,src}
+cp "$ROOT/bin/lanjump.command" "$mainpkg/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump.command" "$shapkg/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$mainpkg/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$shapkg/lanjump-main/bin/"
+cp "$ROOT/lib/"* "$mainpkg/lanjump-main/lib/"
+cp "$ROOT/lib/"* "$shapkg/lanjump-main/lib/"
+cp "$ROOT/src/lanjump-keys.c" "$mainpkg/lanjump-main/src/"
+cp "$ROOT/src/lanjump-keys.c" "$shapkg/lanjump-main/src/"
+print -r -- '# HEADS-MAIN-TREE' >>"$mainpkg/lanjump-main/lib/lanjump.zsh"
+print -r -- '# SHA-ARCHIVE-TREE' >>"$shapkg/lanjump-main/lib/lanjump.zsh"
+maintar=$(mktemp)
+shatar=$(mktemp)
+tar -czf "$maintar" -C "$mainpkg" lanjump-main
+tar -czf "$shatar" -C "$shapkg" lanjump-main
+cat >"$fakebin/curl" <<EOF
+#!/bin/zsh
+url=\${@[-1]}
+print -r -- "\$url" >>$(printf %q "$curl_log")
+if [[ \$url == *"/archive/${sha229}.tar.gz" ]]; then
+  cat $(printf %q "$shatar")
+  exit 0
+fi
+if [[ \$url == *'/archive/refs/heads/main.tar.gz' ]]; then
+  cat $(printf %q "$maintar")
+  exit 0
+fi
+print -u2 "curl-stub unexpected url: \$url"
+exit 1
+EOF
+chmod 755 "$fakebin/curl"
+
+out=$(HOME=$fakehome PATH="$fakebin:$PATH" LANJUMP_REMOTE_SHA=$sha229 env -u LANJUMP_ARCHIVE_URL "$fakehome/.local/bin/lanjump" upgrade)
+if [[ $out != *从\ bbbbbbb\ 升级到\ ddddddd* ]]; then
+  fail "#229 upgrade missing from-to progress: $out"
+fi
+if ! grep -q "/archive/${sha229}.tar.gz" "$curl_log"; then
+  fail "upgrade archive URL was not built from fetched sha: $(<"$curl_log")"
+fi
+if grep -q 'heads/main' "$curl_log"; then
+  fail "upgrade still requested heads/main archive: $(<"$curl_log")"
+fi
+if ! grep -q 'SHA-ARCHIVE-TREE' "$fakehome/Library/Application Support/lanjump/lanjump.zsh"; then
+  fail "upgrade did not install the sha tarball"
+fi
+if grep -q 'HEADS-MAIN-TREE' "$fakehome/Library/Application Support/lanjump/lanjump.zsh"; then
+  fail "upgrade installed heads/main tree for a pinned sha"
+fi
+
 # #220: missing tarball file must not leave live APP as a mixed old/new tree.
 appdir="$fakehome/Library/Application Support/lanjump"
 print -r -- 'OLD-MAIN' >"$appdir/lanjump.zsh"
@@ -207,7 +264,7 @@ if [[ $(<"$appdir/lanjump-pick.zsh") != OLD-PICK ]]; then
   fail "failed upgrade left mixed lanjump-pick.zsh: $(<"$appdir/lanjump-pick.zsh")"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar"
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log"
 
 if (( fails )); then
   exit 1
