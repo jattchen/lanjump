@@ -2412,16 +2412,16 @@ settings_delete_key() {
 }
 
 settings_commit_input() {
-  local path=$settings_input_buf
+  local root=$settings_input_buf
   settings_input_on=0
   settings_input_buf=
-  path=${path##[[:space:]]#}
-  path=${path%%[[:space:]]#}
-  [[ -n $path ]] || return 0
-  if [[ "$path" != /* && "$path" != '~' && "$path" != '~/'* ]]; then
-    path="$PWD/$path"
+  root=${root##[[:space:]]#}
+  root=${root%%[[:space:]]#}
+  [[ -n $root ]] || return 0
+  if [[ "$root" != /* && "$root" != '~' && "$root" != '~/'* ]]; then
+    root="$PWD/$root"
   fi
-  project_roots+=("$path")
+  project_roots+=("$root")
   save_settings
   settings_cursor=$(( 2 + ${#project_roots} ))
 }
