@@ -112,6 +112,29 @@ EOF
   expect_contains ssh/upsert-missing-end/keep-hostname 'HostName other.local' "$ssh_got"
   expect_contains ssh/upsert-missing-end/keep-user 'User other' "$ssh_got"
 
+  # #252: missing END + same Host id — upsert must not leave the old HostName
+  # as OpenSSH's first match (append-after-failed-strip does).
+  cat >"$SSH_CONFIG" <<'EOF'
+# BEGIN LANJUMP lanjump-office
+Host lanjump-office
+  HostName 10.0.0.8
+  User mac
+Host keep-me
+  HostName other.local
+  User other
+EOF
+  upsert_ssh_config lanjump-office mac 10.0.0.99
+  read_ssh
+  expect_contains ssh/upsert-missing-end/hostname-keep-host 'Host keep-me' "$ssh_got"
+  expect_contains ssh/upsert-missing-end/hostname-keep-hostname 'HostName other.local' "$ssh_got"
+  expect_contains ssh/upsert-missing-end/hostname-keep-user 'User other' "$ssh_got"
+  local resolved_hn
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.99 ]]; then
+    print -u2 "FAIL ssh/upsert-missing-end/hostname-wins want=10.0.0.99 got=$(printf %q "$resolved_hn")"
+    (( fails++ ))
+  fi
+
   # Happy path: a complete block is still removed; later Host stays.
   cat >"$SSH_CONFIG" <<'EOF'
 # BEGIN LANJUMP lanjump-office

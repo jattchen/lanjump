@@ -651,13 +651,49 @@ remove_ssh_config() {
 
 upsert_ssh_config() {
   local id=$1 user=$2 hostname=$3
+  local begin="# BEGIN LANJUMP ${id}"
+  local end="# END LANJUMP ${id}"
+  local tmp
   mkdir -p "$HOME/.ssh"
   [[ -f $SSH_CONFIG ]] || : >"$SSH_CONFIG"
   chmod 600 "$SSH_CONFIG"
-  remove_ssh_config "$id"
+  # Missing END: do not append (OpenSSH first-match would keep the old HostName).
+  # Replace the damaged LANJUMP Host in place; stop before a later user Host (#63).
+  if ! strip_ssh_block "$begin" "$end" && grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null; then
+    tmp=$(mktemp)
+    awk -v begin="$begin" -v end="$end" -v id="$id" -v user="$user" -v hn="$hostname" -v key="$KEY" '
+      function emit() {
+        if (emitted) return
+        print ""
+        print begin
+        print "Host " id
+        print "  HostName " hn
+        print "  User " user
+        print "  IdentityFile " key
+        print "  IdentitiesOnly yes"
+        print "  AddKeysToAgent yes"
+        print "  UseKeychain yes"
+        print "  AddressFamily inet"
+        print "  StrictHostKeyChecking accept-new"
+        print "  ConnectTimeout 8"
+        print end
+        emitted = 1
+      }
+      $0 == begin && !emitted { skip = 1; next }
+      skip && $1 == "Host" && $2 == id { ours = 1; next }
+      skip && ours && /^[ \t]/ { next }
+      skip && ours && $0 == end { next }
+      skip { emit(); skip = 0; ours = 0; if ($0 != end) print; next }
+      { print }
+      END { emit() }
+    ' "$SSH_CONFIG" >"$tmp"
+    mv "$tmp" "$SSH_CONFIG"
+    chmod 600 "$SSH_CONFIG"
+    return
+  fi
   {
     print
-    print "# BEGIN LANJUMP ${id}"
+    print "$begin"
     print "Host ${id}"
     print "  HostName ${hostname}"
     print "  User ${user}"
@@ -668,7 +704,7 @@ upsert_ssh_config() {
     print "  AddressFamily inet"
     print "  StrictHostKeyChecking accept-new"
     print "  ConnectTimeout 8"
-    print "# END LANJUMP ${id}"
+    print "$end"
   } >>"$SSH_CONFIG"
 }
 
