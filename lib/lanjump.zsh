@@ -454,10 +454,18 @@ find_saved() {
   fi
   if [[ -n $ip ]]; then
     for (( i = 1; i <= n; i++ )); do
-      if [[ ${h_ip[$i]} == "$ip" ]]; then
-        print -r -- $i
-        return
+      if [[ ${h_ip[$i]} != "$ip" ]]; then
+        continue
       fi
+      # IP is only a merge key when the saved row has no MAC and the
+      # hostname is the same or unknown. Otherwise DHCP reuse would
+      # overwrite a known machine's identity (#211).
+      [[ -n ${h_mac[$i]} ]] && continue
+      if [[ -n ${h_hostname[$i]} && -n $hostname && ${h_hostname[$i]} != "$hostname" ]]; then
+        continue
+      fi
+      print -r -- $i
+      return
     done
   fi
 }
