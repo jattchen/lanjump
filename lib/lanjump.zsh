@@ -908,6 +908,27 @@ ssh_fp() {
   ssh-keyscan -4 -t ed25519 -T 3 "$1" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{print $2}'
 }
 
+# Fill caller `fp` from `s_ip`, batched like scan_port22 so N hosts wait ~3s not 3N.
+fill_seen_hostkeys() {
+  local i n=${#s_ip} dir
+  fp=()
+  (( n )) || return
+  dir=$(mktemp -d) || return
+  for (( i = 1; i <= n; i++ )); do
+    (
+      ssh_fp "${s_ip[$i]}" >"$dir/$i"
+    ) &
+    if (( i % 40 == 0 )); then
+      wait
+    fi
+  done
+  wait
+  for (( i = 1; i <= n; i++ )); do
+    [[ -f $dir/$i ]] && fp[i]=$(<"$dir/$i")
+  done
+  rm -rf "$dir"
+}
+
 is_numeric_alias() {
   [[ $1 == [0-9]##[.][0-9]##[.][0-9]##[.][0-9]## ]]
 }
@@ -917,10 +938,7 @@ merge_seen_by_hostkey() {
   local -a fp
   local known="$HOME/.ssh/known_hosts"
   (( n )) || return
-  fp=()
-  for (( i = 1; i <= n; i++ )); do
-    fp[i]=$(ssh_fp "${s_ip[$i]}")
-  done
+  fill_seen_hostkeys
   for (( i = 1; i <= n; i++ )); do
     [[ -n ${s_ip[$i]} && -n ${fp[$i]} ]] || continue
     for (( j = i + 1; j <= n; j++ )); do

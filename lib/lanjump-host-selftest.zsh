@@ -303,6 +303,40 @@ host_selftest() {
     (( fails++ ))
   fi
 
+  # #225: N open hosts must not wait 3N seconds for serial ssh-keyscan.
+  # Inspect bodies (no real -T 3). Parallel like scan_port22, or a helper.
+  if [[ ${functions[merge_seen_by_hostkey]} == *'$(ssh_fp'* ]]; then
+    print -u2 "FAIL host/scan/keyscan merge_seen_by_hostkey still serial ssh_fp"
+    (( fails++ ))
+  elif (( ${+functions[fill_seen_hostkeys]} )); then
+    if [[ ${functions[fill_seen_hostkeys]} != *') &'* || ${functions[fill_seen_hostkeys]} != *wait* ]]; then
+      print -u2 "FAIL host/scan/keyscan fill_seen_hostkeys missing batched &/wait"
+      (( fails++ ))
+    fi
+  elif [[ ${functions[merge_seen_by_hostkey]} != *') &'* || ${functions[merge_seen_by_hostkey]} != *wait* ]]; then
+    print -u2 "FAIL host/scan/keyscan merge_seen_by_hostkey missing batched &/wait"
+    (( fails++ ))
+  fi
+
+  # Same host key still collapses two IPs; a third key stays. Mock ssh_fp.
+  local _lj_save_ssh_fp=$functions[ssh_fp]
+  ssh_fp() {
+    case $1 in
+      203.0.113.10|203.0.113.11) print -r -- SHA256:same-host ;;
+      203.0.113.12) print -r -- SHA256:other-host ;;
+    esac
+  }
+  s_alias=(nas 203.0.113.11 pi)
+  s_host=(nas.local '' pi.local)
+  s_ip=(203.0.113.10 203.0.113.11 203.0.113.12)
+  s_mac=('aa:bb:cc:dd:ee:10' '' 'aa:bb:cc:dd:ee:12')
+  merge_seen_by_hostkey
+  expect host/scan/keyscan-merge-count 2 "${#s_ip}"
+  expect host/scan/keyscan-merge-keep-ip 203.0.113.10 "${s_ip[1]}"
+  expect host/scan/keyscan-merge-keep-alias nas "${s_alias[1]}"
+  expect host/scan/keyscan-merge-other-ip 203.0.113.12 "${s_ip[2]}"
+  functions[ssh_fp]=$_lj_save_ssh_fp
+
   # #186: 「已保存 · 上次」 follows LAST_FILE (read_last), not max h_last.
   local saved_last_file=$LAST_FILE
   local last_tmp office_status studio_status
