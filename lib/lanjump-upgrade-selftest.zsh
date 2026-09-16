@@ -160,7 +160,32 @@ if has_desktop_name "$fakehome/Desktop" 'Lanjump.command'; then
   fail "second upgrade created Lanjump.command"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar"
+# #210: upgrade must overwrite the saved installer with the tarball's newer
+# install.zsh. Today $SELF is already $APP/install.zsh, so the -ef self-skip
+# keeps the first-install copy forever and later installer-added files never land.
+newpkg=$(mktemp -d)
+mkdir -p "$newpkg/lanjump-main"/{bin,lib,src}
+cp "$ROOT/bin/lanjump.command" "$newpkg/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$newpkg/lanjump-main/bin/"
+cp "$ROOT/lib/"* "$newpkg/lanjump-main/lib/"
+cp "$ROOT/src/lanjump-keys.c" "$newpkg/lanjump-main/src/"
+{
+  print '# FETCHED-INSTALLER-MARKER'
+  cat "$ROOT/install.zsh"
+} >"$newpkg/lanjump-main/install.zsh"
+newtar=$(mktemp)
+tar -czf "$newtar" -C "$newpkg" lanjump-main
+newer_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+out=$(HOME=$fakehome LANJUMP_REMOTE_SHA=$newer_sha LANJUMP_ARCHIVE_URL="file://${newtar}" "$fakehome/.local/bin/lanjump" upgrade)
+if [[ $out != *从\ aaaaaaa\ 升级到\ bbbbbbb* ]]; then
+  fail "newer-installer upgrade missing from-to progress: $out"
+fi
+if ! grep -q 'FETCHED-INSTALLER-MARKER' "$fakehome/Library/Application Support/lanjump/install.zsh"; then
+  fail "upgrade kept first-install install.zsh; tarball installer was ignored"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar"
 
 if (( fails )); then
   exit 1

@@ -192,15 +192,25 @@ hide_finder_extension() {
 }
 
 # 把当前这份安装脚本存下来。升级走它，而不是 GitHub 上可能更旧的 install.zsh。
+# 若这次刚下载了 tarball，且里面的 install.zsh 也是新版安装脚本，则用它覆盖
+# 已保存的副本；否则 $SELF 就是 $APP/install.zsh，-ef 恒为真，第一次安装
+# 留下的脚本会永远挡住后来新增的文件。
 save_self_installer() {
   local src=$SELF
   if [[ ! -f $src || $src != *.zsh ]] || ! grep -q 'write_cli_launcher' "$src" 2>/dev/null; then
     src="$ROOT/install.zsh"
   fi
+  if [[ -n ${fetched:-} && -f $ROOT/install.zsh ]] && grep -q 'write_cli_launcher' "$ROOT/install.zsh" 2>/dev/null; then
+    src="$ROOT/install.zsh"
+  fi
   [[ -f $src ]] || return 0
   grep -q 'write_cli_launcher' "$src" 2>/dev/null || return 0
   if [[ ! -e "$APP/install.zsh" || ! "$src" -ef "$APP/install.zsh" ]]; then
-    cp -f "$src" "$APP/install.zsh"
+    # 升级时 $APP/install.zsh 就是正在跑的脚本，原地 cp 会改正在读的 inode。
+    local tmp=$APP/install.zsh.new.$$
+    cp -f "$src" "$tmp"
+    chmod 755 "$tmp"
+    mv -f "$tmp" "$APP/install.zsh"
   fi
   chmod 755 "$APP/install.zsh"
 }
