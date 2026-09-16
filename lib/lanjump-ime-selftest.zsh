@@ -135,6 +135,33 @@ print(mod.pick_fallback_layout([
       print -u2 "FAIL helper fallback must reject non-English layouts got=$(printf %q "$got")"
       (( fails++ ))
     fi
+    # British first in TIS order: first whitelist select fails, next enabled English must be tried.
+    got=$(python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('lanjump_ime', r'''$helper''')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+sources = [
+    ('com.apple.keylayout.British', 'TISTypeKeyboardLayout'),
+    ('com.apple.inputmethod.SCIM.ITABC', 'TISTypeKeyboardInputMode'),
+    ('com.apple.keylayout.USInternational-PC', 'TISTypeKeyboardLayout'),
+    ('com.apple.keylayout.French', 'TISTypeKeyboardLayout'),
+]
+tried = []
+def select_id(ident):
+    tried.append(ident)
+    return ident == 'com.apple.keylayout.USInternational-PC'
+if hasattr(mod, 'select_fallback_layout'):
+    chosen = mod.select_fallback_layout(sources, select_id)
+else:
+    picked = mod.pick_fallback_layout(sources)
+    chosen = picked if picked and select_id(picked) else None
+print('%s|%s' % (chosen, ','.join(tried)))
+" 2>&1) || got="exit:$?"
+    if [[ $got != 'com.apple.keylayout.USInternational-PC|com.apple.keylayout.British,com.apple.keylayout.USInternational-PC' ]]; then
+      print -u2 "FAIL helper fallback must try next English layout after first whitelist select fails got=$(printf %q "$got")"
+      (( fails++ ))
+    fi
   fi
 
   if typeset -f ime_switch_command >/dev/null; then
