@@ -3384,6 +3384,30 @@ pick_selftest() {
   load_session_snapshot
   expect snap/atomic-write-count 3 "${#snap_names[@]}"
 
+  # #222: GNU stat -f %m prints a mount point; a just-written snapshot
+  # must still count as recent so status ticks do not rewrite every time.
+  session_snapshot_file
+  : >"$REPLY"
+  stat() {
+    if [[ $1 == -c && $2 == %Y && -n ${3:-} ]]; then
+      print -r -- $EPOCHSECONDS
+      return 0
+    fi
+    # GNU coreutils: -f is --file-system, %m is the mount point.
+    if [[ $1 == -f && $2 == %m ]]; then
+      print -r -- /
+      return 0
+    fi
+    return 1
+  }
+  LANJUMP_SNAPSHOT_MIN=2
+  if ! snapshot_recently_written; then
+    print -u2 "FAIL snap/gnu-stat-throttle GNU-style stat -f %m skipped recent snapshot"
+    (( fails++ ))
+  fi
+  unfunction stat
+  unset LANJUMP_SNAPSHOT_MIN
+
   : >"$tmux_log"
   snap_cmd[idle-grok]=grok-1.0.24-mac
   snap_cwd[idle-grok]=/proj/lanjump

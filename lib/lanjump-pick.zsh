@@ -250,7 +250,9 @@ snapshot_recently_written() {
   [[ -f $file ]] || return 1
   min=${LANJUMP_SNAPSHOT_MIN:-2}
   (( min <= 0 )) && return 1
-  m=$(stat -f %m "$file" 2>/dev/null) || return 1
+  # GNU: -c %Y; BSD: -f %m. GNU -f %m is a mount point, not mtime.
+  m=$(stat -c %Y "$file" 2>/dev/null) || m=$(stat -f %m "$file" 2>/dev/null) || return 1
+  [[ $m == [0-9]## ]] || return 1
   now=$EPOCHSECONDS
   (( now - m < min ))
 }
@@ -1046,8 +1048,17 @@ copy_all_to_items() {
   items_pinned=("${all_pinned[@]}")
 }
 
+lanjump_data_dir() {
+  if [[ ${OSTYPE:-} == darwin* ]]; then
+    REPLY="$HOME/Library/Application Support/lanjump"
+  else
+    REPLY="${XDG_STATE_HOME:-$HOME/.local/state}/lanjump"
+  fi
+}
+
 session_filter_file() {
-  REPLY="$HOME/Library/Application Support/lanjump/session-filter"
+  lanjump_data_dir
+  REPLY="$REPLY/session-filter"
 }
 
 sanitize_filter_keyword() {
@@ -1205,7 +1216,8 @@ prompt_filter() {
 }
 
 pinned_sessions_file() {
-  REPLY="$HOME/Library/Application Support/lanjump/pinned-sessions"
+  lanjump_data_dir
+  REPLY="$REPLY/pinned-sessions"
 }
 
 sanitize_pin_field() {
@@ -1490,11 +1502,13 @@ lanjump_foreign_session() {
 }
 
 session_snapshot_file() {
-  REPLY="$HOME/Library/Application Support/lanjump/session-snapshot"
+  lanjump_data_dir
+  REPLY="$REPLY/session-snapshot"
 }
 
 restore_stamp_file() {
-  REPLY="$HOME/Library/Application Support/lanjump/restore-stamp"
+  lanjump_data_dir
+  REPLY="$REPLY/restore-stamp"
 }
 
 _commit_snap_record() {
@@ -2112,7 +2126,8 @@ maybe_resume_last_command() {
 }
 
 last_session_file() {
-  REPLY="$HOME/Library/Application Support/lanjump/last-session"
+  lanjump_data_dir
+  REPLY="$REPLY/last-session"
 }
 
 remember_last_session() {
@@ -2278,7 +2293,8 @@ ensure_restore_token() {
 }
 
 settings_file() {
-  REPLY="$HOME/Library/Application Support/lanjump/settings"
+  lanjump_data_dir
+  REPLY="$REPLY/settings"
 }
 
 default_project_roots() {
