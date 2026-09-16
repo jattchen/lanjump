@@ -318,6 +318,31 @@ host_selftest() {
   LAST_FILE=$saved_last_file
   rm -f "$last_tmp"
 
+  # #219: Bonjour aliases may contain |; load must not shift the other fields.
+  local saved_hosts_file=$HOSTS_FILE
+  local hosts_tmp pipe_idx
+  hosts_tmp=$(mktemp) || return 1
+  HOSTS_FILE=$hosts_tmp
+  print -r -- 'Kitchen|Mac|user|kitchen.local|192.168.1.20|aa:bb:cc:dd:ee:ff|123' >"$HOSTS_FILE"
+  load_hosts
+  expect host/pipe-alias/count 1 "${#h_alias}"
+  expect host/pipe-alias/alias 'Kitchen|Mac' "${h_alias[1]}"
+  expect host/pipe-alias/user user "${h_user[1]}"
+  expect host/pipe-alias/hostname kitchen.local "${h_hostname[1]}"
+  expect host/pipe-alias/ip 192.168.1.20 "${h_ip[1]}"
+  expect host/pipe-alias/mac aa:bb:cc:dd:ee:ff "${h_mac[1]}"
+  expect host/pipe-alias/last 123 "${h_last[1]}"
+  pipe_idx=
+  for (( i = 1; i <= ${#h_alias}; i++ )); do
+    if [[ ${h_alias[$i]} == 'Kitchen|Mac' ]]; then
+      pipe_idx=$i
+      break
+    fi
+  done
+  expect host/pipe-alias/lookup 1 "$pipe_idx"
+  HOSTS_FILE=$saved_hosts_file
+  rm -f "$hosts_tmp"
+
   if (( fails )); then
     print -u2 "host-selftest: $fails failed"
     return 1

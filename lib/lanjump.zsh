@@ -414,12 +414,13 @@ load_hosts() {
     [[ -z $line || $line == \#* ]] && continue
     f=("${(@s:|:)line}")
     (( ${#f} >= 6 )) || continue
-    h_alias+=("${f[1]}")
-    h_user+=("${f[2]}")
-    h_hostname+=("${f[3]}")
-    h_ip+=("${f[4]}")
-    h_mac+=("${f[5]}")
-    h_last+=("${f[6]}")
+    # #219: extra | belongs to the alias (Bonjour names).
+    h_alias+=("${(j:|:)f[1,-6]}")
+    h_user+=("${f[-5]}")
+    h_hostname+=("${f[-4]}")
+    h_ip+=("${f[-3]}")
+    h_mac+=("${f[-2]}")
+    h_last+=("${f[-1]}")
   done <"$HOSTS_FILE"
 }
 
@@ -428,7 +429,7 @@ save_hosts() {
   {
     print -r -- "# alias|user|hostname|ip|mac|last"
     for (( i = 1; i <= n; i++ )); do
-      print -r -- "${h_alias[$i]}|${h_user[$i]}|${h_hostname[$i]}|${h_ip[$i]}|${h_mac[$i]}|${h_last[$i]}"
+      print -r -- "${h_alias[$i]}|${h_user[$i]//|/-}|${h_hostname[$i]//|/-}|${h_ip[$i]}|${h_mac[$i]}|${h_last[$i]}"
     done
   } >"$HOSTS_FILE"
 }
