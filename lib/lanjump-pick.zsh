@@ -1074,17 +1074,17 @@ sanitize_filter_keyword() {
 }
 
 save_session_filter() {
-  local file dir
+  local file
   session_filter_file
   file=$REPLY
-  dir=${file:h}
-  mkdir -p "$dir"
   sanitize_filter_keyword "$filter_include"
   filter_include=$REPLY
   sanitize_filter_keyword "$filter_exclude"
   filter_exclude=$REPLY
-  print -r -- "include ${filter_include}" >"$file"
-  print -r -- "exclude ${filter_exclude}" >>"$file"
+  {
+    print -r -- "include ${filter_include}"
+    print -r -- "exclude ${filter_exclude}"
+  } | replace_file_atomic "$file"
 }
 
 load_session_filter() {
