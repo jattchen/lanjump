@@ -91,8 +91,10 @@ fi
 print
 
 fetched=
+stage=
 cleanup() {
   [[ -n $fetched ]] && rm -rf "$fetched"
+  [[ -n $stage ]] && rm -rf "$stage"
 }
 trap cleanup EXIT
 trap 'print -u2 "${mode}失败。"' ERR
@@ -261,27 +263,52 @@ mkdir -p "$APP" "$BIN_DIR" "$HOME/.ssh" "$HOME/Desktop"
 chmod 700 "$HOME/.ssh"
 save_self_installer
 
-cp -f "$ROOT/lib/lanjump.zsh" "$APP/lanjump.zsh"
-cp -f "$ROOT/lib/lanjump-pick.zsh" "$APP/lanjump-pick.zsh"
+# 先写到 $APP.new，整树成功后再 mv 进 $APP，避免中途失败留下新旧混合树。
+stage=$APP.new
+rm -rf "$stage"
+mkdir -p "$stage"
+
+cp -f "$ROOT/lib/lanjump.zsh" "$stage/lanjump.zsh"
+cp -f "$ROOT/lib/lanjump-pick.zsh" "$stage/lanjump-pick.zsh"
 if [[ -f $ROOT/bin/lanjump-ghostty-attach ]]; then
-  cp -f "$ROOT/bin/lanjump-ghostty-attach" "$APP/lanjump-ghostty-attach"
+  cp -f "$ROOT/bin/lanjump-ghostty-attach" "$stage/lanjump-ghostty-attach"
 fi
+chmod 755 "$stage/lanjump.zsh" "$stage/lanjump-pick.zsh"
+
+cp -f "$ROOT/lib/lanjump-keys.py" "$stage/lanjump-keys.py"
+chmod 755 "$stage/lanjump-keys.py"
+if [[ -f $ROOT/lib/lanjump-ime.py ]]; then
+  cp -f "$ROOT/lib/lanjump-ime.py" "$stage/lanjump-ime.py"
+fi
+
+keys_err=$(mktemp)
+keys_compiled=0
+if cc -O2 -framework CoreGraphics -o "$stage/lanjump-keys" "$ROOT/src/lanjump-keys.c" 2>"$keys_err"; then
+  chmod 755 "$stage/lanjump-keys"
+  keys_compiled=1
+else
+  cp -f "$stage/lanjump-keys.py" "$stage/lanjump-keys"
+  chmod 755 "$stage/lanjump-keys"
+fi
+rm -f "$keys_err"
+
+cp -f "$ROOT/bin/lanjump.command" "$stage/lanjump.command"
+chmod 755 "$stage/lanjump.command"
+
+for f in lanjump.zsh lanjump-pick.zsh lanjump-ghostty-attach lanjump-keys.py lanjump-ime.py lanjump-keys lanjump.command; do
+  [[ -e $stage/$f ]] || continue
+  mv -f "$stage/$f" "$APP/$f"
+done
+rm -rf "$stage"
+stage=
+
 if [[ -f $APP/lanjump-ghostty-attach ]]; then
   cp -f "$APP/lanjump-ghostty-attach" "$BIN_DIR/lanjump-ghostty-attach"
   chmod 755 "$APP/lanjump-ghostty-attach" "$BIN_DIR/lanjump-ghostty-attach"
   xattr -d com.apple.quarantine "$BIN_DIR/lanjump-ghostty-attach" 2>/dev/null || true
 fi
-chmod 755 "$APP/lanjump.zsh" "$APP/lanjump-pick.zsh"
 
-cp -f "$ROOT/lib/lanjump-keys.py" "$APP/lanjump-keys.py"
-chmod 755 "$APP/lanjump-keys.py"
-if [[ -f $ROOT/lib/lanjump-ime.py ]]; then
-  cp -f "$ROOT/lib/lanjump-ime.py" "$APP/lanjump-ime.py"
-fi
-
-keys_err=$(mktemp)
-if cc -O2 -framework CoreGraphics -o "$APP/lanjump-keys" "$ROOT/src/lanjump-keys.c" 2>"$keys_err"; then
-  chmod 755 "$APP/lanjump-keys"
+if (( keys_compiled )); then
   # macOS 26 can SIGKILL an adhoc helper copied onto this path (invalid signature).
   rm -f "$BIN_DIR/lanjump-keys"
   cp -f "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
@@ -290,13 +317,10 @@ if cc -O2 -framework CoreGraphics -o "$APP/lanjump-keys" "$ROOT/src/lanjump-keys
   codesign --force --sign - "$APP/lanjump-keys" 2>/dev/null || true
   codesign --force --sign - "$BIN_DIR/lanjump-keys" 2>/dev/null || true
 else
-  cp -f "$APP/lanjump-keys.py" "$APP/lanjump-keys"
   cp -f "$APP/lanjump-keys.py" "$BIN_DIR/lanjump-keys"
   chmod 755 "$APP/lanjump-keys" "$BIN_DIR/lanjump-keys"
 fi
-rm -f "$keys_err"
 
-cp -f "$ROOT/bin/lanjump.command" "$APP_LAUNCHER"
 chmod 755 "$APP_LAUNCHER"
 xattr -d com.apple.quarantine "$APP_LAUNCHER" 2>/dev/null || true
 remove_desktop_lanjump_scripts

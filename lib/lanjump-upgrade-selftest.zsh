@@ -185,7 +185,29 @@ if ! grep -q 'FETCHED-INSTALLER-MARKER' "$fakehome/Library/Application Support/l
   fail "upgrade kept first-install install.zsh; tarball installer was ignored"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar"
+# #220: missing tarball file must not leave live APP as a mixed old/new tree.
+appdir="$fakehome/Library/Application Support/lanjump"
+print -r -- 'OLD-MAIN' >"$appdir/lanjump.zsh"
+print -r -- 'OLD-PICK' >"$appdir/lanjump-pick.zsh"
+badpkg=$(mktemp -d)
+mkdir -p "$badpkg/lanjump-main"/{bin,lib,src}
+print -r -- 'NEW-MAIN' >"$badpkg/lanjump-main/lib/lanjump.zsh"
+cp "$ROOT/bin/lanjump.command" "$badpkg/lanjump-main/bin/"
+cp "$ROOT/lib/lanjump-keys.py" "$badpkg/lanjump-main/lib/"
+cp "$ROOT/src/lanjump-keys.c" "$badpkg/lanjump-main/src/"
+badtar=$(mktemp)
+tar -czf "$badtar" -C "$badpkg" lanjump-main
+fail_sha=cccccccccccccccccccccccccccccccccccccccc
+
+out=$(HOME=$fakehome LANJUMP_REMOTE_SHA=$fail_sha LANJUMP_ARCHIVE_URL="file://${badtar}" "$fakehome/.local/bin/lanjump" upgrade 2>&1) || true
+if [[ $(<"$appdir/lanjump.zsh") != OLD-MAIN ]]; then
+  fail "failed upgrade left mixed lanjump.zsh: $(<"$appdir/lanjump.zsh")"
+fi
+if [[ $(<"$appdir/lanjump-pick.zsh") != OLD-PICK ]]; then
+  fail "failed upgrade left mixed lanjump-pick.zsh: $(<"$appdir/lanjump-pick.zsh")"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar"
 
 if (( fails )); then
   exit 1
