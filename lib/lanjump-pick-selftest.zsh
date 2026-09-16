@@ -5619,6 +5619,82 @@ pick_selftest() {
     unset TERM_PROGRAM
   fi
 
+  # #212: picker and a child shell share a foreground group. The shell
+  # ignores SIGINT; zsh defers the picker's `exit 130` INT trap until
+  # the child returns. Ctrl+C then `exit` must return to the list, not
+  # quit the UI. Pty stand-in: product run_interactive + product trap,
+  # child ignores INT, write ^C, child exits 0.
+  local _st212_dir _st212_st _st212_log _st212_err
+  _st212_dir=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-212.XXXXXX") || return 1
+  typeset -f run_interactive keys_bin >"$_st212_dir/fns.zsh"
+  print -r -- $'#!/bin/zsh\ntrap \'\' INT\nprint -r -- CHILD_READY\nread -r _ || true\nprint -r -- CHILD_DONE\nexit 0' >"$_st212_dir/child.zsh"
+  chmod +x "$_st212_dir/child.zsh"
+  cat >"$_st212_dir/parent.zsh" <<EOF
+emulate zsh
+setopt no_unset
+LOG=${(q)_st212_dir}/log
+. ${(q)_st212_dir}/fns.zsh
+restore_tty() { print -r -- RESTORED >>\$LOG }
+local_keyboard() { return 1 }
+trap 'restore_tty; print -r -- TRAP >>\$LOG; exit 130' INT
+print -r -- PARENT_START >>\$LOG
+run_interactive /bin/zsh ${(q)_st212_dir}/child.zsh
+print -r -- PARENT_BACK >>\$LOG
+exit 0
+EOF
+  cat >"$_st212_dir/drive.py" <<'PY'
+import os, pty, select, time, sys
+d = sys.argv[1]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv("/bin/zsh", ["zsh", os.path.join(d, "parent.zsh")])
+buf = b""
+deadline = time.time() + 4
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 0.1)
+    if r:
+        try:
+            buf += os.read(fd, 4096)
+        except OSError:
+            break
+        if b"CHILD_READY" in buf:
+            break
+os.write(fd, b"\x03")
+time.sleep(0.1)
+os.write(fd, b"\n")
+st = None
+deadline = time.time() + 4
+while time.time() < deadline:
+    wpid, status = os.waitpid(pid, os.WNOHANG)
+    if wpid == pid:
+        st = status
+        break
+    r, _, _ = select.select([fd], [], [], 0.1)
+    if r:
+        try:
+            buf += os.read(fd, 4096)
+        except OSError:
+            pass
+if st is None:
+    os.kill(pid, 9)
+    os.waitpid(pid, 0)
+    sys.exit(99)
+if os.WIFEXITED(st):
+    sys.exit(os.WEXITSTATUS(st))
+if os.WIFSIGNALED(st):
+    sys.exit(128 + os.WTERMSIG(st))
+sys.exit(99)
+PY
+  _st212_st=0
+  _st212_err=$(python3 "$_st212_dir/drive.py" "$_st212_dir" 2>&1) || _st212_st=$?
+  _st212_log=
+  [[ -f $_st212_dir/log ]] && _st212_log=$(<$_st212_dir/log)
+  rm -rf "$_st212_dir"
+  if (( _st212_st == 130 )) || [[ $_st212_log == *TRAP* ]] || [[ $_st212_log != *PARENT_BACK* ]]; then
+    print -u2 "FAIL shell-int/deferred-quit status=$_st212_st log=$(printf %q "$_st212_log") err=$(printf %q "$_st212_err")"
+    (( fails++ ))
+  fi
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1
