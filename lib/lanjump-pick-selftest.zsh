@@ -5293,6 +5293,28 @@ pick_selftest() {
   expect restore/read-ss3-up-then-down-1 up "$k1"
   expect restore/read-ss3-up-then-down-2 down "$k2"
 
+  # #228: restore ESC [ < mouse drain must time out like sibling CSI branches.
+  # Incomplete SGR (no M/m) is other. A blocking `while read_byte` eats later keys.
+  {
+    local c buf=
+    while read_byte 0.2; do
+      c=$REPLY
+      buf+=$c
+      [[ $c == M || $c == m ]] && break
+    done
+    if [[ $buf == 0\;[0-9]##\;[0-9]##M ]]; then
+      got=click
+    else
+      got=other
+    fi
+  } < <(print -n -- '0;12;4')
+  expect restore/mouse-seq-timeout-other other "$got"
+  # zsh pretty-prints `while read_byte; do` as `while read_byte` then `do`.
+  if [[ ${functions[restore_read_key]} == *$'\twhile read_byte\n'* ]]; then
+    print -u2 "FAIL restore/mouse-seq-timeout blocking until M/m"
+    (( fails++ ))
+  fi
+
   # #40: restore checkbox list must match host/session lists (j up, k down).
   restore_plain_key j
   expect restore/j-up up "$REPLY"
