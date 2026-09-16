@@ -11,6 +11,7 @@
 # has_named_session, ensure_named_session_for_attach, print_recent_names,
 # print_session_list,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
+# ghostty_applescript_string, ghostty_focus_session,
 # terminal_osascript_for_sessions,
 # attaching_remote_host, attach_spec_for, attach_command_for, open_named_tabs,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
@@ -2930,6 +2931,20 @@ pick_selftest() {
     (( fails++ ))
   fi
   attach_shell_only=0
+  # #218: ghostty_focus_session interpolated $name raw; " or \ broke osascript.
+  # Function-level / captured-script stand-in; no live Ghostty.
+  focus_name=$'say "hi"\\end'
+  focus_as=$(ghostty_applescript_string "$focus_name")
+  expect ghostty/focus-escape '"say ""hi""\\end"' "$focus_as"
+  focus_fn=${functions[ghostty_focus_session]}
+  if [[ $focus_fn == *'is "$name"'* ]]; then
+    print -u2 "FAIL ghostty/focus-quote interpolates raw \$name into AppleScript got=$(printf %q "$focus_fn")"
+    (( fails++ ))
+  fi
+  if [[ $focus_fn != *ghostty_applescript_string* ]]; then
+    print -u2 "FAIL ghostty/focus-quote missing ghostty_applescript_string got=$(printf %q "$focus_fn")"
+    (( fails++ ))
+  fi
   # #127: Terminal do script interpolates zsh ${(q)} into AppleScript "...";
   # acc\ test is not a valid AppleScript string (osacompile -2741).
   saved_placement=$open_placement
