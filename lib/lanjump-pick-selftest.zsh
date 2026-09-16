@@ -1017,6 +1017,12 @@ pick_selftest() {
   toggle_session_filter
   expect filter/f-on-again "grok-new $actions" "${items_id[*]}"
 
+  # #250: two print redirects can leave dest with only include.
+  if [[ ${functions[save_session_filter]} != *replace_file_atomic* || ${functions[save_session_filter]} == *'>>'* ]]; then
+    print -u2 "FAIL filter/atomic-write still uses > then >> (or is missing replace_file_atomic)"
+    (( fails++ ))
+  fi
+
   filter_fixture
   filter_exclude=plain
   filter_on=1
