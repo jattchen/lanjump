@@ -115,12 +115,18 @@ local_keyboard() {
 }
 
 run_interactive() {
-  local keys
+  local keys st
+  # #212: ignore SIGINT while the child owns the tty. zsh otherwise
+  # defers the picker's `exit 130` INT trap until the child returns.
+  trap '' INT
   if local_keyboard && keys=$(keys_bin); then
     "$keys" "$@"
   else
     "$@"
   fi
+  st=$?
+  trap 'restore_tty; exit 130' INT
+  return $st
 }
 
 terminfo_available() {

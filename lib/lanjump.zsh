@@ -1480,8 +1480,12 @@ connect_local() {
   fi
   mark_last local
   print
+  # #212: picker and this host list share a process group. Ctrl+C inside
+  # a child shell must not become a deferred host-list `exit 130`.
+  trap '' INT
   /bin/zsh "$picker"
   st=$?
+  trap 'restore_tty; exit 130' INT
   if [[ $st -eq 0 ]]; then
     restore_tty
     trap - EXIT
