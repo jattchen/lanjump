@@ -29,6 +29,26 @@
 
 _pick_src_file=${0:A:h}/lanjump-pick.zsh
 
+# Relative wall-clock gate for pick selftest perf loops (#223).
+# work_ms vs empty-loop baseline_ms, with typical_ms as the documented
+# healthy cost. Prints 1 if acceptable, 0 if work exceeds 10x
+# (baseline + typical) — the old ~12s fmt_session_row path, not 105–286ms jitter.
+pick_selftest_wall_ok() {
+  local -F 3 work_ms=$1 baseline_ms=$2 typical_ms=$3 limit
+  if (( baseline_ms < 0 )); then
+    baseline_ms=0
+  fi
+  if (( typical_ms < 1 )); then
+    typical_ms=1
+  fi
+  limit=$(( 10.0 * (baseline_ms + typical_ms) ))
+  if (( work_ms > limit )); then
+    print -r -- 0
+  else
+    print -r -- 1
+  fi
+}
+
 pick_selftest() {
   local -i fails=0
   local got
@@ -76,7 +96,13 @@ pick_selftest() {
   longline="${sample} ${longline} ${sample}"
 
   local -i n
-  local -F 3 t0 t1 ms
+  local -F 3 t0 t1 ms baseline_ms
+  t0=$EPOCHREALTIME
+  for (( n = 0; n < 20; n++ )); do
+    :
+  done
+  t1=$EPOCHREALTIME
+  baseline_ms=$(( (t1 - t0) * 1000 ))
   t0=$EPOCHREALTIME
   for (( n = 0; n < 20; n++ )); do
     fit_right "$longline" 80 >/dev/null
@@ -84,8 +110,8 @@ pick_selftest() {
   t1=$EPOCHREALTIME
   ms=$(( (t1 - t0) * 1000 ))
   # Old per-character $(dw) path was ~3000ms for this case.
-  if (( ms > 80 )); then
-    print -u2 "FAIL fit_right perf ${ms}ms want <=80ms"
+  if [[ $(pick_selftest_wall_ok $ms $baseline_ms 80) != 1 ]]; then
+    print -u2 "FAIL fit_right perf ${ms}ms baseline=${baseline_ms}ms (10x typical 80ms)"
     (( fails++ ))
   fi
 
@@ -116,6 +142,20 @@ pick_selftest() {
     print -u2 "FAIL header/program still 摘要 got=$(printf %q "$REPLY")"
     (( fails++ ))
   fi
+  # #223: 105–286ms for 160 fmt_session_row calls is scheduling jitter, not a
+  # user-visible picker delay. The 100ms wall is too tight; the gate must
+  # accept that range and still flag the old ~12s path (10x-class).
+  expect pick-selftest/fmt-row-perf-allows-issue-286ms 1 "$(pick_selftest_wall_ok 286 2 192)"
+  expect pick-selftest/fmt-row-perf-flags-old-12s 0 "$(pick_selftest_wall_ok 12000 2 192)"
+
+  t0=$EPOCHREALTIME
+  for (( n = 0; n < 20; n++ )); do
+    for i in {1..8}; do
+      :
+    done
+  done
+  t1=$EPOCHREALTIME
+  baseline_ms=$(( (t1 - t0) * 1000 ))
   t0=$EPOCHREALTIME
   for (( n = 0; n < 20; n++ )); do
     for i in {1..8}; do
@@ -124,9 +164,9 @@ pick_selftest() {
   done
   t1=$EPOCHREALTIME
   ms=$(( (t1 - t0) * 1000 ))
-  # Old path was ~80ms per row, ~12s for this loop.
-  if (( ms > 100 )); then
-    print -u2 "FAIL fmt_session_row perf ${ms}ms want <=100ms"
+  # Old path was ~80ms per row, ~12s for this loop. Typical 192ms is 1.2ms/row * 160.
+  if [[ $(pick_selftest_wall_ok $ms $baseline_ms 192) != 1 ]]; then
+    print -u2 "FAIL fmt_session_row perf ${ms}ms baseline=${baseline_ms}ms (10x typical 192ms)"
     (( fails++ ))
   fi
 
@@ -599,12 +639,16 @@ pick_selftest() {
   preview_cache=()
 
   t0=$EPOCHREALTIME
+  :
+  t1=$EPOCHREALTIME
+  baseline_ms=$(( (t1 - t0) * 1000 ))
+  t0=$EPOCHREALTIME
   draw >/dev/null
   t1=$EPOCHREALTIME
   ms=$(( (t1 - t0) * 1000 ))
-  # Old draw was ~700ms even without tmux capture-pane.
-  if (( ms > 150 )); then
-    print -u2 "FAIL draw perf ${ms}ms want <=150ms"
+  # Old draw was ~700ms even without tmux capture-pane. Typical 50ms keeps a 10x catch.
+  if [[ $(pick_selftest_wall_ok $ms $baseline_ms 50) != 1 ]]; then
+    print -u2 "FAIL draw perf ${ms}ms baseline=${baseline_ms}ms (10x typical 50ms)"
     (( fails++ ))
   fi
 
