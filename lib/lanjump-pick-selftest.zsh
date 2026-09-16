@@ -5236,6 +5236,17 @@ pick_selftest() {
   expect key/pagedown-then-up-1 other "$k1"
   expect key/pagedown-then-up-2 up "$k2"
 
+  # #260: SGR mouse CSI must drain so leftover 0;10;20M is not num0.
+  k1=EOF
+  k2=EOF
+  PENDING_KEY=""
+  {
+    read_key && k1=$REPLY
+    read_key && k2=$REPLY
+  } < <(print -n $'\e[<0;10;20Mq')
+  expect key/sgr-mouse-then-q-1 other "$k1"
+  expect key/sgr-mouse-then-q-2 q "$k2"
+
   local -a loop_keys
   local loop_quit=0 k
   loop_keys=()
