@@ -1,11 +1,27 @@
 #!/usr/bin/env python3
 # Select an English keyboard layout via Carbon TISSelectInputSource.
-# Prefers ABC, then US, then any enabled keyboard layout (not an IME).
+# Prefers ABC, then US, then an enabled English layout (not an IME).
 import ctypes
 import ctypes.util
 import sys
 
 kCFStringEncodingUTF8 = 0x08000100
+
+ENGLISH_LAYOUT_IDS = frozenset((
+    'com.apple.keylayout.ABC',
+    'com.apple.keylayout.US',
+    'com.apple.keylayout.British',
+    'com.apple.keylayout.USInternational-PC',
+))
+
+
+def pick_fallback_layout(sources):
+    for ident, kind in sources:
+        if kind != 'TISTypeKeyboardLayout':
+            continue
+        if ident in ENGLISH_LAYOUT_IDS:
+            return ident
+    return None
 
 
 def _lib(name):
@@ -88,13 +104,17 @@ def main():
     if not lst:
         return 1
     n = cf.CFArrayGetCount(lst)
+    sources = []
     for i in range(n):
         src = cf.CFArrayGetValueAtIndex(lst, i)
+        ident = pystr(carbon.TISGetInputSourceProperty(src, prop_id))
         kind = pystr(carbon.TISGetInputSourceProperty(src, prop_type))
-        if kind != 'TISTypeKeyboardLayout':
-            continue
-        if carbon.TISSelectInputSource(src) == 0:
-            return 0
+        sources.append((ident, kind))
+    picked = pick_fallback_layout(sources)
+    if not picked:
+        return 1
+    if select_id(picked):
+        return 0
     return 1
 
 
