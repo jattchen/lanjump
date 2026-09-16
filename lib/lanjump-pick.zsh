@@ -1507,11 +1507,6 @@ session_snapshot_file() {
   REPLY="$REPLY/session-snapshot"
 }
 
-restore_stamp_file() {
-  lanjump_data_dir
-  REPLY="$REPLY/restore-stamp"
-}
-
 _commit_snap_record() {
   local name=$1 cwd=$2 occ=$3 ws=$4 cmd=$5 att=$6
   [[ -n $name ]] || return
@@ -2194,21 +2189,6 @@ restore_saved_sessions() {
   done
 }
 
-current_boot_id() {
-  local s
-  if [[ -n ${LANJUMP_BOOT_ID:-} ]]; then
-    print -r -- "$LANJUMP_BOOT_ID"
-    return
-  fi
-  s=$(sysctl -n kern.boottime 2>/dev/null) || s=
-  if [[ $s == *sec\ =\ * ]]; then
-    s=${s#*sec = }
-    s=${s%%,*}
-    s=${s%% *}
-  fi
-  print -r -- "$s"
-}
-
 tmux_server_running() {
   tmuxx list-sessions >/dev/null 2>&1
 }
@@ -2218,52 +2198,6 @@ session_has_live_client() {
   [[ -n $name ]] || return 1
   clients=$(tmuxx list-clients -t "=$name" -F '#{client_tty}' 2>/dev/null) || return 1
   [[ -n $clients ]]
-}
-
-current_tmux_generation() {
-  local sock inode
-  if [[ -n ${LANJUMP_TMUX_GEN:-} ]]; then
-    print -r -- "$LANJUMP_TMUX_GEN"
-    return
-  fi
-  tmux_server_running || { print -r -- none; return }
-  sock=$(tmuxx display-message -p '#{socket_path}' 2>/dev/null) || sock=
-  if [[ -n $sock && -e $sock ]]; then
-    inode=$(stat -f %i "$sock" 2>/dev/null) || inode=
-  fi
-  print -r -- "${inode:-unknown}"
-}
-
-read_restore_stamp() {
-  local file line key val
-  restore_stamp_file
-  file=$REPLY
-  stamp_boot= stamp_token= stamp_gen=
-  [[ -f $file ]] || return 1
-  while IFS= read -r line || [[ -n $line ]]; do
-    [[ -n $line ]] || continue
-    key=${line%% *}
-    if [[ $line == *' '* ]]; then
-      val=${line#* }
-    else
-      val=
-    fi
-    case $key in
-      boot) stamp_boot=$val ;;
-      token) stamp_token=$val ;;
-      gen) stamp_gen=$val ;;
-    esac
-  done <"$file"
-}
-
-write_restore_stamp() {
-  local file dir boot=$1 gen=$2
-  restore_stamp_file
-  file=$REPLY
-  dir=${file:h}
-  mkdir -p "$dir"
-  print -r -- "boot $boot" >"$file"
-  print -r -- "gen $gen" >>"$file"
 }
 
 any_restore_session_live() {
@@ -2282,15 +2216,6 @@ should_restore_sessions() {
   tmux_server_running || return 0
   any_restore_session_live && return 1
   return 0
-}
-
-ensure_restore_token() {
-  local boot gen
-  tmux_server_running || return 0
-  boot=$(current_boot_id)
-  gen=$(current_tmux_generation)
-  [[ $gen == none ]] && return 0
-  write_restore_stamp "$boot" "$gen"
 }
 
 settings_file() {
@@ -2947,7 +2872,6 @@ maybe_restore_sessions() {
   fi
   if tmux_server_running; then
     tmux_install_snapshot_hooks
-    ensure_restore_token
     snapshot_live_sessions
   fi
   (( did_restore )) || return 0

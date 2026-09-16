@@ -1618,6 +1618,15 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #221: restore-stamp is write-only dead code. Helpers must be gone, and
+  # start (maybe_restore_sessions after first draw) must not write a stamp.
+  # Restore stays on should_restore_sessions only — do not wire boot/tmux-gen.
+  expect restore/stamp-helpers-gone 0 "$(( ${+functions[current_boot_id]} + ${+functions[current_tmux_generation]} + ${+functions[read_restore_stamp]} + ${+functions[write_restore_stamp]} + ${+functions[ensure_restore_token]} + ${+functions[restore_stamp_file]} ))"
+  if [[ ${functions[maybe_restore_sessions]:-} == *ensure_restore_token* ]]; then
+    print -u2 "FAIL restore/stamp-start still writes stamp got=$(printf %q "${functions[maybe_restore_sessions]:-}")"
+    (( fails++ ))
+  fi
+
   # #80: one live pin + one missing pin must recreate only the missing pin.
   # Full restore still skips when anything restoreable is live, so a killed
   # unpinned workspace session stays gone and the window prompt stays closed.
