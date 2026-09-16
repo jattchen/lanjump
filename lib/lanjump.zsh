@@ -35,6 +35,7 @@ view_above=0
 view_below=0
 stty_orig=
 PENDING_KEY=""
+typeset -i _read_key_fails=0
 digit_wait=0.5
 notice=""
 MYIP=""
@@ -1206,6 +1207,18 @@ read_key() {
   esac
 }
 
+# Blocking read. After consecutive EOF/hangup failures, restore tty and
+# exit so the main loop cannot spin at 100% CPU (#227).
+read_key_or_exit() {
+  if read_key; then
+    _read_key_fails=0
+    return 0
+  fi
+  (( ++_read_key_fails >= 8 )) || return 1
+  restore_tty
+  exit 1
+}
+
 prompt_username() {
   local user=""
   restore_tty
@@ -1880,7 +1893,7 @@ cli_recent_select() {
     trap cli_recent_draw WINCH
     while true; do
       cli_recent_draw
-      read_key || continue
+      read_key_or_exit || continue
       case $REPLY in
         up)
           (( cli_recent_cur-- ))
@@ -2184,7 +2197,7 @@ trap draw_on_winch WINCH
 draw
 
 while true; do
-  read_key || continue
+  read_key_or_exit || continue
   case $REPLY in
     up)
       (( cursor-- ))

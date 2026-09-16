@@ -76,6 +76,7 @@ loading=0
 list_active=0
 stty_orig=
 PENDING_KEY=""
+typeset -i _read_key_fails=0
 digit_wait=0.5
 preview_defer=0
 preview_wait=0.08
@@ -4087,6 +4088,18 @@ read_key() {
   esac
 }
 
+# Blocking read. After consecutive EOF/hangup failures, restore tty and
+# exit so the main loop cannot spin at 100% CPU (#227).
+read_key_or_exit() {
+  if read_key; then
+    _read_key_fails=0
+    return 0
+  fi
+  (( ++_read_key_fails >= 8 )) || return 1
+  restore_tty
+  exit 1
+}
+
 activate() {
   local i=$1 want_new=${2:-0}
   case ${items_kind[$i]} in
@@ -4650,7 +4663,7 @@ while true; do
       continue
     fi
   else
-    read_key || continue
+    read_key_or_exit || continue
   fi
   if (( settings_on )); then
     preview_defer=0

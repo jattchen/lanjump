@@ -1696,6 +1696,39 @@ fi
 expect_contains new-removed/msg '未知命令：new' "$err"
 expect_absent new-removed/no-hint 'lanjump go' "$err"
 
+# #227: host/recent loops must not `read_key || continue` forever on EOF.
+if ! (( ${+functions[read_key_or_exit]} )); then
+  print -u2 "FAIL key/eof-spin missing read_key_or_exit"
+  (( fails++ ))
+else
+  st=0
+  PENDING_KEY=""
+  (
+    restore_tty() { : }
+    typeset -i _read_key_fails=0
+    local -i n=0
+    while true; do
+      (( ++n > 40 )) && exit 99
+      read_key_or_exit || continue
+    done
+  ) </dev/null
+  st=$?
+  if (( st != 1 )); then
+    print -u2 "FAIL key/eof-spin exit got=$st want=1 (99=spun)"
+    (( fails++ ))
+  fi
+fi
+_lj_recent=$(sed -n '/^cli_recent_select()/,/^}/p' "${0:A:h}/lanjump.zsh")
+if [[ $_lj_recent != *read_key_or_exit* ]]; then
+  print -u2 "FAIL key/eof-spin recent loop missing read_key_or_exit"
+  (( fails++ ))
+fi
+unset _lj_recent
+if grep -E -q '^[[:space:]]*read_key \|\| continue' "${0:A:h}/lanjump.zsh"; then
+  print -u2 "FAIL key/eof-spin host loop still continues forever on read fail"
+  (( fails++ ))
+fi
+
 if (( fails )); then
   print -u2 "cli-selftest: $fails failed"
   exit 1
