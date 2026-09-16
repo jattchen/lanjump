@@ -40,6 +40,7 @@ digit_wait=0.5
 notice=""
 MYIP=""
 PREFIX=""
+MASK=""
 IFACE=""
 LANJUMP_KEYS=""
 IME_PY="${0:A:h}/lanjump-ime.py"
@@ -314,6 +315,96 @@ iface_ipv4() {
   print -r -- "$ip"
 }
 
+iface_netmask() {
+  local iface=$1 mask
+  mask=$(ifconfig "$iface" 2>/dev/null | awk '/inet / {
+    for (i = 1; i <= NF; i++) if ($i == "netmask") { print $(i+1); exit }
+  }') || true
+  print -r -- "$mask"
+}
+
+netmask_prefixlen() {
+  local mask=$1 val=0 a b c d
+  if [[ -z $mask ]]; then
+    print -r -- 24
+    return
+  fi
+  if [[ $mask == 0x[0-9a-fA-F]## ]]; then
+    val=$((16#${mask#0x}))
+  elif [[ $mask == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]]; then
+    a=${mask%%.*}
+    mask=${mask#*.}
+    b=${mask%%.*}
+    mask=${mask#*.}
+    c=${mask%%.*}
+    d=${mask#*.}
+    val=$(( (a << 24) + (b << 16) + (c << 8) + d ))
+  else
+    print -r -- 24
+    return
+  fi
+  local n=0
+  while (( val )); do
+    (( n += val & 1 ))
+    (( val >>= 1 ))
+  done
+  print -r -- $n
+}
+
+ipv4_int() {
+  local ip=$1 a b c d
+  a=${ip%%.*}
+  ip=${ip#*.}
+  b=${ip%%.*}
+  ip=${ip#*.}
+  c=${ip%%.*}
+  d=${ip#*.}
+  print -r -- $(( (a << 24) + (b << 16) + (c << 8) + d ))
+}
+
+ipv4_prefix24() {
+  local n=$1
+  print -r -- "$(( (n >> 24) & 255 )).$(( (n >> 16) & 255 )).$(( (n >> 8) & 255 ))"
+}
+
+ipv4_network() {
+  local ip=$1 plen=$2
+  local start
+  start=$(( $(ipv4_int "$ip") & (0xffffffff ^ ((1 << (32 - plen)) - 1)) ))
+  print -r -- "$(( (start >> 24) & 255 )).$(( (start >> 16) & 255 )).$(( (start >> 8) & 255 )).$(( start & 255 ))"
+}
+
+# /22-/24: every /24 in the interface prefix. Larger nets stay this host's /24.
+scan_lan_prefixes() {
+  local ip=$1 mask=$2
+  local raw plen start i count
+  [[ $ip == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]] || return
+  raw=$(netmask_prefixlen "$mask")
+  plen=$raw
+  if (( plen < 22 || plen > 24 )); then
+    plen=24
+  fi
+  start=$(( $(ipv4_int "$ip") & (0xffffffff ^ ((1 << (32 - plen)) - 1)) ))
+  count=$(( 1 << (24 - plen) ))
+  for (( i = 0; i < count; i++ )); do
+    print -r -- "$(ipv4_prefix24 $(( start + (i << 8) )))"
+  done
+}
+
+scan_lan_label() {
+  local ip=$1 mask=$2
+  local raw
+  [[ $ip == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]] || return
+  raw=$(netmask_prefixlen "$mask")
+  if (( raw >= 22 && raw <= 24 )); then
+    print -r -- "$(ipv4_network "$ip" "$raw")/${raw}"
+  elif (( raw > 0 && raw < 22 )); then
+    print -r -- "${ip%.*}.0/24（网段更大，只扫本 /24）"
+  else
+    print -r -- "${ip%.*}.0/24"
+  fi
+}
+
 is_rfc1918() {
   local ip=$1 a b
   [[ $ip == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]] || return 1
@@ -344,6 +435,7 @@ detect_lan() {
   IFACE=""
   MYIP=""
   PREFIX=""
+  MASK=""
   collect_self_ips
   local def cand ip already s
   local -a cands seen
@@ -368,6 +460,7 @@ detect_lan() {
     IFACE=$cand
     MYIP=$ip
     PREFIX=${ip%.*}
+    MASK=$(iface_netmask "$cand")
     return
   done
 }
@@ -639,20 +732,24 @@ scan_bonjour() {
 }
 
 scan_port22() {
-  local prefix=$1
-  [[ -n $prefix ]] || return
-  local i ip
-  for i in {1..254}; do
-    ip="${prefix}.${i}"
-    is_self_ip "$ip" && continue
-    (
-      if nc -z -G 1 "$ip" 22 >/dev/null 2>&1; then
-        print -r -- "$ip"
+  local prefix i ip
+  local -a prefixes
+  prefixes=("${(@f)$(scan_lan_prefixes "$1" "${2:-}")}")
+  (( ${#prefixes} )) || return
+  for prefix in "${prefixes[@]}"; do
+    [[ -n $prefix ]] || continue
+    for i in {1..254}; do
+      ip="${prefix}.${i}"
+      is_self_ip "$ip" && continue
+      (
+        if nc -z -G 1 "$ip" 22 >/dev/null 2>&1; then
+          print -r -- "$ip"
+        fi
+      ) &
+      if (( i % 40 == 0 )); then
+        wait
       fi
-    ) &
-    if (( i % 40 == 0 )); then
-      wait
-    fi
+    done
   done
   wait
 }
@@ -876,7 +973,7 @@ do_scan() {
     setup_tty
     return
   fi
-  print "正在扫描 Bonjour SSH 和 ${PREFIX}.0/24 的 22 端口…"
+  print "正在扫描 Bonjour SSH 和 $(scan_lan_label "$MYIP" "$MASK") 的 22 端口…"
   s_alias=() s_host=() s_ip=() s_mac=()
   while IFS=$'\t' read -r alias hostname ip mac; do
     [[ -n $alias || -n $ip ]] || continue
@@ -887,7 +984,7 @@ do_scan() {
     [[ -n $ip ]] || continue
     mac=$(get_mac "$ip")
     record_seen "$ip" "" "$ip" "$mac"
-  done < <(scan_port22 "$PREFIX")
+  done < <(scan_port22 "$MYIP" "$MASK")
   merge_seen_by_hostkey
   save_hosts
   load_hosts
