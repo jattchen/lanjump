@@ -1,6 +1,7 @@
 # Sourced by lanjump.zsh --ssh-selftest.
 # Expects strip_ssh_block, remove_ssh_config, upsert_ssh_config, forget_saved,
-# ssh_id_from_alias. Uses temp files only; never the real ~/.ssh/config.
+# ssh_id_from_alias, lan_pub_install_cmd. Uses temp files only; never the
+# real ~/.ssh/config.
 
 ssh_selftest() {
   local -i fails=0
@@ -153,6 +154,30 @@ EOF
   expect_absent ssh/complete/old-host $'Host office\n  HostName 10.0.0.8' "$ssh_got"
   expect_contains ssh/complete/keep-host 'Host keep-me' "$ssh_got"
   expect_contains ssh/complete/keep-hostname 'HostName other.local' "$ssh_got"
+
+  # #256: KEY.pub comment with ' must still be a valid remote install script
+  # that writes the full line. Callers pass this string as the ssh command.
+  local pub_line install_cmd remote_home remote_keys
+  pub_line="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForQuoteTest lanjump@J's-Mac"
+  print -r -- "$pub_line" >"$KEY.pub"
+  install_cmd=$(lan_pub_install_cmd)
+  if ! zsh -n -c -- "$install_cmd"; then
+    print -u2 "FAIL ssh/pub-install-quote/syntax remote command is not valid shell got=$(printf %q "$install_cmd")"
+    (( fails++ ))
+  else
+    remote_home=$tmpdir/quote-remote
+    mkdir -p "$remote_home"
+    if ! HOME=$remote_home zsh -c -- "$install_cmd"; then
+      print -u2 "FAIL ssh/pub-install-quote/run install command failed"
+      (( fails++ ))
+    else
+      remote_keys=$(<"$remote_home/.ssh/authorized_keys")
+      if [[ $remote_keys != "$pub_line" ]]; then
+        print -u2 "FAIL ssh/pub-install-quote/key want=$(printf %q "$pub_line") got=$(printf %q "$remote_keys")"
+        (( fails++ ))
+      fi
+    fi
+  fi
 
   # #190: Ghostty TERM stays; Apple Terminal 256-color rewrite is ssh-child only.
   local saved_path=$PATH
