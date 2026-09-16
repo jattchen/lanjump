@@ -5,7 +5,7 @@ IME_SELFTEST_LIB=${0:A:h}
 
 ime_selftest() {
   local -i fails=0
-  local tmp saved_app saved_py saved_switched saved_notice out plain cmd helper src ran
+  local tmp saved_app saved_py saved_switched saved_notice out plain cmd helper src ran got
   local saved_ssh_connection saved_ssh_client saved_ssh_tty
 
   expect_fn() {
@@ -118,6 +118,21 @@ ime_selftest() {
     fi
     if [[ $src != *com.apple.keylayout.US* ]]; then
       print -u2 "FAIL helper missing US fallback"
+      (( fails++ ))
+    fi
+    # Mocked enabled-source list: do not call TISSelectInputSource.
+    got=$(python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('lanjump_ime', r'''$helper''')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod.pick_fallback_layout([
+    ('com.apple.keylayout.French', 'TISTypeKeyboardLayout'),
+    ('com.apple.keylayout.German', 'TISTypeKeyboardLayout'),
+]))
+" 2>&1) || got="exit:$?"
+    if [[ $got != None ]]; then
+      print -u2 "FAIL helper fallback must reject non-English layouts got=$(printf %q "$got")"
       (( fails++ ))
     fi
   fi
