@@ -23,7 +23,7 @@
 # session_name_invalid, restore_csi_key, restore_plain_key, restore_read_key, restore_tty,
 # draw_on_winch,
 # attach_command_for, new_session_flag_invalid, prompt_new,
-# prompt_new_pin_cwd, create_named_session, unique_non_numeric_session_name,
+# prompt_new_pin_cwd, prompt_new_ask_pin, prompt_new_commit_pin, create_named_session, unique_non_numeric_session_name,
 # ensure_pinnable_session_name, pin_named_session, toggle_session_pin, read_key, settings_input_read,
 # PENDING_KEY.
 
@@ -4828,6 +4828,98 @@ pick_selftest() {
     print -u2 "FAIL prompt_new/t-on-new-row want_new got=$(printf %q "$attach_got") want=*inferme 0 1*"
     (( fails++ ))
   fi
+
+  # #208: n + existing name + pin y + cancel must not pin or rename.
+  # q here is the post-pin cancel (新窗口 / resume-grok).
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      has-session)
+        [[ $* == *'=7'* ]] && return 0
+        return 1
+        ;;
+      display-message)
+        if [[ $* == *pane_current_path* ]]; then
+          print -r -- /tmp/seven
+        else
+          print -r -- zsh
+        fi
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  : >"$attach_log"
+  : >"$tmux_log"
+  snap_names=(7)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[7]=/tmp/seven
+  snap_occupied[7]=0
+  snap_workspace[7]=0
+  snap_cmd[7]=grok-1.0.24-mac
+  snap_attached[7]=0
+  save_session_snapshot
+  out=$(print -l -- 7 y q | prompt_new)
+  load_pinned_sessions
+  attach_got=$(<"$attach_log")
+  restore_log=$(<"$tmux_log")
+  if [[ $out != *常驻* ]]; then
+    print -u2 "FAIL prompt_new/n-existing-pin-q missing pin prompt got=$(printf %q "$out")"
+    (( fails++ ))
+  fi
+  if [[ -n $attach_got ]]; then
+    print -u2 "FAIL prompt_new/n-existing-pin-q still attached got=$(printf %q "$attach_got")"
+    (( fails++ ))
+  fi
+  if (( ${#pinned_names} )); then
+    print -u2 "FAIL prompt_new/n-existing-pin-q still pinned got=${pinned_names[*]}"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *rename-session* ]]; then
+    print -u2 "FAIL prompt_new/n-existing-pin-q still renamed got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  # Enter after pin y is what writes the pin; numeric 7 is renamed then.
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  : >"$attach_log"
+  : >"$tmux_log"
+  print -l -- 7 y '' | prompt_new >/dev/null
+  load_pinned_sessions
+  attach_got=$(<"$attach_log")
+  restore_log=$(<"$tmux_log")
+  created=${pinned_names[1]:-}
+  if [[ -z $created ]]; then
+    print -u2 "FAIL prompt_new/n-existing-pin-enter missing pin record"
+    (( fails++ ))
+  fi
+  if [[ -n $created ]] && numeric_session_name "$created"; then
+    print -u2 "FAIL prompt_new/n-existing-pin-enter still numeric got=$(printf %q "$created")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'rename-session -t =7 '* ]]; then
+    print -u2 "FAIL prompt_new/n-existing-pin-enter missing rename got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ -n $created && $attach_got != *"$created 1 0"* ]]; then
+    print -u2 "FAIL prompt_new/n-existing-pin-enter attach got=$(printf %q "$attach_got") want=*$created 1 0*"
+    (( fails++ ))
+  fi
+  drop_snap_record 7
+  [[ -n $created ]] && drop_snap_record "$created"
+  save_session_snapshot
+
   attach_named_session() { : }
 
   # #145: list p on numeric 0 renames then pins.

@@ -4165,6 +4165,27 @@ prompt_new_pin_cwd() {
   resolve_session_cwd "$name" "${pane:-}"
 }
 
+# Existing-name pin prompt lives here so create (#136) does not ask 常驻.
+prompt_new_ask_pin() {
+  local pinans
+  print -n "常驻（y=是，回车=否）: "
+  read -r pinans || pinans=
+  [[ $pinans == y || $pinans == Y ]]
+}
+
+# Rename leftover 0/1 and write the pin only after enter is confirmed (#208).
+prompt_new_commit_pin() {
+  local name=$1 cwd
+  REPLY=$name
+  [[ -n $name ]] || return 1
+  ensure_pinnable_session_name "$name" || return 1
+  name=$REPLY
+  cwd=$(prompt_new_pin_cwd "$name")
+  add_pin_record "$name" "${cwd:-}" ""
+  tmux_set_pinned "$name" 1
+  REPLY=$name
+}
+
 prompt_new() {
   local want_new=${1:-0}
   [[ $HAS_TMUX -eq 1 ]] || return
@@ -4172,6 +4193,7 @@ prompt_new() {
   print
   print -n "新 session 名称（回车=自动命名）: "
   local name openans created cwd
+  local -i pin=0 existing=0
   read -r name
   name=${name##[[:space:]]#}
   name=${name%%[[:space:]]#}
@@ -4182,6 +4204,10 @@ prompt_new() {
     load_items
     draw
     return
+  fi
+  if [[ -n $name ]] && tmuxx has-session -t "=$name" 2>/dev/null; then
+    existing=1
+    prompt_new_ask_pin && pin=1
   fi
   if (( ! want_new )); then
     print -n "新窗口？（回车=当前窗口，t=新窗口，q=取消）: "
@@ -4198,9 +4224,13 @@ prompt_new() {
   fi
   tmux_prepare_color
   tmux_prepare_keys
-  if [[ -n $name ]] && tmuxx has-session -t "=$name" 2>/dev/null; then
+  if (( existing )); then
     load_session_snapshot
     print "session「${name}」已存在，直接进入。"
+    if (( pin )); then
+      prompt_new_commit_pin "$name"
+      name=$REPLY
+    fi
     attach_named_session "$name" 1 $want_new
   else
     if [[ -z $name ]]; then
