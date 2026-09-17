@@ -235,7 +235,14 @@ tmux_install_snapshot_hooks() {
       tmuxx set-hook -gu "$hook" 2>/dev/null || true
     fi
   done
-  tmuxx set-hook -g 'client-detached[91]' "run-shell -b $(printf %q "$inner")" 2>/dev/null || true
+  # #308: only write client-detached[91] if empty or already ours.
+  hook='client-detached[91]'
+  line=$(tmuxx show-hooks -g "$hook" 2>/dev/null || true)
+  cmd=
+  [[ $line == "$hook "* ]] && cmd=${line#$hook }
+  if [[ -z $cmd || ( $cmd == *lanjump-pick* && $cmd == *--snapshot* ) ]]; then
+    tmuxx set-hook -g "$hook" "run-shell -b $(printf %q "$inner")" 2>/dev/null || true
+  fi
   tick="#(/bin/zsh $quoted_pick --snapshot;)"
   sr=$(tmuxx show-options -gv status-right 2>/dev/null || true)
   # Remote pick has no .zsh; replace a leftover Application Support tick.
