@@ -6673,6 +6673,118 @@ EOF
   HOME=$pin395_saved_home
   rm -rf "$pin395_home"
 
+  # #407: rename snapshot write failure must fail-closed, not look successful.
+  # tmux/pin already moved; disk snap staying old used to let restore / work
+  # recreate the old name or drop workspace marks.
+  local snap407_home snap407_saved_home snap407_tmux snap407_log snap407_load
+  local -i snap407_has_tmux=$HAS_TMUX snap407_st=0
+  snap407_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-407.XXXXXX") || return 1
+  snap407_saved_home=$HOME
+  HOME=$snap407_home
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  snap407_tmux=$snap407_home/tmux.log
+  : >"$snap407_tmux"
+  snap_names=(old)
+  snap_cwd=([old]=/proj/old)
+  snap_occupied=([old]=0)
+  snap_workspace=([old]=1)
+  snap_cmd=([old]=zsh)
+  snap_attached=([old]=123)
+  save_session_snapshot
+  functions -c save_session_snapshot _snap407_save
+  save_session_snapshot() { return 1 }
+  snap407_st=0
+  rename_snap_record old new || snap407_st=$?
+  if (( snap407_st == 0 )); then
+    print -u2 "FAIL snap/rename-write-fail reported success"
+    (( fails++ ))
+  fi
+  functions -c _snap407_save save_session_snapshot
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)old]} -eq 0 ]]; then
+    print -u2 "FAIL snap/rename-write-fail disk lost old got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  if [[ ${snap_names[(Ie)new]} -ne 0 ]]; then
+    print -u2 "FAIL snap/rename-write-fail disk has new got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+
+  print -r -- $'name old\ncwd /proj/old\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  load_pinned_sessions
+  snap_names=(old)
+  snap_cwd=([old]=/proj/old)
+  snap_occupied=([old]=0)
+  snap_workspace=([old]=1)
+  snap_cmd=([old]=zsh)
+  snap_attached=([old]=123)
+  save_session_snapshot
+  functions -c save_session_snapshot _snap407_save
+  functions -c tmuxx _snap407_tmuxx
+  functions -c restore_tty _snap407_restore_tty
+  functions -c setup_tty _snap407_setup_tty
+  functions -c draw _snap407_draw
+  functions -c load_items _snap407_load_items
+  save_session_snapshot() { return 1 }
+  tmuxx() {
+    print -r -- "$*" >>"$snap407_tmux"
+    case $1 in
+      has-session) return 1 ;;
+      rename-session) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  restore_tty() { : }
+  setup_tty() { : }
+  draw() { : }
+  load_items() {
+    print -r -- "${1:-}" >"$snap407_home/load_keep"
+  }
+  HAS_TMUX=1
+  items_kind=(session)
+  items_id=(old)
+  items_name=(old)
+  items_pinned=(1)
+  cursor=1
+  prompt_rename >/dev/null <<'EOF'
+new
+EOF
+  snap407_load=$(<"$snap407_home/load_keep" 2>/dev/null)
+  snap407_log=$(<"$snap407_tmux")
+  if [[ ${snap407_load:-} == new ]]; then
+    print -u2 "FAIL snap/rename-write-fail-ui load_items kept new"
+    (( fails++ ))
+  fi
+  if [[ $snap407_log == *'rename-session -t =old new'* && $snap407_log != *'rename-session -t =new old'* ]]; then
+    print -u2 "FAIL snap/rename-write-fail-ui tmux left as new got=$(printf %q "$snap407_log")"
+    (( fails++ ))
+  fi
+  functions -c _snap407_save save_session_snapshot
+  load_pinned_sessions
+  if ! pin_record_exists old; then
+    print -u2 "FAIL snap/rename-write-fail-ui pin file lost old"
+    (( fails++ ))
+  fi
+  if pin_record_exists new; then
+    print -u2 "FAIL snap/rename-write-fail-ui pin file has new"
+    (( fails++ ))
+  fi
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)old]} -eq 0 || ${snap_names[(Ie)new]} -ne 0 ]]; then
+    print -u2 "FAIL snap/rename-write-fail-ui disk snap drifted got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  functions -c _snap407_tmuxx tmuxx
+  functions -c _snap407_restore_tty restore_tty
+  functions -c _snap407_setup_tty setup_tty
+  functions -c _snap407_draw draw
+  functions -c _snap407_load_items load_items
+  unset -f _snap407_save _snap407_tmuxx _snap407_restore_tty _snap407_setup_tty \
+    _snap407_draw _snap407_load_items
+  HAS_TMUX=$snap407_has_tmux
+  HOME=$snap407_saved_home
+  rm -rf "$snap407_home"
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1
