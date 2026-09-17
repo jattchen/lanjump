@@ -183,6 +183,35 @@ EOF
     (( fails++ ))
   fi
 
+  # #274: dest is a symlink (dotfiles). Upsert must update Host and leave the link.
+  mkdir -p "$tmpdir/dotfiles"
+  cat >"$tmpdir/dotfiles/ssh_config" <<'EOF'
+# BEGIN LANJUMP lanjump-office
+Host lanjump-office
+  HostName 10.0.0.8
+  User mac
+# END LANJUMP lanjump-office
+EOF
+  rm -f "$SSH_CONFIG"
+  ln -s "$tmpdir/dotfiles/ssh_config" "$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.99
+  if [[ ! -L $SSH_CONFIG ]]; then
+    print -u2 "FAIL ssh/upsert-symlink dest is no longer a symlink"
+    (( fails++ ))
+  fi
+  local symlink_want="$tmpdir/dotfiles/ssh_config"
+  if [[ ${SSH_CONFIG:A} != "${symlink_want:A}" ]]; then
+    print -u2 "FAIL ssh/upsert-symlink target changed want=$(printf %q "${symlink_want:A}") got=$(printf %q "${SSH_CONFIG:A}")"
+    (( fails++ ))
+  fi
+  read_ssh
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.99 ]]; then
+    print -u2 "FAIL ssh/upsert-symlink/hostname-wins want=10.0.0.99 got=$(printf %q "$resolved_hn")"
+    (( fails++ ))
+  fi
+  rm -f "$SSH_CONFIG"
+
   # Happy path: a complete block is still removed; later Host stays.
   cat >"$SSH_CONFIG" <<'EOF'
 # BEGIN LANJUMP lanjump-office
