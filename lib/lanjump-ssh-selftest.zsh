@@ -414,6 +414,46 @@ EOF
     print -u2 "FAIL ssh/sync-picker-terminfo/src got=$(printf %q "$(<"$tmpdir/ssh_stdin_2")")"
     (( fails++ ))
   fi
+
+  # #286: older incoming picker must not replace a newer remote copy.
+  # Fake ssh runs the remote command against a throwaway HOME.
+  local remote_home=$tmpdir/remote-286
+  mkdir -p "$remote_home/.local/bin"
+  print -r -- 'remote-newer' >"$remote_home/.local/bin/lanjump-pick"
+  chmod 755 "$remote_home/.local/bin/lanjump-pick"
+  print -r -- 'incoming-old' >"$PICKER"
+  touch -t 202001010000 "$PICKER"
+  touch -t 202601010000 "$remote_home/.local/bin/lanjump-pick"
+  print -r -- 0 >"$tmpdir/ssh_n"
+  cat >"$fake_bin/ssh" <<EOF
+#!/bin/zsh
+n=\$(( \$(<"$tmpdir/ssh_n") + 1 ))
+print -r -- \$n >"$tmpdir/ssh_n"
+print -r -- "\$*" >"$tmpdir/ssh_args_\$n"
+cmd=\${@[-1]}
+if [[ \$cmd == *tic* ]]; then
+  cat >/dev/null
+  exit 0
+fi
+HOME=$(printf %q "$remote_home") /bin/zsh -c "\$cmd"
+EOF
+  chmod +x "$fake_bin/ssh"
+  rehash
+  TERM=xterm-256color
+  sync_picker host.local mac
+  if [[ $(<"$remote_home/.local/bin/lanjump-pick") != remote-newer ]]; then
+    print -u2 "FAIL ssh/sync-picker-keep-newer dest overwritten got=$(printf %q "$(<"$remote_home/.local/bin/lanjump-pick")")"
+    (( fails++ ))
+  fi
+  print -r -- 'incoming-newer' >"$PICKER"
+  touch -t 202701010000 "$PICKER"
+  print -r -- 0 >"$tmpdir/ssh_n"
+  sync_picker host.local mac
+  if [[ $(<"$remote_home/.local/bin/lanjump-pick") != incoming-newer ]]; then
+    print -u2 "FAIL ssh/sync-picker-take-newer dest kept stale got=$(printf %q "$(<"$remote_home/.local/bin/lanjump-pick")")"
+    (( fails++ ))
+  fi
+
   PICKER=$saved_picker
   unfunction terminfo_source 2>/dev/null || true
 

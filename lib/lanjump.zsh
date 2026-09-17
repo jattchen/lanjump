@@ -1712,8 +1712,12 @@ sync_terminfo() {
 
 sync_picker() {
   local target=$1 user=$2
+  local incoming_mtime
+  # #286: only replace the remote copy when this picker is newer.
+  incoming_mtime=$(stat -c %Y "$PICKER" 2>/dev/null) || incoming_mtime=$(stat -f %m "$PICKER" 2>/dev/null) || incoming_mtime=0
+  [[ $incoming_mtime == [0-9]## ]] || incoming_mtime=0
   ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
-    'mkdir -p "$HOME/.local/bin" && cat > "$HOME/.local/bin/lanjump-pick" && chmod 755 "$HOME/.local/bin/lanjump-pick"' \
+    'dest="$HOME/.local/bin/lanjump-pick"; mkdir -p "$HOME/.local/bin" || exit 1; tmp=$(mktemp "${TMPDIR:-/tmp}/lanjump-pick.XXXXXX") || exit 1; cat >"$tmp" || { rm -f "$tmp"; exit 1; }; keep=0; if [ -f "$dest" ]; then dest_mtime=$(stat -c %Y "$dest" 2>/dev/null || stat -f %m "$dest" 2>/dev/null || echo 0); incoming_mtime='"$incoming_mtime"'; case $dest_mtime in *[!0-9]*) dest_mtime=0 ;; esac; [ "$dest_mtime" -gt "$incoming_mtime" ] && keep=1; fi; if [ "$keep" -eq 1 ]; then rm -f "$tmp"; else chmod 755 "$tmp" && mv -f "$tmp" "$dest" || { rm -f "$tmp"; exit 1; }; fi' \
     <"$PICKER" || return $?
   sync_terminfo "$target" "$user"
   return 0
