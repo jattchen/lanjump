@@ -2994,7 +2994,7 @@ pick_selftest() {
   # Function-level / captured-script stand-in; no live Ghostty.
   focus_name=$'say "hi"\\end'
   focus_as=$(ghostty_applescript_string "$focus_name")
-  expect ghostty/focus-escape '"say ""hi""\\end"' "$focus_as"
+  expect ghostty/focus-escape '"say \"hi\"\\end"' "$focus_as"
   focus_fn=${functions[ghostty_focus_session]}
   if [[ $focus_fn == *'is "$name"'* ]]; then
     print -u2 "FAIL ghostty/focus-quote interpolates raw \$name into AppleScript got=$(printf %q "$focus_fn")"
@@ -3002,6 +3002,15 @@ pick_selftest() {
   fi
   if [[ $focus_fn != *ghostty_applescript_string* ]]; then
     print -u2 "FAIL ghostty/focus-quote missing ghostty_applescript_string got=$(printf %q "$focus_fn")"
+    (( fails++ ))
+  fi
+  # #279: session names may contain ". AppleScript "" doubling is -2740
+  # under osascript; \" is accepted. Ghostty and Terminal share this helper.
+  # Compile-only; no live Ghostty/Terminal.
+  quote_as=$(ghostty_applescript_string $'say "hi"')
+  print -r -- "set t to $quote_as" >"$testhome/applescript-quote.applescript"
+  if ! /usr/bin/osacompile -o "$testhome/applescript-quote.scpt" "$testhome/applescript-quote.applescript" 2>"$testhome/osascript-quote.err"; then
+    print -u2 "FAIL applescript/quote-escape $(<"$testhome/osascript-quote.err") got=$(printf %q "$quote_as")"
     (( fails++ ))
   fi
   # #127: Terminal do script interpolates zsh ${(q)} into AppleScript "...";

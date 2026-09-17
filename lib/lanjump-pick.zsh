@@ -2628,11 +2628,11 @@ ghostty_attach_helper() {
   print -r -- "$helper"
 }
 
-# AppleScript "..." treats \ as escape and doubles ".
+# AppleScript "..." treats \ as escape. osascript accepts \" for quotes, not "".
 ghostty_applescript_string() {
   local s=$1
   s=${s//\\/\\\\}
-  s=${s//\"/\"\"}
+  s=${s//\"/\\\"}
   print -r -- "\"$s\""
 }
 
