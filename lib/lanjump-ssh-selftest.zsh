@@ -476,6 +476,21 @@ EOF
     (( fails++ ))
   fi
 
+  # #310: keep-newer must use a version stamp, not two machines' mtimes.
+  # Dest mtime is last sync write on a possibly-fast remote clock, so a
+  # newer local picker can look older and never replace the stale copy.
+  print -r -- $'# lanjump-pick-version 100 oldsha\nremote-old-stamp' >"$remote_home/.local/bin/lanjump-pick"
+  chmod 755 "$remote_home/.local/bin/lanjump-pick"
+  print -r -- $'# lanjump-pick-version 200 newsha\nincoming-new-stamp' >"$PICKER"
+  touch -t 202001010000 "$PICKER"
+  touch -t 202601010000 "$remote_home/.local/bin/lanjump-pick"
+  print -r -- 0 >"$tmpdir/ssh_n"
+  sync_picker host.local mac
+  if [[ $(<"$remote_home/.local/bin/lanjump-pick") != *incoming-new-stamp* ]]; then
+    print -u2 "FAIL ssh/sync-picker-version-stamp dest kept clock-newer old version got=$(printf %q "$(<"$remote_home/.local/bin/lanjump-pick")")"
+    (( fails++ ))
+  fi
+
   # #287: probe must use the same remote command as later verify (`true`).
   # NixOS often has `true` on PATH but no /usr/bin/true; exit 127 there
   # is not a key failure and must not drop the user onto the password path.
