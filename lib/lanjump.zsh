@@ -940,11 +940,11 @@ upsert_ssh_config() {
     {
       print "$begin"
       print "Host ${id}"
-      print "  HostName ${hostname}"
+      print -r -- "  HostName ${hostname}"
       if [[ -n $port && $port != 22 ]]; then
-        print "  Port ${port}"
+        print -r -- "  Port ${port}"
       fi
-      print "  User ${user}"
+      print -r -- "  User ${user}"
       print "  IdentityFile ${KEY}"
       print "  IdentitiesOnly yes"
       print "  AddKeysToAgent yes"
