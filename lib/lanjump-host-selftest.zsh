@@ -731,6 +731,99 @@ host_selftest() {
   HOME=$hosts314_saved_home
   rm -rf "$hosts314_home"
 
+  # #333: Window A list has office in memory; Window B upserts studio;
+  # A presses r and the scan-save path writes its stale table. studio
+  # and its SSH block must remain (same lock+reload+merge as #314).
+  local hosts333_home hosts333_saved_home hosts333_saved_ssh hosts333_saved_key
+  local hosts333_fn hosts333_got hosts333_id
+  local _lj333_restore_tty _lj333_setup_tty _lj333_detect_lan
+  local _lj333_scan_bonjour _lj333_scan_port22 _lj333_merge
+  hosts333_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-333.XXXXXX") || return 1
+  hosts333_saved_home=$HOME
+  hosts333_saved_ssh=$SSH_CONFIG
+  hosts333_saved_key=$KEY
+  saved_hosts_file=$HOSTS_FILE
+  mkdir -p "$hosts333_home/Library/Application Support/lanjump" "$hosts333_home/.ssh"
+  HOSTS_FILE="$hosts333_home/Library/Application Support/lanjump/hosts"
+  SSH_CONFIG="$hosts333_home/.ssh/config"
+  KEY="$hosts333_home/.ssh/id_ed25519_lanjump"
+  HOME=$hosts333_home
+  : >"$HOSTS_FILE"
+  : >"$SSH_CONFIG"
+  MYIPS=(127.0.0.1)
+  MYIP=""
+  upsert_host office mac office.local 10.0.0.1 'aa:bb:cc:dd:ee:01'
+  expect host/scan-save-stale/memory-office office "${h_alias[*]}"
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$hosts333_home")"
+    print -r -- "HOSTS_FILE=$(printf %q "$HOSTS_FILE")"
+    print -r -- "SSH_CONFIG=$(printf %q "$SSH_CONFIG")"
+    print -r -- "KEY=$(printf %q "$KEY")"
+    print -r -- 'typeset -a h_alias h_user h_hostname h_ip h_mac h_port h_ssh_id h_last'
+    for hosts333_fn in ssh_id_tag ssh_id_from_alias ssh_id_taken alloc_ssh_id \
+      load_hosts replace_file_atomic save_hosts find_saved upsert_host \
+      strip_ssh_block remove_ssh_config replace_ssh_config upsert_ssh_config \
+      with_data_file_lock; do
+      (( ${+functions[$hosts333_fn]} )) && functions "$hosts333_fn"
+    done
+    print -r -- "upsert_host studio mac studio.local 10.0.0.2 'aa:bb:cc:dd:ee:02'"
+  } >"$hosts333_home/child.zsh"
+  /bin/zsh "$hosts333_home/child.zsh"
+  if ! grep -q '^studio|' "$HOSTS_FILE"; then
+    print -u2 "FAIL host/scan-save-stale child upsert did not write studio"
+    (( fails++ ))
+  fi
+  expect host/scan-save-stale/memory-still-office office "${h_alias[*]}"
+  _lj333_restore_tty=$functions[restore_tty]
+  _lj333_setup_tty=$functions[setup_tty]
+  _lj333_detect_lan=$functions[detect_lan]
+  _lj333_scan_bonjour=$functions[scan_bonjour]
+  _lj333_scan_port22=$functions[scan_port22]
+  _lj333_merge=$functions[merge_seen_by_hostkey]
+  restore_tty() { :; }
+  setup_tty() { :; }
+  detect_lan() { PREFIX=10.0.0 MYIP=10.0.0.9 MASK=255.255.255.0; }
+  scan_bonjour() { print -r -- $'office\toffice.local\t10.0.0.1\taa:bb:cc:dd:ee:01\t22'; }
+  scan_port22() { :; }
+  merge_seen_by_hostkey() { :; }
+  cursor=1
+  build_items
+  do_scan >/dev/null
+  functions[restore_tty]=$_lj333_restore_tty
+  functions[setup_tty]=$_lj333_setup_tty
+  functions[detect_lan]=$_lj333_detect_lan
+  functions[scan_bonjour]=$_lj333_scan_bonjour
+  functions[scan_port22]=$_lj333_scan_port22
+  functions[merge_seen_by_hostkey]=$_lj333_merge
+  load_hosts
+  hosts333_got="${h_alias[*]}"
+  if ! (( ${h_alias[(Ie)office]} && ${h_alias[(Ie)studio]} )); then
+    print -u2 "FAIL host/scan-save-stale lost studio aliases=$(printf %q "$hosts333_got")"
+    (( fails++ ))
+  fi
+  hosts333_id=
+  for (( i = 1; i <= ${#h_alias}; i++ )); do
+    if [[ ${h_alias[$i]} == studio ]]; then
+      hosts333_id=${h_ssh_id[$i]:-}
+      break
+    fi
+  done
+  if [[ -z $hosts333_id ]]; then
+    print -u2 "FAIL host/scan-save-stale studio ssh_id missing aliases=$(printf %q "$hosts333_got")"
+    (( fails++ ))
+  elif ! grep -qF "Host ${hosts333_id}" "$SSH_CONFIG"; then
+    print -u2 "FAIL host/scan-save-stale orphaned SSH block id=$(printf %q "$hosts333_id")"
+    (( fails++ ))
+  fi
+  HOSTS_FILE=$saved_hosts_file
+  SSH_CONFIG=$hosts333_saved_ssh
+  KEY=$hosts333_saved_key
+  HOME=$hosts333_saved_home
+  rm -rf "$hosts333_home"
+
   # #266: print >"$LAST_FILE" truncates dest before the new alias exists.
   # Mirror hosts/atomic-write. Source-check the real mark_last (host-selftest
   # never stubs it; cli-selftest #168 does).
