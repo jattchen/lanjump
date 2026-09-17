@@ -84,6 +84,21 @@ digit_selftest() {
     (( fails++ ))
   fi
 
+  # #262: PageUp CSI ESC [ 5 ~ must cancel and drain so leftover 5 is
+  # not the next num key. Lone-Esc above does not cover this.
+  PENDING_KEY=x
+  leftover=""
+  n=""
+  {
+    collect_index_digits 1 15
+    n=$REPLY
+    sysread leftover || leftover=""
+  } < <(print -n $'\e[5~')
+  if [[ -n $n || -n $PENDING_KEY || $leftover == 5 || -n $leftover ]]; then
+    print -u2 "FAIL pageup csi cancel got n=$n leftover=$leftover pending=$PENDING_KEY"
+    (( fails++ ))
+  fi
+
   n=""
   leftover=""
   {
