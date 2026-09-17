@@ -1620,8 +1620,10 @@ lan_pub_install_cmd() {
   local pub b64
   pub=$(cat "$KEY.pub")
   # #256: comment may contain '; base64 stays single-quote-safe.
+  # #305: if authorized_keys has no trailing newline, >> would glue keys
+  # and grep -Fqx would miss an already-installed last line.
   b64=$(print -rn -- "$pub" | base64 | tr -d '\n')
-  print -r -- "umask 077; mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; pub=\$(printf '%s' '$b64' | base64 -d 2>/dev/null || printf '%s' '$b64' | base64 -D); grep -Fqx \"\$pub\" ~/.ssh/authorized_keys 2>/dev/null || printf '%s\n' \"\$pub\" >> ~/.ssh/authorized_keys"
+  print -r -- "umask 077; mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; pub=\$(printf '%s' '$b64' | base64 -d 2>/dev/null || printf '%s' '$b64' | base64 -D); [ -s ~/.ssh/authorized_keys ] && [ \"\$(tail -c 1 ~/.ssh/authorized_keys | wc -l)\" -eq 0 ] && printf '\\n' >> ~/.ssh/authorized_keys; grep -Fqx \"\$pub\" ~/.ssh/authorized_keys 2>/dev/null || printf '%s\n' \"\$pub\" >> ~/.ssh/authorized_keys"
 }
 
 try_ssh() {
