@@ -782,13 +782,9 @@ forget_saved() {
   local idx=$1
   local n=${#h_alias}
   (( idx >= 1 && idx <= n )) || return
-  local id mac hostname ip st=0
+  local id="" mac hostname ip st=0
   local -a na nu nh ni nm np ns nl
   local i
-  id=${h_ssh_id[$idx]:-}
-  if [[ -z $id ]]; then
-    id=$(ssh_id_from_alias "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}") || id=""
-  fi
   mac=${h_mac[$idx]}
   hostname=${h_hostname[$idx]}
   ip=${h_ip[$idx]}
@@ -803,6 +799,10 @@ forget_saved() {
   idx=$(find_saved "$mac" "$hostname" "$ip")
   n=${#h_alias}
   if [[ -n $idx ]]; then
+    id=${h_ssh_id[$idx]:-}
+    if [[ -z $id ]]; then
+      id=$(ssh_id_from_alias "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}") || id=""
+    fi
     na=() nu=() nh=() ni=() nm=() np=() ns=() nl=()
     for (( i = 1; i <= n; i++ )); do
       (( i == idx )) && continue
