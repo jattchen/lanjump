@@ -626,6 +626,84 @@ host_selftest() {
   HOSTS_FILE=$saved_hosts_file
   rm -f "$hosts264"
 
+  # #314: two save_hosts writers load then replace the whole hosts file.
+  # A mutates, yields, then saves; B writes in the gap. Both rows must remain.
+  local hosts314_home hosts314_saved_home hosts314_saved_ssh hosts314_saved_key
+  local hosts314_fn hosts314_got
+  local -i hosts314_a=0 hosts314_b=0
+  hosts314_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-314.XXXXXX") || return 1
+  hosts314_saved_home=$HOME
+  hosts314_saved_ssh=$SSH_CONFIG
+  hosts314_saved_key=$KEY
+  saved_hosts_file=$HOSTS_FILE
+  mkdir -p "$hosts314_home/Library/Application Support/lanjump" "$hosts314_home/.ssh"
+  HOSTS_FILE="$hosts314_home/Library/Application Support/lanjump/hosts"
+  SSH_CONFIG="$hosts314_home/.ssh/config"
+  KEY="$hosts314_home/.ssh/id_ed25519_lanjump"
+  HOME=$hosts314_home
+  : >"$HOSTS_FILE"
+  : >"$SSH_CONFIG"
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$hosts314_home")"
+    print -r -- "HOSTS_FILE=$(printf %q "$HOSTS_FILE")"
+    print -r -- "SSH_CONFIG=$(printf %q "$SSH_CONFIG")"
+    print -r -- "KEY=$(printf %q "$KEY")"
+    print -r -- 'typeset -a h_alias h_user h_hostname h_ip h_mac h_port h_ssh_id h_last'
+    for hosts314_fn in ssh_id_tag ssh_id_from_alias ssh_id_taken alloc_ssh_id \
+      load_hosts replace_file_atomic save_hosts find_saved upsert_host \
+      strip_ssh_block remove_ssh_config replace_ssh_config upsert_ssh_config \
+      with_data_file_lock; do
+      (( ${+functions[$hosts314_fn]} )) && functions "$hosts314_fn"
+    done
+    print -r -- 'functions -c save_hosts _hosts314_save'
+    print -r -- 'save_hosts() {'
+    print -r -- '  print -r -- loaded >"$HOME/loaded"'
+    print -r -- '  sleep 0.35'
+    print -r -- '  _hosts314_save "$@"'
+    print -r -- '}'
+    print -r -- "upsert_host office mac office.local 10.0.0.1 'aa:bb:cc:dd:ee:01'"
+  } >"$hosts314_home/child-a.zsh"
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$hosts314_home")"
+    print -r -- "HOSTS_FILE=$(printf %q "$HOSTS_FILE")"
+    print -r -- "SSH_CONFIG=$(printf %q "$SSH_CONFIG")"
+    print -r -- "KEY=$(printf %q "$KEY")"
+    print -r -- 'typeset -a h_alias h_user h_hostname h_ip h_mac h_port h_ssh_id h_last'
+    for hosts314_fn in ssh_id_tag ssh_id_from_alias ssh_id_taken alloc_ssh_id \
+      load_hosts replace_file_atomic save_hosts find_saved upsert_host \
+      strip_ssh_block remove_ssh_config replace_ssh_config upsert_ssh_config \
+      with_data_file_lock; do
+      (( ${+functions[$hosts314_fn]} )) && functions "$hosts314_fn"
+    done
+    print -r -- 'while [[ ! -f $HOME/loaded ]]; do'
+    print -r -- '  sleep 0.01'
+    print -r -- 'done'
+    print -r -- "upsert_host studio mac studio.local 10.0.0.2 'aa:bb:cc:dd:ee:02'"
+  } >"$hosts314_home/child-b.zsh"
+  /bin/zsh "$hosts314_home/child-a.zsh" &
+  hosts314_a=$!
+  /bin/zsh "$hosts314_home/child-b.zsh" &
+  hosts314_b=$!
+  wait $hosts314_a
+  wait $hosts314_b
+  load_hosts
+  hosts314_got="${h_alias[*]}"
+  if ! (( ${h_alias[(Ie)office]} && ${h_alias[(Ie)studio]} )); then
+    print -u2 "FAIL hosts/concurrent-write lost an update aliases=$(printf %q "$hosts314_got")"
+    (( fails++ ))
+  fi
+  HOSTS_FILE=$saved_hosts_file
+  SSH_CONFIG=$hosts314_saved_ssh
+  KEY=$hosts314_saved_key
+  HOME=$hosts314_saved_home
+  rm -rf "$hosts314_home"
+
   # #266: print >"$LAST_FILE" truncates dest before the new alias exists.
   # Mirror hosts/atomic-write. Source-check the real mark_last (host-selftest
   # never stubs it; cli-selftest #168 does).

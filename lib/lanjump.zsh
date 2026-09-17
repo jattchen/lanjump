@@ -616,8 +616,43 @@ replace_file_atomic() {
   }
 }
 
+# Sidecar lock: dest is renamed by replace_file_atomic, so flock(dest) would
+# not serialize writers. Same-file load+replace must hold this (#276/#314).
+with_data_file_lock() {
+  local dest=$1
+  shift
+  local lock dir
+  local -i fd=-1 st=0 n=0
+  dir=${dest:h}
+  lock=${dest}.lock
+  mkdir -p "$dir"
+  [[ -e $lock ]] || : >"$lock"
+  if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
+    zsystem flock -f fd "$lock" || return 1
+    "$@"
+    st=$?
+    zsystem flock -u fd
+    return $st
+  fi
+  while ! mkdir "${lock}.d" 2>/dev/null; do
+    sleep 0.05
+    (( ++n > 200 )) && return 1
+  done
+  "$@"
+  st=$?
+  rmdir "${lock}.d" 2>/dev/null
+  return $st
+}
+
 save_hosts() {
-  local i n=${#h_alias}
+  local i n=${#h_alias} st=0
+  if [[ -z ${_LANJUMP_HOSTS_LOCKED:-} ]]; then
+    _LANJUMP_HOSTS_LOCKED=1
+    with_data_file_lock "$HOSTS_FILE" save_hosts
+    st=$?
+    unset _LANJUMP_HOSTS_LOCKED
+    return $st
+  fi
   {
     print -r -- "# alias|user|hostname|ip|mac|port|ssh_id|last"
     for (( i = 1; i <= n; i++ )); do
@@ -673,7 +708,15 @@ find_saved() {
 
 upsert_host() {
   local alias=$1 user=$2 hostname=$3 ip=$4 mac=$5 port=${6:-22}
-  local idx old_id id
+  local idx old_id id st=0
+  if [[ -z ${_LANJUMP_HOSTS_LOCKED:-} ]]; then
+    _LANJUMP_HOSTS_LOCKED=1
+    with_data_file_lock "$HOSTS_FILE" upsert_host "$alias" "$user" "$hostname" "$ip" "$mac" "$port"
+    st=$?
+    unset _LANJUMP_HOSTS_LOCKED
+    return $st
+  fi
+  load_hosts
   idx=$(find_saved "$mac" "$hostname" "$ip")
   if [[ -n $idx ]]; then
     old_id=${h_ssh_id[$idx]:-}
@@ -713,34 +756,49 @@ forget_saved() {
   local idx=$1
   local n=${#h_alias}
   (( idx >= 1 && idx <= n )) || return
-  local id
+  local id mac hostname ip st=0
+  local -a na nu nh ni nm np ns nl
+  local i
   id=${h_ssh_id[$idx]:-}
   if [[ -z $id ]]; then
     id=$(ssh_id_from_alias "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}") || id=""
   fi
+  mac=${h_mac[$idx]}
+  hostname=${h_hostname[$idx]}
+  ip=${h_ip[$idx]}
+  if [[ -z ${_LANJUMP_HOSTS_LOCKED:-} ]]; then
+    _LANJUMP_HOSTS_LOCKED=1
+    with_data_file_lock "$HOSTS_FILE" forget_saved "$idx"
+    st=$?
+    unset _LANJUMP_HOSTS_LOCKED
+    return $st
+  fi
+  load_hosts
+  idx=$(find_saved "$mac" "$hostname" "$ip")
+  n=${#h_alias}
+  if [[ -n $idx ]]; then
+    na=() nu=() nh=() ni=() nm=() np=() ns=() nl=()
+    for (( i = 1; i <= n; i++ )); do
+      (( i == idx )) && continue
+      na+=("${h_alias[$i]}")
+      nu+=("${h_user[$i]}")
+      nh+=("${h_hostname[$i]}")
+      ni+=("${h_ip[$i]}")
+      nm+=("${h_mac[$i]}")
+      np+=("${h_port[$i]:-22}")
+      ns+=("${h_ssh_id[$i]:-}")
+      nl+=("${h_last[$i]}")
+    done
+    h_alias=("${na[@]}")
+    h_user=("${nu[@]}")
+    h_hostname=("${nh[@]}")
+    h_ip=("${ni[@]}")
+    h_mac=("${nm[@]}")
+    h_port=("${np[@]}")
+    h_ssh_id=("${ns[@]}")
+    h_last=("${nl[@]}")
+  fi
   [[ -n $id ]] && remove_ssh_config "$id"
-  local -a na nu nh ni nm np ns nl
-  local i
-  na=() nu=() nh=() ni=() nm=() np=() ns=() nl=()
-  for (( i = 1; i <= n; i++ )); do
-    (( i == idx )) && continue
-    na+=("${h_alias[$i]}")
-    nu+=("${h_user[$i]}")
-    nh+=("${h_hostname[$i]}")
-    ni+=("${h_ip[$i]}")
-    nm+=("${h_mac[$i]}")
-    np+=("${h_port[$i]:-22}")
-    ns+=("${h_ssh_id[$i]:-}")
-    nl+=("${h_last[$i]}")
-  done
-  h_alias=("${na[@]}")
-  h_user=("${nu[@]}")
-  h_hostname=("${nh[@]}")
-  h_ip=("${ni[@]}")
-  h_mac=("${nm[@]}")
-  h_port=("${np[@]}")
-  h_ssh_id=("${ns[@]}")
-  h_last=("${nl[@]}")
   save_hosts
 }
 
@@ -769,7 +827,14 @@ strip_ssh_block() {
 }
 
 remove_ssh_config() {
-  local id=$1
+  local id=$1 st=0
+  if [[ -z ${_LANJUMP_SSH_LOCKED:-} ]]; then
+    _LANJUMP_SSH_LOCKED=1
+    with_data_file_lock "$SSH_CONFIG" remove_ssh_config "$id"
+    st=$?
+    unset _LANJUMP_SSH_LOCKED
+    return $st
+  fi
   strip_ssh_block "# BEGIN LANJUMP ${id}" "# END LANJUMP ${id}"
 }
 
@@ -783,10 +848,17 @@ replace_ssh_config() {
 }
 
 upsert_ssh_config() {
-  local id=$1 user=$2 hostname=$3 port=${4:-22}
+  local id=$1 user=$2 hostname=$3 port=${4:-22} st=0
   local begin="# BEGIN LANJUMP ${id}"
   local end="# END LANJUMP ${id}"
   local tmp
+  if [[ -z ${_LANJUMP_SSH_LOCKED:-} ]]; then
+    _LANJUMP_SSH_LOCKED=1
+    with_data_file_lock "$SSH_CONFIG" upsert_ssh_config "$id" "$user" "$hostname" "$port"
+    st=$?
+    unset _LANJUMP_SSH_LOCKED
+    return $st
+  fi
   mkdir -p "$HOME/.ssh"
   [[ -f $SSH_CONFIG ]] || : >"$SSH_CONFIG"
   chmod 600 "$SSH_CONFIG"
