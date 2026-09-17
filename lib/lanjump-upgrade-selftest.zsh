@@ -605,7 +605,72 @@ elif ! grep -qxF "# lanjump-pick-version 1789603200 $sha338" "$picker338"; then
   fail "#338 tarball install wrote no picker version stamp: $(head -n 3 "$picker338")"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home338" "$pkg338" "$tar338" "$api338"
+# #339: piped/fresh install pins archive/<api-sha>.tar.gz. If that URL 404s,
+# install falls back to heads/main. It must not record the unused API sha as
+# the installed version (or must fail cleanly). Empty-dir cleanup must not
+# NOMATCH-abort before the fallback runs.
+sha339=3393393393393393393393393393393393393393
+home339=$(mktemp -d)
+mkdir -p "$home339/Desktop" "$home339/.ssh" "$home339/Library/Application Support"
+pkg339=$(mktemp -d)
+mkdir -p "$pkg339/lanjump-main"/{bin,lib,src}
+cp "$ROOT/bin/lanjump.command" "$pkg339/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$pkg339/lanjump-main/bin/"
+cp "$ROOT/lib/"* "$pkg339/lanjump-main/lib/"
+cp "$ROOT/src/lanjump-keys.c" "$pkg339/lanjump-main/src/"
+cp "$ROOT/install.zsh" "$pkg339/lanjump-main/install.zsh"
+print -r -- '# HEADS-MAIN-TREE' >>"$pkg339/lanjump-main/lib/lanjump.zsh"
+tar339=$(mktemp)
+tar -czf "$tar339" -C "$pkg339" lanjump-main
+api339=$(mktemp)
+print -r -- '{"sha":"'"$sha339"'","commit":{"committer":{"date":"2026-09-17T00:00:00Z"}}}' >"$api339"
+curl_log339=$(mktemp)
+fakebin339=$(mktemp -d)
+cat >"$fakebin339/curl" <<EOF
+#!/bin/zsh
+url=\${@[-1]}
+print -r -- "\$url" >>$(printf %q "$curl_log339")
+if [[ \$url == $(printf %q "file://${api339}") ]]; then
+  cat $(printf %q "$api339")
+  exit 0
+fi
+if [[ \$url == *"/archive/${sha339}.tar.gz" ]]; then
+  exit 22
+fi
+if [[ \$url == *'/archive/refs/heads/main.tar.gz' ]]; then
+  cat $(printf %q "$tar339")
+  exit 0
+fi
+print -u2 "curl-stub unexpected url: \$url"
+exit 1
+EOF
+chmod 755 "$fakebin339/curl"
+
+st339=0
+out339=$(HOME=$home339 PATH="$fakebin339:$PATH" LANJUMP_VERSION_API="file://${api339}" env -u LANJUMP_REMOTE_SHA env -u LANJUMP_ARCHIVE_URL /bin/zsh <"$ROOT/install.zsh" 2>&1) || st339=$?
+ver339=$home339/Library/Application\ Support/lanjump/version
+picker339=$home339/Library/Application\ Support/lanjump/lanjump-pick.zsh
+main339=$home339/Library/Application\ Support/lanjump/lanjump.zsh
+if ! grep -q 'heads/main' "$curl_log339"; then
+  fail "#339 sha 404 did not fall back to heads/main: $(<"$curl_log339") status=$st339 out=$out339"
+fi
+if [[ -f $ver339 && $(<$ver339) == "$sha339" ]]; then
+  fail "#339 fallback recorded unused API sha as version"
+fi
+if [[ -f $picker339 ]] && grep -q "$sha339" "$picker339"; then
+  fail "#339 fallback stamped unused API sha on picker: $(head -n 3 "$picker339")"
+fi
+if (( st339 == 0 )); then
+  if [[ ! -f $main339 ]] || ! grep -q 'HEADS-MAIN-TREE' "$main339"; then
+    fail "#339 fallback install did not land heads/main tree"
+  fi
+  out=$(HOME=$home339 LANJUMP_REMOTE_SHA=$sha339 LANJUMP_ARCHIVE_URL="file:///dev/null" "$home339/.local/bin/lanjump" upgrade 2>&1) || true
+  if [[ $out == *没有新版本* ]]; then
+    fail "#339 next upgrade skipped as if unused sha was installed: $out"
+  fi
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
 
 if (( fails )); then
   exit 1
