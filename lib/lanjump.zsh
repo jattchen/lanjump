@@ -669,9 +669,10 @@ save_hosts() {
 
 # Scan persist: same protocol as upsert_host (#314). Reload under the
 # hosts lock, apply s_* onto that table, then write so a stale list
-# window cannot drop a concurrent upsert (#333).
+# window cannot drop a concurrent upsert (#333). Merged rows also
+# refresh the LANJUMP SSH HostName/Port (#361).
 persist_scan_hosts() {
-  local st=0 i n idx
+  local st=0 i n idx id
   if [[ -z ${_LANJUMP_HOSTS_LOCKED:-} ]]; then
     _LANJUMP_HOSTS_LOCKED=1
     with_data_file_lock "$HOSTS_FILE" persist_scan_hosts
@@ -688,6 +689,16 @@ persist_scan_hosts() {
       [[ -n ${s_ip[$i]} ]] && h_ip[$idx]=${s_ip[$i]}
       [[ -n ${s_mac[$i]} ]] && h_mac[$idx]=${s_mac[$i]}
       [[ -n ${s_port[$i]} ]] && h_port[$idx]=${s_port[$i]}
+      id=${h_ssh_id[$idx]:-}
+      if [[ -z $id ]]; then
+        id=$(ssh_id_from_alias "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}") || id=""
+      fi
+      if [[ -n $id ]]; then
+        if ! upsert_ssh_config "$id" "${h_user[$idx]}" "${h_hostname[$idx]:-${h_ip[$idx]}}" "${h_port[$idx]:-22}"; then
+          load_hosts
+          return 1
+        fi
+      fi
     fi
   done
   save_hosts
