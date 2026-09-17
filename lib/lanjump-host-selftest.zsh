@@ -327,6 +327,33 @@ host_selftest() {
   expect host/scan/hostname-keeps-ip 192.168.1.10 "${h_ip[1]}"
   expect host/scan/hostname-keeps-mac 'aa:bb:cc:dd:ee:01' "${h_mac[1]}"
 
+  # #332: Live-list mark_online must not rewrite a MAC-bearing saved row
+  # when another machine announces the same mDNS hostname.
+  local office_ip office_mac
+  h_alias=(office)
+  h_user=(mac)
+  h_hostname=(office.local)
+  h_ip=(10.0.0.9)
+  h_mac=('aa:bb:cc:dd:ee:01')
+  h_port=(22)
+  h_last=(100)
+  MYIPS=(127.0.0.1)
+  MYIP=""
+  build_items
+  add_discovered office.local office.local 10.0.0.77 'de:ad:be:ef:00:77'
+  mark_online 10.0.0.77 'de:ad:be:ef:00:77' office.local
+  office_ip=
+  office_mac=
+  for (( i = 1; i <= ${#items_kind}; i++ )); do
+    if [[ ${items_kind[$i]} == host && ${items_alias[$i]} == office && -n ${items_saved[$i]} ]]; then
+      office_ip=${items_ip[$i]}
+      office_mac=${items_mac[$i]}
+      break
+    fi
+  done
+  expect host/scan/live-hostname-keeps-ip 10.0.0.9 "$office_ip"
+  expect host/scan/live-hostname-keeps-mac 'aa:bb:cc:dd:ee:01' "$office_mac"
+
   # #217: /23 is the interface prefix; 192.168.3.10/23 must include 192.168.2.x.
   if ! (( ${+functions[scan_lan_prefixes]} )); then
     print -u2 "FAIL host/scan/netmask-23 missing scan_lan_prefixes"
