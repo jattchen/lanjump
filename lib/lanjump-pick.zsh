@@ -1444,7 +1444,7 @@ rename_pin_record() {
       pinned_grok[$new]=${pinned_grok[$old]:-}
       unset "pinned_cwd[$old]"
       unset "pinned_grok[$old]"
-      save_pinned_sessions
+      save_pinned_sessions || return 1
       return 0
     fi
   done
@@ -3126,7 +3126,7 @@ toggle_session_pin() {
     cwd=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_path}' 2>/dev/null || true)
     pid=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_pid}' 2>/dev/null || true)
     grok=$(grok_id_for_pid "$pid")
-    add_pin_record "$name" "$cwd" "$grok"
+    add_pin_record "$name" "$cwd" "$grok" || return
     tmux_set_pinned "$name" 1
     on=1
     items_id[$cursor]=$name
@@ -4458,7 +4458,13 @@ prompt_rename() {
     draw
     return
   }
-  rename_pin_record "$old" "$name"
+  if ! rename_pin_record "$old" "$name"; then
+    tmuxx rename-session -t "=$name" "$old" 2>/dev/null || true
+    setup_tty
+    load_items "$old"
+    draw
+    return
+  fi
   rename_snap_record "$old" "$name"
   setup_tty
   load_items "$name"
