@@ -5947,6 +5947,39 @@ PY
     (( fails++ ))
   fi
 
+  # #268: print >last-session truncates dest before the new name exists.
+  # Mirror last/atomic-write / snap/atomic-write. Source-check the real
+  # remember_last_session (stubs above restore it).
+  if [[ ${functions[remember_last_session]} != *replace_file_atomic* ]]; then
+    print -u2 "FAIL last-session/atomic-write missing replace_file_atomic"
+    (( fails++ ))
+  fi
+  local last268_home last268 last268_mid last268_saved_home
+  local -i last268_torn=0
+  last268_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-268.XXXXXX") || return 1
+  last268_saved_home=$HOME
+  HOME=$last268_home
+  last_session_file
+  last268=$REPLY
+  mkdir -p "${last268:h}"
+  print -r -- old-session >"$last268"
+  print() {
+    last268_mid=$(<"$last268")
+    if [[ -z $last268_mid ]]; then
+      last268_torn=1
+    fi
+    builtin print "$@"
+  }
+  remember_last_session new-session
+  unfunction print
+  if (( last268_torn )); then
+    print -u2 "FAIL last-session/atomic-write dest was torn mid-save"
+    (( fails++ ))
+  fi
+  expect last-session/atomic-write-name new-session "$(read_last_session_name)"
+  HOME=$last268_saved_home
+  rm -rf "$last268_home"
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1

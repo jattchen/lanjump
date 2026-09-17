@@ -2132,7 +2132,7 @@ remember_last_session() {
   last_session_file
   file=$REPLY
   mkdir -p "${file:h}"
-  print -r -- "$name" >"$file"
+  print -r -- "$name" | replace_file_atomic "$file"
 }
 
 read_last_session_name() {
