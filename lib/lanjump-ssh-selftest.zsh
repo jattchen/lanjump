@@ -282,6 +282,16 @@ EOF
     (( fails++ ))
   fi
 
+  # #375: first-write / complete-block uses zsh print, which expands
+  # \n \t \u. CORP\admin must keep the backslash; HostName \n must
+  # not inject a later keyword line (e.g. ProxyCommand).
+  : >"$SSH_CONFIG"
+  upsert_ssh_config lanjump-office 'CORP\admin' 'office\n  ProxyCommand bad'
+  read_ssh
+  expect_contains ssh/print-raw/user '  User CORP\admin' "$ssh_got"
+  expect_contains ssh/print-raw/hostname '  HostName office\n  ProxyCommand bad' "$ssh_got"
+  expect_absent ssh/print-raw/injected-proxy $'\n  ProxyCommand bad\n' "$ssh_got"
+
   # Happy path: a complete block is still removed; later Host stays.
   cat >"$SSH_CONFIG" <<'EOF'
 # BEGIN LANJUMP lanjump-office
