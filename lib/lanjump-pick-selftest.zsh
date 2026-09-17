@@ -3536,6 +3536,41 @@ pick_selftest() {
   load_session_snapshot
   expect snap/atomic-write-count 3 "${#snap_names[@]}"
 
+  # #309: mv onto dest replaces a symlink (dotfiles) with a regular file.
+  session_snapshot_file
+  local snap309=$REPLY
+  local snap309_dot="$testhome/dotfiles/session-snapshot"
+  mkdir -p "${snap309:h}" "${snap309_dot:h}"
+  print -r -- $'name old-link\ncwd /tmp/old\ncmd zsh\noccupied 0\nworkspace 0\nattached 0\n' >"$snap309_dot"
+  rm -f "$snap309"
+  ln -s "$snap309_dot" "$snap309"
+  snap_names=(new-link)
+  snap_cwd=()
+  snap_occupied=()
+  snap_workspace=()
+  snap_cmd=()
+  snap_attached=()
+  snap_cwd[new-link]=/tmp/new
+  snap_occupied[new-link]=0
+  snap_workspace[new-link]=1
+  snap_cmd[new-link]=zsh
+  snap_attached[new-link]=1
+  save_session_snapshot
+  if [[ ! -L $snap309 ]]; then
+    print -u2 "FAIL snap/atomic-write-symlink dest is no longer a symlink"
+    (( fails++ ))
+  fi
+  if [[ ${snap309:A} != "${snap309_dot:A}" ]]; then
+    print -u2 "FAIL snap/atomic-write-symlink target changed want=$(printf %q "${snap309_dot:A}") got=$(printf %q "${snap309:A}")"
+    (( fails++ ))
+  fi
+  load_session_snapshot
+  expect snap/atomic-write-symlink-count 1 "${#snap_names[@]}"
+  expect snap/atomic-write-symlink-name new-link "${snap_names[1]:-}"
+  expect snap/atomic-write-symlink-target new-link "$(awk '$1=="name"{print $2; exit}' "$snap309_dot")"
+  rm -f "$snap309"
+  : >"$snap309"
+
   # #222: GNU stat -f %m prints a mount point; a just-written snapshot
   # must still count as recent so status ticks do not rewrite every time.
   session_snapshot_file
