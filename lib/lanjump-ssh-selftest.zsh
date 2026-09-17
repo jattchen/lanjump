@@ -740,6 +740,59 @@ EOF
     fi
   fi
 
+  # #394: two written rows already share lanjump-office (pre-#377
+  # scans). Refresh both; persist must reallocate so the second
+  # HostName does not overwrite the first.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  cat >"$HOSTS_FILE" <<'EOF'
+# alias|user|hostname|ip|mac|port|ssh_id|last
+Office|mac|office.local|10.0.0.8|aa:bb:cc:dd:ee:01|22|lanjump-office|100
+office|mac|studio.local|10.0.0.9|aa:bb:cc:dd:ee:02|22|lanjump-office|101
+EOF
+  cat >"$SSH_CONFIG" <<'EOF'
+# BEGIN LANJUMP lanjump-office
+Host lanjump-office
+  HostName office.local
+  User mac
+  Port 22
+  IdentityFile /tmp/id
+  IdentitiesOnly yes
+# END LANJUMP lanjump-office
+EOF
+  s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  s_host=(office.local studio.local)
+  s_ip=(10.0.0.81 10.0.0.91)
+  s_mac=('aa:bb:cc:dd:ee:01' 'aa:bb:cc:dd:ee:02')
+  s_port=(22 22)
+  persist_scan_hosts
+  load_hosts
+  if [[ ${h_ssh_id[1]:-} == "${h_ssh_id[2]:-}" ]]; then
+    print -u2 "FAIL ssh/scan-dup-id/hosts-id shared=$(printf %q "${h_ssh_id[1]:-}")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/scan-dup-id/office-hn 'HostName office.local' "$ssh_got"
+  expect_contains ssh/scan-dup-id/studio-hn 'HostName studio.local' "$ssh_got"
+  office_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="office.local" {print id; exit}' "$SSH_CONFIG")
+  studio_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="studio.local" {print id; exit}' "$SSH_CONFIG")
+  if [[ -z $office_id || -z $studio_id || $office_id == "$studio_id" ]]; then
+    print -u2 "FAIL ssh/scan-dup-id/distinct-host office_id=$(printf %q "$office_id") studio_id=$(printf %q "$studio_id")"
+    (( fails++ ))
+  else
+    resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$office_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+    if [[ $resolved_hn != office.local ]]; then
+      print -u2 "FAIL ssh/scan-dup-id/office-wins want=office.local got=$(printf %q "$resolved_hn") id=$(printf %q "$office_id")"
+      (( fails++ ))
+    fi
+    resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$studio_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+    if [[ $resolved_hn != studio.local ]]; then
+      print -u2 "FAIL ssh/scan-dup-id/studio-wins want=studio.local got=$(printf %q "$resolved_hn") id=$(printf %q "$studio_id")"
+      (( fails++ ))
+    fi
+  fi
+
   # #385: two saved hosts, scan rewrites both IPs, second upsert_ssh_config
   # fails. The first HostName must stay on the old IP; hosts file unchanged.
   : >"$SSH_CONFIG"

@@ -703,10 +703,12 @@ persist_scan_hosts() {
       [[ -n ${s_mac[$i]} ]] && h_mac[$idx]=${s_mac[$i]}
       [[ -n ${s_port[$i]} ]] && h_port[$idx]=${s_port[$i]}
       id=${h_ssh_id[$idx]:-}
-      if [[ -z $id ]]; then
+      if [[ -z $id ]] || ssh_id_taken "$id" "$idx"; then
         # Same collision suffix as connect (#313/#377). Old-format rows
         # have empty ssh_id; ssh_id_from_alias alone maps Office/office
-        # onto one Host lanjump-office.
+        # onto one Host lanjump-office. Written rows can already share
+        # that id from a pre-#377 scan; realloc so upsert does not
+        # overwrite the other row's HostName (#394).
         id=$(alloc_ssh_id "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}" "$idx") || id=""
       fi
       if [[ -n $id ]]; then
