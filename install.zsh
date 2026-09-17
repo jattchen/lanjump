@@ -372,6 +372,18 @@ for f in "$APP"/*(ND); do
 done
 old=$APP.old
 rm -rf "$old"
+# #335: recopy keepers immediately before the switch so a write that
+# landed on live $APP after the first stage copy is not left on APP.old.
+for f in "$APP"/*(ND); do
+  name=${f:t}
+  case $name in
+    lanjump.zsh|lanjump-pick.zsh|lanjump-ghostty-attach|lanjump-keys.py|lanjump-ime.py|lanjump-keys|lanjump.command)
+      continue
+      ;;
+  esac
+  rm -rf "$stage/$name"
+  cp -a "$f" "$stage/$name"
+done
 if ! mv "$APP" "$old"; then
   exit 1
 fi
