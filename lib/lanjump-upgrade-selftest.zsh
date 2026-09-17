@@ -242,6 +242,70 @@ if grep -q 'HEADS-MAIN-TREE' "$fakehome/Library/Application Support/lanjump/lanj
   fail "upgrade installed heads/main tree for a pinned sha"
 fi
 
+# #311: piped install records fetch_remote_ver sha but used to download
+# heads/main.tar.gz. If those diverge, version is new while files stay old
+# and later upgrades keep saying 没有新版本.
+sha311=3113113113113113113113113113113113113113
+curl_log311=$(mktemp)
+fakebin311=$(mktemp -d)
+mainpkg311=$(mktemp -d)
+shapkg311=$(mktemp -d)
+home311=$(mktemp -d)
+mkdir -p "$home311/Desktop" "$home311/.ssh" "$home311/Library/Application Support"
+mkdir -p "$mainpkg311/lanjump-main"/{bin,lib,src} "$shapkg311/lanjump-main"/{bin,lib,src}
+cp "$ROOT/bin/lanjump.command" "$mainpkg311/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump.command" "$shapkg311/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$mainpkg311/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$shapkg311/lanjump-main/bin/"
+cp "$ROOT/lib/"* "$mainpkg311/lanjump-main/lib/"
+cp "$ROOT/lib/"* "$shapkg311/lanjump-main/lib/"
+cp "$ROOT/src/lanjump-keys.c" "$mainpkg311/lanjump-main/src/"
+cp "$ROOT/src/lanjump-keys.c" "$shapkg311/lanjump-main/src/"
+cp "$ROOT/install.zsh" "$mainpkg311/lanjump-main/install.zsh"
+cp "$ROOT/install.zsh" "$shapkg311/lanjump-main/install.zsh"
+print -r -- '# HEADS-MAIN-TREE' >>"$mainpkg311/lanjump-main/lib/lanjump.zsh"
+print -r -- '# SHA-ARCHIVE-TREE' >>"$shapkg311/lanjump-main/lib/lanjump.zsh"
+maintar311=$(mktemp)
+shatar311=$(mktemp)
+tar -czf "$maintar311" -C "$mainpkg311" lanjump-main
+tar -czf "$shatar311" -C "$shapkg311" lanjump-main
+cat >"$fakebin311/curl" <<EOF
+#!/bin/zsh
+url=\${@[-1]}
+print -r -- "\$url" >>$(printf %q "$curl_log311")
+if [[ \$url == *"/archive/${sha311}.tar.gz" ]]; then
+  cat $(printf %q "$shatar311")
+  exit 0
+fi
+if [[ \$url == *'/archive/refs/heads/main.tar.gz' ]]; then
+  cat $(printf %q "$maintar311")
+  exit 0
+fi
+print -u2 "curl-stub unexpected url: \$url"
+exit 1
+EOF
+chmod 755 "$fakebin311/curl"
+
+HOME=$home311 PATH="$fakebin311:$PATH" LANJUMP_REMOTE_SHA=$sha311 env -u LANJUMP_ARCHIVE_URL /bin/zsh <"$ROOT/install.zsh" >/dev/null
+if ! grep -q "/archive/${sha311}.tar.gz" "$curl_log311"; then
+  fail "#311 piped install archive URL was not built from fetched sha: $(<"$curl_log311")"
+fi
+if grep -q 'heads/main' "$curl_log311"; then
+  fail "#311 piped install still requested heads/main archive: $(<"$curl_log311")"
+fi
+if ! grep -q 'SHA-ARCHIVE-TREE' "$home311/Library/Application Support/lanjump/lanjump.zsh"; then
+  fail "#311 piped install did not install the sha tarball"
+fi
+if grep -q 'HEADS-MAIN-TREE' "$home311/Library/Application Support/lanjump/lanjump.zsh"; then
+  fail "#311 piped install installed heads/main tree for a pinned sha"
+fi
+ver311=$home311/Library/Application\ Support/lanjump/version
+if [[ ! -f $ver311 ]]; then
+  fail "#311 piped install wrote no version file"
+elif [[ $(<$ver311) != "$sha311" ]]; then
+  fail "#311 piped install version: $(<$ver311)"
+fi
+
 # #220: missing tarball file must not leave live APP as a mixed old/new tree.
 appdir="$fakehome/Library/Application Support/lanjump"
 print -r -- 'OLD-MAIN' >"$appdir/lanjump.zsh"
@@ -422,7 +486,7 @@ if [[ ! -f $app306/session-snapshot || $(<"$app306/session-snapshot") != KEEP-SN
   fail "#306 reinstall wiped snapshot after interrupted commit"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306"
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306"
 
 if (( fails )); then
   exit 1

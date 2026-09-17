@@ -125,6 +125,9 @@ else
   if [[ -z $want_ver ]]; then
     want_ver=$(fetch_remote_ver) || want_ver=
   fi
+  if [[ -z ${LANJUMP_ARCHIVE_URL:-} && -n $want_ver ]]; then
+    ARCHIVE_URL="https://github.com/jattchen/lanjump/archive/${want_ver}.tar.gz"
+  fi
   print '正在安装 lanjump …'
 fi
 print
@@ -295,7 +298,15 @@ EOF
 
 if [[ $mode == 升级 || ! -f $ROOT/lib/lanjump.zsh || ! -f $ROOT/bin/lanjump || ! -f $ROOT/src/lanjump-keys.c ]]; then
   fetched=$(mktemp -d)
-  curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$fetched"
+  if ! curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$fetched"; then
+    if [[ $mode != 升级 && -z ${LANJUMP_ARCHIVE_URL:-} && -n ${want_ver:-} && $ARCHIVE_URL != *'/archive/refs/heads/main.tar.gz' ]]; then
+      rm -rf "$fetched"/*
+      ARCHIVE_URL='https://github.com/jattchen/lanjump/archive/refs/heads/main.tar.gz'
+      curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$fetched"
+    else
+      exit 1
+    fi
+  fi
   ROOT="$fetched/lanjump-main"
   if [[ ! -f $ROOT/lib/lanjump.zsh ]]; then
     extracted=($fetched/*(/))
