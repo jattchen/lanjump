@@ -670,9 +670,12 @@ save_hosts() {
 # Scan persist: same protocol as upsert_host (#314). Reload under the
 # hosts lock, apply s_* onto that table, then write so a stale list
 # window cannot drop a concurrent upsert (#333). Merged rows also
-# refresh the LANJUMP SSH HostName/Port (#361).
+# refresh the LANJUMP SSH HostName/Port (#361). Mid-loop SSH failure
+# or save_hosts failure restores this pass's SSH writes (#385) —
+# rewrite the pre-scan block, or remove an id allocated this pass.
 persist_scan_hosts() {
-  local st=0 i n idx id
+  local st=0 i n idx id begin end pre_kind pre_user pre_hn pre_port
+  local -a rb_ids rb_kind rb_user rb_hn rb_port
   if [[ -z ${_LANJUMP_HOSTS_LOCKED:-} ]]; then
     _LANJUMP_HOSTS_LOCKED=1
     with_data_file_lock "$HOSTS_FILE" persist_scan_hosts
@@ -680,6 +683,16 @@ persist_scan_hosts() {
     unset _LANJUMP_HOSTS_LOCKED
     return $st
   fi
+  rollback_scan_ssh() {
+    local -i j
+    for (( j = 1; j <= ${#rb_ids}; j++ )); do
+      if [[ ${rb_kind[$j]} == restore ]]; then
+        upsert_ssh_config "${rb_ids[$j]}" "${rb_user[$j]}" "${rb_hn[$j]}" "${rb_port[$j]}" || true
+      else
+        remove_ssh_config "${rb_ids[$j]}" || true
+      fi
+    done
+  }
   load_hosts
   n=${#s_ip}
   for (( i = 1; i <= n; i++ )); do
@@ -697,15 +710,55 @@ persist_scan_hosts() {
         id=$(alloc_ssh_id "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}" "$idx") || id=""
       fi
       if [[ -n $id ]]; then
+        begin="# BEGIN LANJUMP ${id}"
+        end="# END LANJUMP ${id}"
+        pre_kind=remove
+        pre_user=""
+        pre_hn=""
+        pre_port=""
+        if [[ -f $SSH_CONFIG ]] && grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null; then
+          pre_hn=$(awk -v b="$begin" -v e="$end" '
+            $0 == b { p = 1; next }
+            $0 == e { p = 0 }
+            p && $1 == "HostName" { print $2; exit }
+          ' "$SSH_CONFIG")
+          if [[ -n $pre_hn ]]; then
+            pre_kind=restore
+            pre_user=$(awk -v b="$begin" -v e="$end" '
+              $0 == b { p = 1; next }
+              $0 == e { p = 0 }
+              p && $1 == "User" { print $2; exit }
+            ' "$SSH_CONFIG")
+            pre_port=$(awk -v b="$begin" -v e="$end" '
+              $0 == b { p = 1; next }
+              $0 == e { p = 0 }
+              p && $1 == "Port" { print $2; exit }
+            ' "$SSH_CONFIG")
+            [[ -z $pre_port ]] && pre_port=22
+          fi
+        fi
         if ! upsert_ssh_config "$id" "${h_user[$idx]}" "${h_hostname[$idx]:-${h_ip[$idx]}}" "${h_port[$idx]:-22}"; then
+          rollback_scan_ssh
+          unfunction rollback_scan_ssh
           load_hosts
           return 1
         fi
+        rb_ids+=("$id")
+        rb_kind+=("$pre_kind")
+        rb_user+=("$pre_user")
+        rb_hn+=("$pre_hn")
+        rb_port+=("$pre_port")
         h_ssh_id[$idx]=$id
       fi
     fi
   done
-  save_hosts
+  if ! save_hosts; then
+    rollback_scan_ssh
+    unfunction rollback_scan_ssh
+    load_hosts
+    return 1
+  fi
+  unfunction rollback_scan_ssh
 }
 
 find_saved() {
