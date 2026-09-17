@@ -41,26 +41,41 @@ read_local_ver() {
 }
 
 fetch_remote_ver() {
-  local json v
+  local json v epoch
   if [[ -n ${LANJUMP_REMOTE_SHA:-} ]]; then
     print -r -- "$LANJUMP_REMOTE_SHA"
     return 0
   fi
   json=$(curl -fsSL -A lanjump -H 'Accept: application/vnd.github+json' "$VERSION_API") || return 1
-  REMOTE_COMMIT_TIME=$(print -r -- "$json" | python3 -c 'import json,sys
+  epoch=$(print -r -- "$json" | python3 -c 'import json,sys
 from datetime import datetime
 j=json.load(sys.stdin)
 d=j["commit"]["committer"]["date"]
-print(int(datetime.fromisoformat(d.replace("Z","+00:00")).timestamp()))' 2>/dev/null) || REMOTE_COMMIT_TIME=
+print(int(datetime.fromisoformat(d.replace("Z","+00:00")).timestamp()))' 2>/dev/null) || epoch=
   if v=$(print -r -- "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])' 2>/dev/null); then
     print -r -- "$v"
+    [[ $epoch =~ ^[0-9]+$ ]] && print -r -- "$epoch"
     return 0
   fi
   if [[ $json =~ '"sha": "([0-9a-f]{40})"' ]]; then
     print -r -- "$match[1]"
+    [[ $epoch =~ ^[0-9]+$ ]] && print -r -- "$epoch"
     return 0
   fi
   return 1
+}
+
+# Command substitution cannot keep assignments from fetch_remote_ver.
+# First line is the SHA (want_ver); optional second line is commit epoch.
+take_remote_ver() {
+  local out rest
+  out=$(fetch_remote_ver) || return 1
+  want_ver=${out%%$'\n'*}
+  rest=${out#*$'\n'}
+  if [[ $rest != "$out" && $rest =~ ^[0-9]+$ ]]; then
+    REMOTE_COMMIT_TIME=$rest
+  fi
+  [[ -n $want_ver ]]
 }
 
 local_git_ver() {
@@ -75,7 +90,7 @@ write_picker_version_stamp() {
     return 0
   fi
   epoch=$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null) || epoch=${REMOTE_COMMIT_TIME:-}
-  [[ $epoch == [0-9]## ]] || return 0
+  [[ $epoch =~ ^[0-9]+$ ]] || return 0
   tmp=$(mktemp "${picker}.XXXXXX") || return 0
   first=$(head -n 1 "$picker")
   if [[ $first == '#!'* ]]; then
@@ -99,7 +114,7 @@ REMOTE_COMMIT_TIME=
 have_ver=$(read_local_ver) || have_ver=
 
 if [[ $mode == 升级 ]]; then
-  if want_ver=$(fetch_remote_ver); then
+  if take_remote_ver; then
     :
   else
     want_ver=
@@ -123,7 +138,7 @@ else
   want_ver=$(local_git_ver) || want_ver=
   # curl | zsh: $0 is /bin/zsh, so ROOT is not the repo and git rev-parse fails.
   if [[ -z $want_ver ]]; then
-    want_ver=$(fetch_remote_ver) || want_ver=
+    take_remote_ver || want_ver=
   fi
   if [[ -z ${LANJUMP_ARCHIVE_URL:-} && -n $want_ver ]]; then
     ARCHIVE_URL="https://github.com/jattchen/lanjump/archive/${want_ver}.tar.gz"

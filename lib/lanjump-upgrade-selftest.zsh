@@ -579,7 +579,33 @@ if [[ ! -f $app335/settings || $(<"$app335/settings") != NEW-SETTINGS ]]; then
   fail "#335 upgrade kept stale settings after a mid-copy write: $(<"$app335/settings" 2>/dev/null || print missing)"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335"
+# #338: piped/file:// tarball install has no git history in ROOT.
+# fetch_remote_ver must surface the commit epoch to the parent so the
+# picker gets `# lanjump-pick-version <epoch> <sha>`. Today that assignment
+# dies in the $(...) subshell and the stamp is skipped.
+home338=$(mktemp -d)
+mkdir -p "$home338/Desktop" "$home338/.ssh" "$home338/Library/Application Support"
+pkg338=$(mktemp -d)
+mkdir -p "$pkg338/lanjump-main"/{bin,lib,src}
+cp "$ROOT/bin/lanjump.command" "$pkg338/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$pkg338/lanjump-main/bin/"
+cp "$ROOT/lib/"* "$pkg338/lanjump-main/lib/"
+cp "$ROOT/src/lanjump-keys.c" "$pkg338/lanjump-main/src/"
+cp "$ROOT/install.zsh" "$pkg338/lanjump-main/install.zsh"
+tar338=$(mktemp)
+tar -czf "$tar338" -C "$pkg338" lanjump-main
+sha338=3383383383383383383383383383383383383383
+api338=$(mktemp)
+print -r -- '{"sha":"'"$sha338"'","commit":{"committer":{"date":"2026-09-17T00:00:00Z"}}}' >"$api338"
+HOME=$home338 LANJUMP_VERSION_API="file://${api338}" LANJUMP_ARCHIVE_URL="file://${tar338}" env -u LANJUMP_REMOTE_SHA /bin/zsh <"$ROOT/install.zsh" >/dev/null
+picker338="$home338/Library/Application Support/lanjump/lanjump-pick.zsh"
+if [[ ! -f $picker338 ]]; then
+  fail "#338 tarball install wrote no picker"
+elif ! grep -qxF "# lanjump-pick-version 1789603200 $sha338" "$picker338"; then
+  fail "#338 tarball install wrote no picker version stamp: $(head -n 3 "$picker338")"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home338" "$pkg338" "$tar338" "$api338"
 
 if (( fails )); then
   exit 1
