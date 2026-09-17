@@ -808,7 +808,8 @@ upsert_host() {
   local alias=$1 user=$2 hostname=$3 ip=$4 mac=$5 port=${6:-22}
   local idx old_id id st=0
   local begin end pre_user="" pre_hn="" pre_port=""
-  local -i ssh_existed=0
+  local old_user="" old_hn="" old_port=""
+  local -i ssh_existed=0 old_removed=0
   if [[ -z ${_LANJUMP_HOSTS_LOCKED:-} ]]; then
     _LANJUMP_HOSTS_LOCKED=1
     with_data_file_lock "$HOSTS_FILE" upsert_host "$alias" "$user" "$hostname" "$ip" "$mac" "$port"
@@ -846,10 +847,33 @@ upsert_host() {
     # Empty ssh_id computes old_id from the alias slug. Another row
     # may already own that live Host; keep it and write the new id (#399).
     if [[ -n $old_id && $old_id != "$id" ]] && ! ssh_id_taken "$old_id" "$idx"; then
+      # Snapshot the outgoing block so a later save_hosts failure can
+      # write it back (#413). #404 only covers the new $id.
+      begin="# BEGIN LANJUMP ${old_id}"
+      end="# END LANJUMP ${old_id}"
+      if [[ -f $SSH_CONFIG ]] && grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null; then
+        old_hn=$(awk -v b="$begin" -v e="$end" '
+          $0 == b { p = 1; next }
+          $0 == e { p = 0 }
+          p && $1 == "HostName" { print $2; exit }
+        ' "$SSH_CONFIG")
+        old_user=$(awk -v b="$begin" -v e="$end" '
+          $0 == b { p = 1; next }
+          $0 == e { p = 0 }
+          p && $1 == "User" { print $2; exit }
+        ' "$SSH_CONFIG")
+        old_port=$(awk -v b="$begin" -v e="$end" '
+          $0 == b { p = 1; next }
+          $0 == e { p = 0 }
+          p && $1 == "Port" { print $2; exit }
+        ' "$SSH_CONFIG")
+        [[ -z $old_port ]] && old_port=22
+      fi
       if ! remove_ssh_config "$old_id"; then
         load_hosts
         return 1
       fi
+      old_removed=1
     fi
     # Reconnect usually keeps this id. Snapshot the live block so a
     # later save_hosts failure can write HostName/User/Port back (#404)
@@ -890,6 +914,9 @@ upsert_host() {
       else
         remove_ssh_config "$id"
       fi
+    fi
+    if (( old_removed )) && [[ -n $old_id && -n $old_hn ]]; then
+      upsert_ssh_config "$old_id" "$old_user" "$old_hn" "$old_port" || true
     fi
     load_hosts
     return 1
