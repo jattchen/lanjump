@@ -593,6 +593,46 @@ EOF
   expect_contains ssh/forget-save-fail/keep-host 'Host lanjump-office' "$ssh_got"
   expect_contains ssh/forget-save-fail/keep-hn 'HostName office.local' "$ssh_got"
 
+  # #404: reconnect of a saved row keeps the same id. hosts write
+  # failure must not delete the live LANJUMP block; restore the
+  # pre-reconnect HostName. The hosts row stays (load_hosts).
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  read_ssh
+  expect_contains ssh/reconnect-save-fail/pre-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  expect_contains ssh/reconnect-save-fail/pre-hn 'HostName office.local' "$ssh_got"
+  functions -c save_hosts _ssh404_save
+  save_hosts() { return 1 }
+  if upsert_host office mac studio.local 10.0.0.99 'aa:bb:cc:dd:ee:01'; then
+    print -u2 "FAIL ssh/reconnect-save-fail upsert_host returned 0 after save_hosts failure"
+    (( fails++ ))
+  fi
+  functions -c _ssh404_save save_hosts
+  unfunction _ssh404_save
+  load_hosts
+  if [[ ${h_alias[1]:-} != office ]]; then
+    print -u2 "FAIL ssh/reconnect-save-fail dropped hosts row aliases=$(printf %q "${h_alias[*]}")"
+    (( fails++ ))
+  fi
+  local ssh404_disk
+  ssh404_disk=$(<"$HOSTS_FILE")
+  if [[ $ssh404_disk != *office.local* ]]; then
+    print -u2 "FAIL ssh/reconnect-save-fail hosts file lost office.local got=$(printf %q "$ssh404_disk")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/reconnect-save-fail/keep-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  expect_contains ssh/reconnect-save-fail/keep-host 'Host lanjump-office' "$ssh_got"
+  expect_contains ssh/reconnect-save-fail/keep-hn 'HostName office.local' "$ssh_got"
+  expect_absent ssh/reconnect-save-fail/new-hn 'HostName studio.local' "$ssh_got"
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  if [[ $resolved_hn != office.local ]]; then
+    print -u2 "FAIL ssh/reconnect-save-fail/hostname-wins want=office.local got=$(printf %q "$resolved_hn")"
+    (( fails++ ))
+  fi
+
   # #387: prompt_username abort must return to the list, not connect.
   rm -f "$tmpdir/ssh387_access" "$tmpdir/ssh387_out"
   local ssh387_notice=$notice

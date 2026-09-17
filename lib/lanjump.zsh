@@ -807,6 +807,8 @@ find_saved() {
 upsert_host() {
   local alias=$1 user=$2 hostname=$3 ip=$4 mac=$5 port=${6:-22}
   local idx old_id id st=0
+  local begin end pre_user="" pre_hn="" pre_port=""
+  local -i ssh_existed=0
   if [[ -z ${_LANJUMP_HOSTS_LOCKED:-} ]]; then
     _LANJUMP_HOSTS_LOCKED=1
     with_data_file_lock "$HOSTS_FILE" upsert_host "$alias" "$user" "$hostname" "$ip" "$mac" "$port"
@@ -849,6 +851,32 @@ upsert_host() {
         return 1
       fi
     fi
+    # Reconnect usually keeps this id. Snapshot the live block so a
+    # later save_hosts failure can write HostName/User/Port back (#404)
+    # instead of deleting a block that was not a first-write leftover.
+    begin="# BEGIN LANJUMP ${id}"
+    end="# END LANJUMP ${id}"
+    if [[ -f $SSH_CONFIG ]] && grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null; then
+      pre_hn=$(awk -v b="$begin" -v e="$end" '
+        $0 == b { p = 1; next }
+        $0 == e { p = 0 }
+        p && $1 == "HostName" { print $2; exit }
+      ' "$SSH_CONFIG")
+      if [[ -n $pre_hn ]]; then
+        ssh_existed=1
+        pre_user=$(awk -v b="$begin" -v e="$end" '
+          $0 == b { p = 1; next }
+          $0 == e { p = 0 }
+          p && $1 == "User" { print $2; exit }
+        ' "$SSH_CONFIG")
+        pre_port=$(awk -v b="$begin" -v e="$end" '
+          $0 == b { p = 1; next }
+          $0 == e { p = 0 }
+          p && $1 == "Port" { print $2; exit }
+        ' "$SSH_CONFIG")
+        [[ -z $pre_port ]] && pre_port=22
+      fi
+    fi
     if ! upsert_ssh_config "$id" "$user" "${hostname:-$ip}" "$port"; then
       load_hosts
       return 1
@@ -856,7 +884,13 @@ upsert_host() {
     h_ssh_id[$idx]=$id
   fi
   if ! save_hosts; then
-    [[ -n ${id:-} ]] && remove_ssh_config "$id"
+    if [[ -n ${id:-} ]]; then
+      if (( ssh_existed )) && [[ -n $pre_hn ]]; then
+        upsert_ssh_config "$id" "$pre_user" "$pre_hn" "$pre_port" || true
+      else
+        remove_ssh_config "$id"
+      fi
+    fi
     load_hosts
     return 1
   fi
