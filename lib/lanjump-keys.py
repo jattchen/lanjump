@@ -202,6 +202,25 @@ def _set_winsize(fd, packed):
         pass
 
 
+def _drain_master(fd):
+    """Forward remaining pty output after the child exits (#288)."""
+    if fd is None:
+        return
+    while True:
+        try:
+            data = os.read(fd, 512)
+        except OSError as exc:
+            if exc.errno == errno.EINTR:
+                continue
+            break
+        if not data:
+            break
+        try:
+            os.write(sys.stdout.fileno(), data)
+        except OSError:
+            break
+
+
 def main(argv):
     if len(argv) >= 2 and argv[1] == "--selftest":
         print("ok shift=%d" % (1 if _shift_down() else 0))
@@ -318,6 +337,7 @@ def main(argv):
                     break
     finally:
         restore()
+        _drain_master(master)
         if child_pid is not None:
             try:
                 _pid, status = os.waitpid(child_pid, 0)

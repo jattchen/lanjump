@@ -90,6 +90,29 @@ write_all(int fd, const void *buf, size_t n)
 	return 0;
 }
 
+/* After the child exits, unread slave output can still sit on master_fd.
+ * waitpid(WNOHANG)/POLLHUP must not drop it; read until 0/EIO (#288). */
+static int
+drain_master(int fd)
+{
+	unsigned char buf[512];
+
+	if (fd < 0)
+		return 0;
+	for (;;) {
+		ssize_t n = read(fd, buf, sizeof buf);
+		if (n < 0) {
+			if (errno == EINTR)
+				continue;
+			return (errno == EIO) ? 0 : -1;
+		}
+		if (n == 0)
+			return 0;
+		if (write_all(STDOUT_FILENO, buf, (size_t)n) < 0)
+			return -1;
+	}
+}
+
 static int
 flush_out(int fd, unsigned char *out, size_t *o)
 {
@@ -448,6 +471,7 @@ main(int argc, char **argv)
 			break;
 	}
 
+	(void)drain_master(master_fd);
 	if (child > 0) {
 		(void)waitpid(child, &status, 0);
 		child = -1;
