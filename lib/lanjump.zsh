@@ -1013,7 +1013,8 @@ run_timed() {
 }
 
 scan_bonjour() {
-  local tmp inst_file inst resolve_tmp line host port ip
+  local tmp inst_file inst resolve_tmp line host port ip cand pfx
+  local -a resolved_ips scan_prefixes
   tmp=$(mktemp)
   inst_file=$(mktemp)
   run_timed 2 "$tmp" dns-sd -B _ssh._tcp local.
@@ -1044,10 +1045,20 @@ scan_bonjour() {
     ip=""
     resolve_tmp=$(mktemp)
     run_timed 1 "$resolve_tmp" dns-sd -G v4 "$host"
-    ip=$(awk '/Add/ && /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {
+    resolved_ips=("${(@f)$(awk '/Add/ && /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {
       for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $i
-    }' "$resolve_tmp" | tail -1)
+    }' "$resolve_tmp")}")
     rm -f "$resolve_tmp"
+    scan_prefixes=("${(@f)$(scan_lan_prefixes "$MYIP" "$MASK")}")
+    for cand in "${resolved_ips[@]}"; do
+      for pfx in "${scan_prefixes[@]}"; do
+        if [[ -n $pfx && $cand == ${pfx}.* ]]; then
+          ip=$cand
+          break 2
+        fi
+      done
+    done
+    [[ -n $ip ]] || ip=${resolved_ips[1]:-}
     is_self_ip "$ip" && continue
     print -r -- "${inst}"$'\t'"${host}"$'\t'"${ip}"$'\t'"$(get_mac "$ip")"$'\t'"${port:-22}"
   done <"$inst_file"

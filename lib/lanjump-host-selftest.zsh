@@ -544,6 +544,42 @@ host_selftest() {
   done
   expect host/bonjour-port-to-22/item 22 "$item_port"
 
+  # #362: multiple A records — prefer the scan-subnet address, not docker0 last.
+  local saved_myip=$MYIP saved_mask=$MASK
+  _lj_save_run_timed=$functions[run_timed]
+  _lj_save_get_mac=$functions[get_mac]
+  _lj_save_is_self=$functions[is_self_ip]
+  MYIP=192.168.1.10
+  MASK=255.255.255.0
+  run_timed() {
+    local out=$2
+    shift 2
+    case "$*" in
+      *'dns-sd -B'*)
+        print -r -- $'Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n 9:00:00.000  Add        3  1 local.               _ssh._tcp.           pi' >"$out"
+        ;;
+      *'dns-sd -L'*)
+        print -r -- ' pi._ssh._tcp.local. can be reached at pi.local.:22' >"$out"
+        ;;
+      *'dns-sd -G'*)
+        print -r -- $'Timestamp     A/R  if Hostname      Address         TTL\n 9:00:01.000  Add   1 pi.local.     192.168.1.50    120\n 9:00:01.001  Add   2 pi.local.     172.17.0.1      120' >"$out"
+        ;;
+      *)
+        : >"$out"
+        ;;
+    esac
+  }
+  get_mac() { print -r -- 'aa:bb:cc:dd:ee:50'; }
+  is_self_ip() { return 1; }
+  bonjour_line=$(scan_bonjour)
+  functions[run_timed]=$_lj_save_run_timed
+  functions[get_mac]=$_lj_save_get_mac
+  functions[is_self_ip]=$_lj_save_is_self
+  MYIP=$saved_myip
+  MASK=$saved_mask
+  bf=("${(@s:	:)bonjour_line}")
+  expect host/bonjour-prefer-scan-subnet/ip 192.168.1.50 "${bf[3]:-}"
+
   # #186: 「已保存 · 上次」 follows LAST_FILE (read_last), not max h_last.
   local saved_last_file=$LAST_FILE
   local last_tmp office_status studio_status
