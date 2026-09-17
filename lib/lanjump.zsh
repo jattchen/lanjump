@@ -691,13 +691,17 @@ persist_scan_hosts() {
       [[ -n ${s_port[$i]} ]] && h_port[$idx]=${s_port[$i]}
       id=${h_ssh_id[$idx]:-}
       if [[ -z $id ]]; then
-        id=$(ssh_id_from_alias "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}") || id=""
+        # Same collision suffix as connect (#313/#377). Old-format rows
+        # have empty ssh_id; ssh_id_from_alias alone maps Office/office
+        # onto one Host lanjump-office.
+        id=$(alloc_ssh_id "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}" "$idx") || id=""
       fi
       if [[ -n $id ]]; then
         if ! upsert_ssh_config "$id" "${h_user[$idx]}" "${h_hostname[$idx]:-${h_ip[$idx]}}" "${h_port[$idx]:-22}"; then
           load_hosts
           return 1
         fi
+        h_ssh_id[$idx]=$id
       fi
     fi
   done
