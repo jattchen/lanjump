@@ -271,6 +271,14 @@ if [[ $mode == 升级 || ! -f $ROOT/lib/lanjump.zsh || ! -f $ROOT/bin/lanjump ||
   fi
 fi
 
+# SIGKILL/power-loss after APP→APP.old and before APP.new→APP leaves
+# user data only in APP.old. Restore that copy before mkdir -p / rm -rf
+# so the next run cannot wipe the only remaining hosts/settings/pins.
+if [[ -d $APP.old && ! -f $APP/lanjump.zsh ]]; then
+  rm -rf "$APP"
+  mv -f "$APP.old" "$APP"
+fi
+
 mkdir -p "$APP" "$BIN_DIR" "$HOME/.ssh" "$HOME/Desktop"
 chmod 700 "$HOME/.ssh"
 save_self_installer
