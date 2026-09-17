@@ -315,9 +315,14 @@ if [[ $mode == 升级 || ! -f $ROOT/lib/lanjump.zsh || ! -f $ROOT/bin/lanjump ||
   fetched=$(mktemp -d)
   if ! curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$fetched"; then
     if [[ $mode != 升级 && -z ${LANJUMP_ARCHIVE_URL:-} && -n ${want_ver:-} && $ARCHIVE_URL != *'/archive/refs/heads/main.tar.gz' ]]; then
-      rm -rf "$fetched"/*
+      # Empty dir: "$fetched"/* NOMATCH-aborts under set -e before fallback.
+      rm -rf "$fetched"
+      mkdir -p "$fetched"
       ARCHIVE_URL='https://github.com/jattchen/lanjump/archive/refs/heads/main.tar.gz'
       curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$fetched"
+      # Installed heads/main, not the unused API sha. Do not stamp a lie.
+      want_ver=
+      REMOTE_COMMIT_TIME=
     else
       exit 1
     fi
