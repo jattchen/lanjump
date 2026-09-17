@@ -242,6 +242,46 @@ EOF
     (( fails++ ))
   fi
 
+  # #340: complete-block reconnect must also beat a preceding Host *.
+  # In-place rewrite / END{emit()} would keep the LANJUMP Host at the
+  # end; ssh -G would still show global/2222 after save.
+  cat >"$SSH_CONFIG" <<'EOF'
+Host *
+  User global
+  Port 2222
+# BEGIN LANJUMP lanjump-office
+Host lanjump-office
+  HostName 10.0.0.8
+  Port 2200
+  User old
+  IdentityFile /tmp/id_ed25519_lanjump
+  IdentitiesOnly yes
+# END LANJUMP lanjump-office
+EOF
+  upsert_ssh_config lanjump-office mac 10.0.0.8 2200
+  read_ssh
+  expect_contains ssh/host-star-complete/keep-star 'Host *' "$ssh_got"
+  expect_contains ssh/host-star-complete/keep-global 'User global' "$ssh_got"
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  resolved_user=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="user"{print $2; exit}')
+  resolved_port=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="port"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.8 ]]; then
+    print -u2 "FAIL ssh/host-star-complete/hostname want=10.0.0.8 got=$(printf %q "$resolved_hn")"
+    (( fails++ ))
+  fi
+  if [[ $resolved_user != mac ]]; then
+    print -u2 "FAIL ssh/host-star-complete/user want=mac got=$(printf %q "$resolved_user")"
+    (( fails++ ))
+  fi
+  if [[ $resolved_port != 2200 ]]; then
+    print -u2 "FAIL ssh/host-star-complete/port want=2200 got=$(printf %q "$resolved_port")"
+    (( fails++ ))
+  fi
+  if [[ $ssh_got != $'# BEGIN LANJUMP lanjump-office'*'Host *'* ]]; then
+    print -u2 "FAIL ssh/host-star-complete/prepend LANJUMP must precede Host * got=$(printf %q "$ssh_got")"
+    (( fails++ ))
+  fi
+
   # Happy path: a complete block is still removed; later Host stays.
   cat >"$SSH_CONFIG" <<'EOF'
 # BEGIN LANJUMP lanjump-office
