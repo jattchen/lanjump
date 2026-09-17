@@ -551,6 +551,32 @@ EOF
   expect_contains ssh/forget-ssh-fail/keep-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
   expect_contains ssh/forget-ssh-fail/keep-hn 'HostName office.local' "$ssh_got"
 
+  # #360: hosts row exists but the LANJUMP block was hand-deleted (or
+  # .ssh restored). Reconnect same MAC with a new alias/IP must succeed
+  # and write the new block — missing old block is not a remove failure.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  : >"$SSH_CONFIG"
+  if ! upsert_host work mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:01'; then
+    print -u2 "FAIL ssh/missing-block-upsert upsert_host returned 1 after old block was gone"
+    (( fails++ ))
+  fi
+  load_hosts
+  if [[ ${h_alias[1]:-} != work ]]; then
+    print -u2 "FAIL ssh/missing-block-upsert/alias want=work got=$(printf %q "${h_alias[1]:-}")"
+    (( fails++ ))
+  fi
+  if [[ ${h_ip[1]:-} != 10.0.0.9 ]]; then
+    print -u2 "FAIL ssh/missing-block-upsert/ip want=10.0.0.9 got=$(printf %q "${h_ip[1]:-}")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/missing-block-upsert/new-begin '# BEGIN LANJUMP lanjump-work' "$ssh_got"
+  expect_contains ssh/missing-block-upsert/new-hn 'HostName studio.local' "$ssh_got"
+  expect_absent ssh/missing-block-upsert/old-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+
   # #314: two upsert_ssh_config writers read then replace the whole SSH file.
   # A reads, yields, then writes; B writes in the gap. Both Host blocks must remain.
   local ssh314_home ssh314_fn

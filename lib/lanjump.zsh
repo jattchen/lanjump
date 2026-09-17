@@ -848,8 +848,9 @@ forget_saved() {
 
 strip_ssh_block() {
   local begin=$1 end=$2
-  [[ -f $SSH_CONFIG ]] || return
-  grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null || return
+  # Missing dest / missing BEGIN: already gone (#360). Damaged pair still fails.
+  [[ -f $SSH_CONFIG ]] || return 0
+  grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null || return 0
   # Missing END must not delete through EOF.
   awk -v b="$begin" -v e="$end" '
     $0 == b {
