@@ -1136,22 +1136,35 @@ add_discovered() {
 mark_online() {
   local ip=$1 mac=$2 hostname=$3
   local i n=${#items_kind}
+  local matched
   for (( i = 1; i <= n; i++ )); do
     [[ ${items_kind[$i]} == host ]] || continue
-    if [[ -n $ip && ${items_ip[$i]} == "$ip" ]] || \
-       [[ -n $mac && -n ${items_mac[$i]} && ${items_mac[$i]} == "$mac" ]] || \
-       [[ -n $hostname && -n ${items_hostname[$i]} && ${items_hostname[$i]} == "$hostname" ]]; then
-      if [[ ${items_status[$i]} == 已保存* ]]; then
-        if [[ ${items_status[$i]} == *上次* ]]; then
-          items_status[$i]="在线 · 上次"
-        else
-          items_status[$i]="在线"
-        fi
+    # Same merge keys as find_saved: a row that already has a MAC is
+    # only the same machine on MAC match. Hostname/IP-only must not
+    # rewrite its identity (#332 / #304 / #211).
+    matched=0
+    if [[ -n $mac && -n ${items_mac[$i]} && ${items_mac[$i]} == "$mac" ]]; then
+      matched=1
+    elif [[ -n ${items_mac[$i]} ]]; then
+      matched=0
+    elif [[ -n $hostname && -n ${items_hostname[$i]} && ${items_hostname[$i]} == "$hostname" ]]; then
+      matched=1
+    elif [[ -n $ip && ${items_ip[$i]} == "$ip" ]]; then
+      if [[ -z ${items_hostname[$i]} || -z $hostname || ${items_hostname[$i]} == "$hostname" ]]; then
+        matched=1
       fi
-      [[ -n $hostname ]] && items_hostname[$i]=$hostname
-      [[ -n $ip ]] && items_ip[$i]=$ip
-      [[ -n $mac ]] && items_mac[$i]=$mac
     fi
+    (( matched )) || continue
+    if [[ ${items_status[$i]} == 已保存* ]]; then
+      if [[ ${items_status[$i]} == *上次* ]]; then
+        items_status[$i]="在线 · 上次"
+      else
+        items_status[$i]="在线"
+      fi
+    fi
+    [[ -n $hostname ]] && items_hostname[$i]=$hostname
+    [[ -n $ip ]] && items_ip[$i]=$ip
+    [[ -n $mac ]] && items_mac[$i]=$mac
   done
 }
 
