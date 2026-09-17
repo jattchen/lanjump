@@ -400,6 +400,30 @@ host_selftest() {
   expect host/scan/keyscan-merge-other-ip 203.0.113.12 "${s_ip[2]}"
   functions[ssh_fp]=$_lj_save_ssh_fp
 
+  # #425: Bonjour off-LAN first, port22 current-LAN later, same hostkey —
+  # keep the scan-LAN address (not the earlier USB/Thunderbolt 10.x).
+  local saved_myip=$MYIP saved_mask=$MASK
+  _lj_save_ssh_fp=$functions[ssh_fp]
+  MYIP=198.51.100.1
+  MASK=255.255.255.0
+  ssh_fp() {
+    case $1 in
+      10.55.1.8|198.51.100.8) print -r -- SHA256:dual-nic ;;
+    esac
+  }
+  s_alias=(office 198.51.100.8)
+  s_host=(office.local '')
+  s_ip=(10.55.1.8 198.51.100.8)
+  s_mac=('aa:bb:cc:dd:ee:08' 'aa:bb:cc:dd:ee:88')
+  s_port=(22 22)
+  merge_seen_by_hostkey
+  expect host/scan/hostkey-prefer-scan-lan/count 1 "${#s_ip}"
+  expect host/scan/hostkey-prefer-scan-lan/ip 198.51.100.8 "${s_ip[1]}"
+  expect host/scan/hostkey-prefer-scan-lan/alias office "${s_alias[1]}"
+  functions[ssh_fp]=$_lj_save_ssh_fp
+  MYIP=$saved_myip
+  MASK=$saved_mask
+
   # #280: advertised _ssh._tcp port must stay on the discovery row
   # and later SSH (not silently become 22).
   local _lj_save_run_timed=$functions[run_timed]

@@ -1460,11 +1460,13 @@ is_numeric_alias() {
 }
 
 merge_seen_by_hostkey() {
-  local i j n=${#s_ip}
-  local -a fp
+  local i j n=${#s_ip} pfx
+  local -a fp scan_prefixes
   local known="$HOME/.ssh/known_hosts"
+  local -i later_on_lan earlier_on_lan
   (( n )) || return
   fill_seen_hostkeys
+  scan_prefixes=("${(@f)$(scan_lan_prefixes "$MYIP" "$MASK")}")
   for (( i = 1; i <= n; i++ )); do
     [[ -n ${s_ip[$i]} && -n ${fp[$i]} ]] || continue
     for (( j = i + 1; j <= n; j++ )); do
@@ -1479,7 +1481,14 @@ merge_seen_by_hostkey() {
       if [[ ${s_port[$i]:-22} == 22 && ${s_port[$j]:-22} != 22 ]]; then
         s_port[$i]=${s_port[$j]}
       fi
-      if [[ -f $known ]] && grep -qF "${s_ip[$j]} " "$known" && ! grep -qF "${s_ip[$i]} " "$known"; then
+      later_on_lan=0
+      earlier_on_lan=0
+      for pfx in "${scan_prefixes[@]}"; do
+        [[ -n $pfx && ${s_ip[$j]} == ${pfx}.* ]] && later_on_lan=1
+        [[ -n $pfx && ${s_ip[$i]} == ${pfx}.* ]] && earlier_on_lan=1
+      done
+      if (( later_on_lan && ! earlier_on_lan )) || \
+         { [[ -f $known ]] && grep -qF "${s_ip[$j]} " "$known" && ! grep -qF "${s_ip[$i]} " "$known"; }; then
         s_ip[$i]=${s_ip[$j]}
         s_mac[$i]=${s_mac[$j]}
         [[ -n ${s_host[$j]} ]] && s_host[$i]=${s_host[$j]}
