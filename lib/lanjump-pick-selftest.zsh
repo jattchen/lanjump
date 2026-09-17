@@ -6033,6 +6033,69 @@ PY
   HOME=$last268_saved_home
   rm -rf "$last268_home"
 
+  # #276: two add_pin_record writers load then replace the whole pin file.
+  # A loads, yields, then saves; B writes in the gap. Both names must remain.
+  local pin276_home pin276_saved_home pin276_fn
+  local -a pin276_names
+  local -i pin276_a=0 pin276_b=0
+  pin276_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-276.XXXXXX") || return 1
+  pin276_saved_home=$HOME
+  mkdir -p "$pin276_home/Library/Application Support/lanjump"
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$pin276_home")"
+    print -r -- 'typeset -a pinned_names'
+    print -r -- 'typeset -A pinned_cwd pinned_grok'
+    for pin276_fn in lanjump_data_dir pinned_sessions_file sanitize_pin_field \
+      pin_record_exists load_pinned_sessions replace_file_atomic \
+      save_pinned_sessions add_pin_record with_data_file_lock; do
+      (( ${+functions[$pin276_fn]} )) && functions "$pin276_fn"
+    done
+  } >"$pin276_home/child-a.zsh"
+  {
+    print -r -- 'functions -c load_pinned_sessions _pin276_load'
+    print -r -- 'load_pinned_sessions() {'
+    print -r -- '  _pin276_load "$@"'
+    print -r -- '  print -r -- loaded >"$HOME/loaded"'
+    print -r -- '  sleep 0.35'
+    print -r -- '}'
+    print -r -- 'add_pin_record pin-a /tmp/a'
+  } >>"$pin276_home/child-a.zsh"
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$pin276_home")"
+    print -r -- 'typeset -a pinned_names'
+    print -r -- 'typeset -A pinned_cwd pinned_grok'
+    for pin276_fn in lanjump_data_dir pinned_sessions_file sanitize_pin_field \
+      pin_record_exists load_pinned_sessions replace_file_atomic \
+      save_pinned_sessions add_pin_record with_data_file_lock; do
+      (( ${+functions[$pin276_fn]} )) && functions "$pin276_fn"
+    done
+    print -r -- 'while [[ ! -f $HOME/loaded ]]; do'
+    print -r -- '  sleep 0.01'
+    print -r -- 'done'
+    print -r -- 'add_pin_record pin-b /tmp/b'
+  } >"$pin276_home/child-b.zsh"
+  /bin/zsh "$pin276_home/child-a.zsh" &
+  pin276_a=$!
+  /bin/zsh "$pin276_home/child-b.zsh" &
+  pin276_b=$!
+  wait $pin276_a
+  wait $pin276_b
+  HOME=$pin276_home
+  load_pinned_sessions
+  pin276_names=("${pinned_names[@]}")
+  HOME=$pin276_saved_home
+  if ! (( ${pin276_names[(Ie)pin-a]} && ${pin276_names[(Ie)pin-b]} )); then
+    print -u2 "FAIL pin/concurrent-write lost an update names=$(printf %q "${pin276_names[*]}")"
+    (( fails++ ))
+  fi
+  rm -rf "$pin276_home"
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1
