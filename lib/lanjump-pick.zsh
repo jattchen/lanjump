@@ -1598,7 +1598,7 @@ pin_named_session() {
   ensure_pinnable_session_name "$name" || return 1
   name=$REPLY
   cwd=$(resolve_session_cwd "$name")
-  add_pin_record "$name" "${cwd:-$PWD}" ""
+  add_pin_record "$name" "${cwd:-$PWD}" "" || return
   tmux_set_pinned "$name" 1
   REPLY=$name
   print -r -- "$name"
@@ -4357,7 +4357,7 @@ prompt_new_commit_pin() {
   ensure_pinnable_session_name "$name" || return 1
   name=$REPLY
   cwd=$(prompt_new_pin_cwd "$name")
-  add_pin_record "$name" "${cwd:-}" ""
+  add_pin_record "$name" "${cwd:-}" "" || return
   tmux_set_pinned "$name" 1
   REPLY=$name
 }
@@ -4404,7 +4404,12 @@ prompt_new() {
     load_session_snapshot
     print "session「${name}」已存在，直接进入。"
     if (( pin )); then
-      prompt_new_commit_pin "$name"
+      prompt_new_commit_pin "$name" || {
+        setup_tty
+        load_items
+        draw
+        return
+      }
       name=$REPLY
     fi
     attach_named_session "$name" 1 $want_new

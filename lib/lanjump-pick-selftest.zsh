@@ -6541,6 +6541,57 @@ EOF
   HOME=$pin356_saved_home
   rm -rf "$pin356_home"
 
+  # #395: n / --pin-session pin write failure must fail and not mark tmux pinned.
+  local pin395_home pin395_saved_home
+  local -i pin395_has_tmux=$HAS_TMUX pin395_tmux_set=0 pin395_st=0
+  pin395_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-395.XXXXXX") || return 1
+  pin395_saved_home=$HOME
+  HOME=$pin395_home
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  functions -c add_pin_record _pin395_add
+  functions -c tmux_set_pinned _pin395_tmux_set
+  functions -c tmuxx _pin395_tmuxx
+  add_pin_record() { return 1 }
+  tmux_set_pinned() { pin395_tmux_set=1 }
+  tmuxx() { return 0 }
+  HAS_TMUX=1
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+
+  pin395_st=0
+  pin395_tmux_set=0
+  prompt_new_commit_pin keep || pin395_st=$?
+  if (( pin395_st == 0 )); then
+    print -u2 "FAIL pin/new-write-fail commit reported success"
+    (( fails++ ))
+  fi
+  if (( pin395_tmux_set )); then
+    print -u2 "FAIL pin/new-write-fail commit still set tmux pinned"
+    (( fails++ ))
+  fi
+
+  pin395_st=0
+  pin395_tmux_set=0
+  pin_named_session keep >/dev/null || pin395_st=$?
+  if (( pin395_st == 0 )); then
+    print -u2 "FAIL pin/cli-write-fail reported success"
+    (( fails++ ))
+  fi
+  if (( pin395_tmux_set )); then
+    print -u2 "FAIL pin/cli-write-fail still set tmux pinned"
+    (( fails++ ))
+  fi
+
+  functions -c _pin395_add add_pin_record
+  functions -c _pin395_tmux_set tmux_set_pinned
+  functions -c _pin395_tmuxx tmuxx
+  unset -f _pin395_add _pin395_tmux_set _pin395_tmuxx
+  HAS_TMUX=$pin395_has_tmux
+  HOME=$pin395_saved_home
+  rm -rf "$pin395_home"
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1
