@@ -1731,6 +1731,16 @@ rename_snap_record() {
 
 forget_killed_session() {
   local name=$1 st=0
+  # Pin then snapshot, matching upgrade (#386). Nested remove_pin_record
+  # must not take pin after this path already holds snapshot (#405).
+  if [[ -z ${_LANJUMP_PIN_LOCKED:-} ]]; then
+    pinned_sessions_file
+    _LANJUMP_PIN_LOCKED=1
+    with_data_file_lock "$REPLY" forget_killed_session "$name"
+    st=$?
+    unset _LANJUMP_PIN_LOCKED
+    return $st
+  fi
   if [[ -z ${_LANJUMP_SNAP_LOCKED:-} ]]; then
     session_snapshot_file
     _LANJUMP_SNAP_LOCKED=1
