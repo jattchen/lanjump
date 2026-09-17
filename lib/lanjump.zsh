@@ -867,6 +867,8 @@ forget_saved() {
   local n=${#h_alias}
   (( idx >= 1 && idx <= n )) || return
   local id="" mac hostname ip st=0
+  local begin end pre_user="" pre_hn="" pre_port=""
+  local -i ssh_removed=0
   local -a na nu nh ni nm np ns nl
   local i
   mac=${h_mac[$idx]}
@@ -908,11 +910,40 @@ forget_saved() {
     h_ssh_id=("${ns[@]}")
     h_last=("${nl[@]}")
   fi
-  if [[ -n $id ]] && ! remove_ssh_config "$id"; then
-    load_hosts
-    return 1
+  # Another row may still own this Host (#399). Only strip what this
+  # forget removed; snapshot User/HostName/Port so save_hosts failure
+  # can write the block back (#396).
+  if [[ -n $id ]] && ! ssh_id_taken "$id"; then
+    begin="# BEGIN LANJUMP ${id}"
+    end="# END LANJUMP ${id}"
+    if [[ -f $SSH_CONFIG ]] && grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null; then
+      pre_hn=$(awk -v b="$begin" -v e="$end" '
+        $0 == b { p = 1; next }
+        $0 == e { p = 0 }
+        p && $1 == "HostName" { print $2; exit }
+      ' "$SSH_CONFIG")
+      pre_user=$(awk -v b="$begin" -v e="$end" '
+        $0 == b { p = 1; next }
+        $0 == e { p = 0 }
+        p && $1 == "User" { print $2; exit }
+      ' "$SSH_CONFIG")
+      pre_port=$(awk -v b="$begin" -v e="$end" '
+        $0 == b { p = 1; next }
+        $0 == e { p = 0 }
+        p && $1 == "Port" { print $2; exit }
+      ' "$SSH_CONFIG")
+      [[ -z $pre_port ]] && pre_port=22
+    fi
+    if ! remove_ssh_config "$id"; then
+      load_hosts
+      return 1
+    fi
+    ssh_removed=1
   fi
   if ! save_hosts; then
+    if (( ssh_removed )) && [[ -n $id && -n $pre_hn ]]; then
+      upsert_ssh_config "$id" "$pre_user" "$pre_hn" "$pre_port" || true
+    fi
     load_hosts
     return 1
   fi
