@@ -379,6 +379,14 @@ if ! mv "$stage" "$APP"; then
   mv -f "$old" "$APP"
   exit 1
 fi
+# #334: a concurrent mkdir -p $APP between the two mvs makes BSD mv nest
+# APP.new as $APP/lanjump.new/. Do not discard APP.old unless the live
+# tree landed at the app root.
+if [[ ! -f $APP/lanjump.zsh ]]; then
+  rm -rf "$APP"
+  mv -f "$old" "$APP"
+  exit 1
+fi
 stage=
 rm -rf "$old"
 write_picker_version_stamp

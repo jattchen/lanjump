@@ -486,7 +486,54 @@ if [[ ! -f $app306/session-snapshot || $(<"$app306/session-snapshot") != KEEP-SN
   fail "#306 reinstall wiped snapshot after interrupted commit"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306"
+# #334: after APP→APP.old, a concurrent mkdir -p $APP (snapshot tick /
+# replace_file_atomic) makes BSD mv nest APP.new as $APP/lanjump.new/.
+# The switch must not delete APP.old unless $APP/lanjump.zsh is at the
+# app root; otherwise roll back. Live keepers must survive either way.
+home334=$(mktemp -d)
+mkdir -p "$home334/Desktop" "$home334/.ssh" "$home334/Library/Application Support"
+HOME=$home334 /bin/zsh "$ROOT/install.zsh" >/dev/null
+app334="$home334/Library/Application Support/lanjump"
+print -r -- 'KEEP-HOSTS' >"$app334/hosts"
+print -r -- 'KEEP-SETTINGS' >"$app334/settings"
+print -r -- 'KEEP-PINS' >"$app334/pinned-sessions"
+mvwrap334=$(mktemp -d)
+cat >"$mvwrap334/mv" <<'EOF'
+#!/bin/zsh
+src= dest=
+for a in "$@"; do
+  [[ $a == -* ]] && continue
+  src=$dest
+  dest=$a
+done
+# Recreate empty APP after the first rename, then let the second mv run.
+if [[ -n $src && -n $dest && -d $src && ${src:t} == lanjump && ${dest:t} == lanjump.old ]]; then
+  /bin/mv "$@"
+  st=$?
+  mkdir -p "$src"
+  exit $st
+fi
+exec /bin/mv "$@"
+EOF
+chmod 755 "$mvwrap334/mv"
+HOME=$home334 PATH="$mvwrap334:$PATH" /bin/zsh "$ROOT/install.zsh" >/dev/null 2>&1 || true
+if [[ ! -f $app334/lanjump.zsh ]]; then
+  fail "#334 switch left lanjump.zsh off the app root (nested or wiped)"
+fi
+if [[ -d $app334/lanjump.new ]]; then
+  fail "#334 second mv nested APP.new under live APP"
+fi
+if [[ ! -f $app334/hosts || $(<"$app334/hosts") != KEEP-HOSTS ]]; then
+  fail "#334 mkdir-during-switch dropped hosts"
+fi
+if [[ ! -f $app334/settings || $(<"$app334/settings") != KEEP-SETTINGS ]]; then
+  fail "#334 mkdir-during-switch dropped settings"
+fi
+if [[ ! -f $app334/pinned-sessions || $(<"$app334/pinned-sessions") != KEEP-PINS ]]; then
+  fail "#334 mkdir-during-switch dropped pins"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334"
 
 if (( fails )); then
   exit 1
