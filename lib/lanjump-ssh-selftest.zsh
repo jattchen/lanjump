@@ -278,6 +278,57 @@ EOF
   expect_contains ssh/rename-id/new-begin '# BEGIN LANJUMP lanjump-work' "$ssh_got"
   expect_contains ssh/rename-id/new-hn 'HostName office.local' "$ssh_got"
 
+  # #336: another window renamed the alias (new ssh id on disk). Forget
+  # with the stale in-memory index/id must still drop the current block.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  if [[ ${h_alias[1]} != office ]]; then
+    print -u2 "FAIL ssh/forget-renamed/memory-office want=office got=$(printf %q "${h_alias[1]}")"
+    (( fails++ ))
+  fi
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$tmpdir")"
+    print -r -- "HOSTS_FILE=$(printf %q "$HOSTS_FILE")"
+    print -r -- "SSH_CONFIG=$(printf %q "$SSH_CONFIG")"
+    print -r -- "KEY=$(printf %q "$KEY")"
+    print -r -- 'typeset -a h_alias h_user h_hostname h_ip h_mac h_port h_ssh_id h_last'
+    local ssh336_fn
+    for ssh336_fn in ssh_id_tag ssh_id_from_alias ssh_id_taken alloc_ssh_id \
+      load_hosts replace_file_atomic save_hosts find_saved upsert_host \
+      strip_ssh_block remove_ssh_config replace_ssh_config upsert_ssh_config \
+      with_data_file_lock; do
+      (( ${+functions[$ssh336_fn]} )) && functions "$ssh336_fn"
+    done
+    print -r -- "upsert_host work mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'"
+  } >"$tmpdir/child-336.zsh"
+  /bin/zsh "$tmpdir/child-336.zsh"
+  if [[ ${h_alias[1]} != office ]]; then
+    print -u2 "FAIL ssh/forget-renamed/stale-memory want=office got=$(printf %q "${h_alias[1]}")"
+    (( fails++ ))
+  fi
+  if [[ ${h_ssh_id[1]} != lanjump-office ]]; then
+    print -u2 "FAIL ssh/forget-renamed/stale-id want=lanjump-office got=$(printf %q "${h_ssh_id[1]}")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/forget-renamed/disk-new-begin '# BEGIN LANJUMP lanjump-work' "$ssh_got"
+  expect_absent ssh/forget-renamed/disk-old-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  forget_saved 1
+  load_hosts
+  if (( ${#h_alias} )); then
+    print -u2 "FAIL ssh/forget-renamed leftover hosts aliases=$(printf %q "${h_alias[*]}")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_absent ssh/forget-renamed/leftover-begin '# BEGIN LANJUMP lanjump-work' "$ssh_got"
+  expect_absent ssh/forget-renamed/leftover-end '# END LANJUMP lanjump-work' "$ssh_got"
+  expect_absent ssh/forget-renamed/leftover-host 'Host lanjump-work' "$ssh_got"
+
   # #314: two upsert_ssh_config writers read then replace the whole SSH file.
   # A reads, yields, then writes; B writes in the gap. Both Host blocks must remain.
   local ssh314_home ssh314_fn
