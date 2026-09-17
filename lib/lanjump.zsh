@@ -950,7 +950,8 @@ build_items() {
 }
 
 add_discovered() {
-  local alias=$1 hostname=$2 ip=$3 mac=$4 port=${5:-22}
+  # $5 empty/omitted: unspecified. A Bonjour-announced 22 must write (#312).
+  local alias=$1 hostname=$2 ip=$3 mac=$4 port=${5-}
   local idx
   is_self_ip "$ip" && return
   idx=$(find_saved "$mac" "$hostname" "$ip")
@@ -958,18 +959,18 @@ add_discovered() {
     [[ -n $hostname ]] && h_hostname[$idx]=$hostname
     [[ -n $ip ]] && h_ip[$idx]=$ip
     [[ -n $mac ]] && h_mac[$idx]=$mac
-    [[ -n $port && $port != 22 ]] && h_port[$idx]=$port
+    [[ -n $port ]] && h_port[$idx]=$port
     return
   fi
   local i n=${#items_kind}
   for (( i = 1; i <= n; i++ )); do
     if [[ ${items_kind[$i]} == host ]]; then
       if [[ -n $ip && ${items_ip[$i]} == "$ip" ]]; then
-        [[ -n $port && $port != 22 ]] && items_port[$i]=$port
+        [[ -n $port ]] && items_port[$i]=$port
         return
       fi
       if [[ -n $mac && -n ${items_mac[$i]} && ${items_mac[$i]} == "$mac" ]]; then
-        [[ -n $port && $port != 22 ]] && items_port[$i]=$port
+        [[ -n $port ]] && items_port[$i]=$port
         return
       fi
     fi
@@ -1020,7 +1021,8 @@ mark_online() {
 }
 
 record_seen() {
-  local alias=$1 hostname=$2 ip=$3 mac=$4 port=${5:-22}
+  # $5 empty/omitted: unspecified. A Bonjour-announced 22 must write (#312).
+  local alias=$1 hostname=$2 ip=$3 mac=$4 port=${5-}
   local idx
   is_self_ip "$ip" && return
   idx=$(find_saved "$mac" "$hostname" "$ip")
@@ -1028,7 +1030,7 @@ record_seen() {
     [[ -n $hostname ]] && h_hostname[$idx]=$hostname
     [[ -n $ip ]] && h_ip[$idx]=$ip
     [[ -n $mac ]] && h_mac[$idx]=$mac
-    [[ -n $port && $port != 22 ]] && h_port[$idx]=$port
+    [[ -n $port ]] && h_port[$idx]=$port
   fi
   local i n=${#s_ip}
   for (( i = 1; i <= n; i++ )); do
@@ -1036,7 +1038,7 @@ record_seen() {
       [[ -n $hostname && -z ${s_host[$i]} ]] && s_host[$i]=$hostname
       [[ -n $mac && -z ${s_mac[$i]} ]] && s_mac[$i]=$mac
       [[ -n $alias && ${s_alias[$i]} == "$ip" ]] && s_alias[$i]=$alias
-      [[ -n $port && $port != 22 ]] && s_port[$i]=$port
+      [[ -n $port ]] && s_port[$i]=$port
       return
     fi
   done
@@ -1044,7 +1046,7 @@ record_seen() {
   s_host+=("$hostname")
   s_ip+=("$ip")
   s_mac+=("$mac")
-  s_port+=("${port:-22}")
+  s_port+=("$port")
 }
 
 ssh_fp() {
@@ -1118,7 +1120,7 @@ merge_seen_by_hostkey() {
     nh+=("${s_host[$i]}")
     ni+=("${s_ip[$i]}")
     nm+=("${s_mac[$i]}")
-    np+=("${s_port[$i]:-22}")
+    np+=("${s_port[$i]:-}")
   done
   s_alias=("${na[@]}")
   s_host=("${nh[@]}")
@@ -1152,7 +1154,7 @@ do_scan() {
   while IFS= read -r ip; do
     [[ -n $ip ]] || continue
     mac=$(get_mac "$ip")
-    record_seen "$ip" "" "$ip" "$mac" 22
+    record_seen "$ip" "" "$ip" "$mac"
   done < <(scan_port22 "$MYIP" "$MASK")
   merge_seen_by_hostkey
   save_hosts
@@ -1160,7 +1162,7 @@ do_scan() {
   build_items
   n=${#s_alias}
   for (( i = 1; i <= n; i++ )); do
-    add_discovered "${s_alias[$i]}" "${s_host[$i]}" "${s_ip[$i]}" "${s_mac[$i]}" "${s_port[$i]:-22}"
+    add_discovered "${s_alias[$i]}" "${s_host[$i]}" "${s_ip[$i]}" "${s_mac[$i]}" "${s_port[$i]:-}"
     mark_online "${s_ip[$i]}" "${s_mac[$i]}" "${s_host[$i]}"
   done
   restore_list_cursor "$keep"
