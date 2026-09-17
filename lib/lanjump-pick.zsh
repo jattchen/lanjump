@@ -3177,7 +3177,7 @@ bulk_idle_unpinned_names() {
 }
 
 delete_idle_unpinned_sessions() {
-  local -i i
+  local -i i st=0
   local name
   for (( i = 1; i <= ${#items_kind}; i++ )); do
     [[ ${items_kind[$i]} == session ]] || continue
@@ -3186,9 +3186,10 @@ delete_idle_unpinned_sessions() {
     name=${items_id[$i]}
     lanjump_foreign_session "$name" && continue
     if tmuxx kill-session -t "=$name" 2>/dev/null; then
-      forget_killed_session "$name"
+      forget_killed_session "$name" || st=1
     fi
   done
+  return $st
 }
 
 session_delete_needs_pin_warning() {
@@ -4503,7 +4504,11 @@ prompt_bulk_idle_delete() {
   print -n "${c_red}确认删除请输入 y，其他键取消: ${c_reset}"
   read -r ans
   if [[ $ans == y || $ans == Y ]]; then
-    delete_idle_unpinned_sessions
+    if ! delete_idle_unpinned_sessions; then
+      print "删除失败。"
+      print -n "按回车继续…"
+      read -r
+    fi
   fi
   setup_tty
   load_items
