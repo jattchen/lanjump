@@ -236,6 +236,7 @@ EOF
   # sanitized to lanjump-host; later connect overwrote HostName and
   # forgetting either deleted the shared block.
   : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
   h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
   upsert_host '书房' mac study.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
   upsert_host '客厅' mac living.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
@@ -251,6 +252,7 @@ EOF
   # live SSH Host block. office mac / office-mac both became
   # lanjump-office-mac and the later HostName won.
   : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
   h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
   upsert_host 'office mac' mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
   upsert_host 'office-mac' mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
@@ -264,6 +266,7 @@ EOF
 
   # #313: rename / id change must drop the previous BEGIN/END pair.
   : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
   h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
   upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
   read_ssh
@@ -274,6 +277,61 @@ EOF
   expect_absent ssh/rename-id/stale-end '# END LANJUMP lanjump-office' "$ssh_got"
   expect_contains ssh/rename-id/new-begin '# BEGIN LANJUMP lanjump-work' "$ssh_got"
   expect_contains ssh/rename-id/new-hn 'HostName office.local' "$ssh_got"
+
+  # #314: two upsert_ssh_config writers read then replace the whole SSH file.
+  # A reads, yields, then writes; B writes in the gap. Both Host blocks must remain.
+  local ssh314_home ssh314_fn
+  local -i ssh314_a=0 ssh314_b=0
+  ssh314_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-314-ssh.XXXXXX") || return 1
+  mkdir -p "$ssh314_home/.ssh"
+  : >"$ssh314_home/.ssh/config"
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$ssh314_home")"
+    print -r -- "SSH_CONFIG=$(printf %q "$ssh314_home/.ssh/config")"
+    print -r -- "KEY=$(printf %q "$ssh314_home/.ssh/id_ed25519_lanjump")"
+    for ssh314_fn in replace_file_atomic replace_ssh_config upsert_ssh_config \
+      with_data_file_lock; do
+      (( ${+functions[$ssh314_fn]} )) && functions "$ssh314_fn"
+    done
+    print -r -- 'functions -c replace_ssh_config _ssh314_replace'
+    print -r -- 'replace_ssh_config() {'
+    print -r -- '  print -r -- loaded >"$HOME/loaded"'
+    print -r -- '  sleep 0.35'
+    print -r -- '  _ssh314_replace "$@"'
+    print -r -- '}'
+    print -r -- 'upsert_ssh_config lanjump-office mac office.local'
+  } >"$ssh314_home/child-a.zsh"
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$ssh314_home")"
+    print -r -- "SSH_CONFIG=$(printf %q "$ssh314_home/.ssh/config")"
+    print -r -- "KEY=$(printf %q "$ssh314_home/.ssh/id_ed25519_lanjump")"
+    for ssh314_fn in replace_file_atomic replace_ssh_config upsert_ssh_config \
+      with_data_file_lock; do
+      (( ${+functions[$ssh314_fn]} )) && functions "$ssh314_fn"
+    done
+    print -r -- 'while [[ ! -f $HOME/loaded ]]; do'
+    print -r -- '  sleep 0.01'
+    print -r -- 'done'
+    print -r -- 'upsert_ssh_config lanjump-studio mac studio.local'
+  } >"$ssh314_home/child-b.zsh"
+  /bin/zsh "$ssh314_home/child-a.zsh" &
+  ssh314_a=$!
+  /bin/zsh "$ssh314_home/child-b.zsh" &
+  ssh314_b=$!
+  wait $ssh314_a
+  wait $ssh314_b
+  ssh_got=$(<"$ssh314_home/.ssh/config")
+  expect_contains ssh/concurrent-write/office-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  expect_contains ssh/concurrent-write/office-hn 'HostName office.local' "$ssh_got"
+  expect_contains ssh/concurrent-write/studio-begin '# BEGIN LANJUMP lanjump-studio' "$ssh_got"
+  expect_contains ssh/concurrent-write/studio-hn 'HostName studio.local' "$ssh_got"
+  rm -rf "$ssh314_home"
 
   # #256: KEY.pub comment with ' must still be a valid remote install script
   # that writes the full line. Callers pass this string as the ssh command.
