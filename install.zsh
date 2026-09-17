@@ -89,6 +89,10 @@ if [[ $mode == 升级 ]]; then
   fi
 else
   want_ver=$(local_git_ver) || want_ver=
+  # curl | zsh: $0 is /bin/zsh, so ROOT is not the repo and git rev-parse fails.
+  if [[ -z $want_ver ]]; then
+    want_ver=$(fetch_remote_ver) || want_ver=
+  fi
   print '正在安装 lanjump …'
 fi
 print

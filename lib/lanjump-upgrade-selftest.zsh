@@ -327,7 +327,33 @@ if [[ ! -f $appdir/settings || $(<"$appdir/settings") != KEEP-SETTINGS ]]; then
   fail "#278 commit dropped user settings"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount"
+# #281: curl | zsh makes $0 /bin/zsh, so local_git_ver cannot see the repo.
+# Piped install must still write the remote SHA so the first upgrade can skip.
+pipe_sha=ffffffffffffffffffffffffffffffffffffffff
+pipehome=$(mktemp -d)
+mkdir -p "$pipehome/Desktop" "$pipehome/.ssh" "$pipehome/Library/Application Support"
+pipepkg=$(mktemp -d)
+mkdir -p "$pipepkg/lanjump-main"/{bin,lib,src}
+cp "$ROOT/bin/lanjump.command" "$pipepkg/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$pipepkg/lanjump-main/bin/"
+cp "$ROOT/lib/"* "$pipepkg/lanjump-main/lib/"
+cp "$ROOT/src/lanjump-keys.c" "$pipepkg/lanjump-main/src/"
+cp "$ROOT/install.zsh" "$pipepkg/lanjump-main/install.zsh"
+pipetar=$(mktemp)
+tar -czf "$pipetar" -C "$pipepkg" lanjump-main
+HOME=$pipehome LANJUMP_REMOTE_SHA=$pipe_sha LANJUMP_ARCHIVE_URL="file://${pipetar}" /bin/zsh <"$ROOT/install.zsh" >/dev/null
+pipe_ver=$pipehome/Library/Application\ Support/lanjump/version
+if [[ ! -f $pipe_ver ]]; then
+  fail "piped install wrote no version file"
+elif [[ $(<$pipe_ver) != "$pipe_sha" ]]; then
+  fail "piped install version: $(<$pipe_ver)"
+fi
+out=$(HOME=$pipehome LANJUMP_REMOTE_SHA=$pipe_sha LANJUMP_ARCHIVE_URL="file:///dev/null" "$pipehome/.local/bin/lanjump" upgrade)
+if [[ $out != *没有新版本* ]]; then
+  fail "piped install first upgrade should skip: $out"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar"
 
 if (( fails )); then
   exit 1
