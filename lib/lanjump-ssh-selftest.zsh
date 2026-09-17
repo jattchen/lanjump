@@ -561,7 +561,80 @@ EOF
   expect_contains ssh/forget-ssh-fail/keep-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
   expect_contains ssh/forget-ssh-fail/keep-hn 'HostName office.local' "$ssh_got"
 
-  # #360: hosts row exists but the LANJUMP block was hand-deleted (or
+  # #387: prompt_username abort must return to the list, not connect.
+  rm -f "$tmpdir/ssh387_access" "$tmpdir/ssh387_out"
+  local ssh387_notice=$notice
+  local -a ssh387_saved_opts ssh387_kind ssh387_alias ssh387_user ssh387_hn ssh387_ip ssh387_mac ssh387_port
+  ssh387_saved_opts=("${SSH_OPTS[@]}")
+  ssh387_kind=("${items_kind[@]}")
+  ssh387_alias=("${items_alias[@]}")
+  ssh387_user=("${items_user[@]}")
+  ssh387_hn=("${items_hostname[@]}")
+  ssh387_ip=("${items_ip[@]}")
+  ssh387_mac=("${items_mac[@]}")
+  ssh387_port=("${items_port[@]}")
+  items_kind=(host)
+  items_alias=(office)
+  items_user=('')
+  items_hostname=(office.local)
+  items_ip=(10.0.0.8)
+  items_mac=('aa:bb:cc:dd:ee:01')
+  items_port=(22)
+  functions -c apply_ssh_port _ssh387_port
+  functions -c restore_tty _ssh387_restore
+  functions -c setup_tty _ssh387_setup
+  functions -c setup_access _ssh387_access
+  functions -c prompt_username _ssh387_prompt
+  functions -c upsert_host _ssh387_upsert
+  functions -c ssh_tty _ssh387_tty
+  functions -c sync_picker _ssh387_sync
+  functions -c mark_last _ssh387_mark
+  apply_ssh_port() { : }
+  restore_tty() { : }
+  setup_tty() { : }
+  prompt_username() { return 1 }
+  setup_access() {
+    print -r -- "${1-}@${2-}" >"$tmpdir/ssh387_access"
+    return 0
+  }
+  ssh() { return 0 }
+  upsert_host() { return 0 }
+  ssh_tty() { return 10 }
+  sync_picker() { return 0 }
+  mark_last() { : }
+  REPLY=stale
+  connect_item 1 >"$tmpdir/ssh387_out"
+  unfunction ssh
+  functions -c _ssh387_port apply_ssh_port
+  functions -c _ssh387_restore restore_tty
+  functions -c _ssh387_setup setup_tty
+  functions -c _ssh387_access setup_access
+  functions -c _ssh387_prompt prompt_username
+  functions -c _ssh387_upsert upsert_host
+  functions -c _ssh387_tty ssh_tty
+  functions -c _ssh387_sync sync_picker
+  functions -c _ssh387_mark mark_last
+  unfunction _ssh387_port _ssh387_restore _ssh387_setup _ssh387_access \
+    _ssh387_prompt _ssh387_upsert _ssh387_tty _ssh387_sync _ssh387_mark
+  SSH_OPTS=("${ssh387_saved_opts[@]}")
+  items_kind=("${ssh387_kind[@]}")
+  items_alias=("${ssh387_alias[@]}")
+  items_user=("${ssh387_user[@]}")
+  items_hostname=("${ssh387_hn[@]}")
+  items_ip=("${ssh387_ip[@]}")
+  items_mac=("${ssh387_mac[@]}")
+  items_port=("${ssh387_port[@]}")
+  notice=$ssh387_notice
+  if [[ -f $tmpdir/ssh387_access ]]; then
+    print -u2 "FAIL ssh/username-prompt-abort/access setup_access ran after prompt_username failed got=$(printf %q "$(<$tmpdir/ssh387_access)")"
+    (( fails++ ))
+  fi
+  if [[ -f $tmpdir/ssh387_out ]] && grep -q '正在连接' "$tmpdir/ssh387_out"; then
+    print -u2 "FAIL ssh/username-prompt-abort/print still printed 正在连接 got=$(printf %q "$(<$tmpdir/ssh387_out)")"
+    (( fails++ ))
+  fi
+
+  # #360: hosts row exists but the LANJUMP block was hand-deleted (or)
   # .ssh restored). Reconnect same MAC with a new alias/IP must succeed
   # and write the new block — missing old block is not a remove failure.
   : >"$SSH_CONFIG"
