@@ -1915,6 +1915,16 @@ sync_picker() {
   return 0
 }
 
+# POSIX snippet sent over SSH after sync_picker. NixOS has zsh on PATH
+# but no /bin/zsh; a hard exec /bin/zsh is exit 127 after the key works (#341).
+remote_pick_exec() {
+  local args="" a
+  for a in "$@"; do
+    args+=" $(printf %q "$a")"
+  done
+  print -r -- 'zsh=$(command -v zsh) || { echo "lanjump: 远端找不到 zsh。" >&2; exit 127; }; exec "$zsh" "$HOME/.local/bin/lanjump-pick"'"$args"
+}
+
 connect_item() {
   local i=$1
   local alias=${items_alias[$i]}
@@ -1969,7 +1979,7 @@ connect_item() {
   remote_cmd+="; unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM"
   remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
   remote_cmd+="; export LANJUMP_PICK_BIN=\$HOME/.local/bin/lanjump-pick"
-  remote_cmd+="; exec /bin/zsh \"\$HOME/.local/bin/lanjump-pick\""
+  remote_cmd+="; $(remote_pick_exec)"
   ssh_tty -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
     "$remote_cmd"
   local st=$?
@@ -2162,11 +2172,7 @@ cli_remote_pick() {
   remote_cmd+="; unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM"
   remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
   remote_cmd+="; export LANJUMP_PICK_BIN=\$HOME/.local/bin/lanjump-pick"
-  remote_cmd+="; exec /bin/zsh \"\$HOME/.local/bin/lanjump-pick\""
-  local a
-  for a in "$@"; do
-    remote_cmd+=" $(printf %q "$a")"
-  done
+  remote_cmd+="; $(remote_pick_exec "$@")"
   ssh_tty -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
     "$remote_cmd"
 }
@@ -2194,11 +2200,7 @@ cli_remote_print() {
   fi
   local remote_cmd
   remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
-  remote_cmd+="; exec /bin/zsh \"\$HOME/.local/bin/lanjump-pick\""
-  local a
-  for a in "$@"; do
-    remote_cmd+=" $(printf %q "$a")"
-  done
+  remote_cmd+="; $(remote_pick_exec "$@")"
   ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
     "$remote_cmd"
 }

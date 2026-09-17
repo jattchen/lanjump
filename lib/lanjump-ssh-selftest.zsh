@@ -767,6 +767,53 @@ EOF
     (( fails++ ))
   fi
 
+  # #341: after the key works, remote pick and snapshot hook/tick must
+  # find zsh on PATH. Hard /bin/zsh is 127 on NixOS.
+  # cli_remote_* are defined after --ssh-selftest; connect_item is here.
+  _lj341_remote=${functions[connect_item]}
+  if (( ${+functions[remote_pick_exec]} )); then
+    _lj341_remote+=${functions[remote_pick_exec]}
+  fi
+  if [[ $_lj341_remote == *'exec /bin/zsh'* ]]; then
+    print -u2 "FAIL ssh/remote-zsh/hard-bin-zsh still execs /bin/zsh for lanjump-pick"
+    (( fails++ ))
+  fi
+  if [[ $_lj341_remote != *'command -v zsh'* && $_lj341_remote != *'/usr/bin/env zsh'* ]]; then
+    print -u2 "FAIL ssh/remote-zsh/find-zsh missing command -v zsh or /usr/bin/env zsh"
+    (( fails++ ))
+  fi
+  unset _lj341_remote
+
+  eval "$(awk '
+    /^snapshot_pick_bin\(\)/ {p=1}
+    /^snapshot_hook_shell\(\)/ {p=1}
+    p {print}
+    p && /^}/ {p=0}
+  ' "${${(%):-%x}:A:h}/lanjump-pick.zsh")"
+  _lj341_hook=$(LANJUMP_PICK_BIN=/tmp/lanjump-pick snapshot_hook_shell)
+  if [[ $_lj341_hook == /bin/zsh\ *lanjump-pick* || $_lj341_hook == *'/bin/zsh /tmp/lanjump-pick'* ]]; then
+    print -u2 "FAIL ssh/remote-zsh/hook-hard-bin-zsh got=$(printf %q "$_lj341_hook")"
+    (( fails++ ))
+  fi
+  if [[ $_lj341_hook != *'command -v zsh'* && $_lj341_hook != *'/usr/bin/env zsh'* ]]; then
+    print -u2 "FAIL ssh/remote-zsh/hook-find-zsh missing command -v zsh or /usr/bin/env zsh got=$(printf %q "$_lj341_hook")"
+    (( fails++ ))
+  fi
+  unset _lj341_hook
+  _lj341_tick=$(awk '
+    /^tmux_install_snapshot_hooks\(\)/ {p=1}
+    p && /tick=/ {print; exit}
+  ' "${${(%):-%x}:A:h}/lanjump-pick.zsh")
+  if [[ $_lj341_tick == *'/bin/zsh'* ]]; then
+    print -u2 "FAIL ssh/remote-zsh/tick-hard-bin-zsh got=$(printf %q "$_lj341_tick")"
+    (( fails++ ))
+  fi
+  if [[ $_lj341_tick != *'command -v zsh'* && $_lj341_tick != *'/usr/bin/env zsh'* ]]; then
+    print -u2 "FAIL ssh/remote-zsh/tick-find-zsh missing command -v zsh or /usr/bin/env zsh got=$(printf %q "$_lj341_tick")"
+    (( fails++ ))
+  fi
+  unset _lj341_tick
+
   PICKER=$saved_picker
   unfunction terminfo_source 2>/dev/null || true
 

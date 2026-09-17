@@ -3283,14 +3283,14 @@ pick_selftest() {
   # #162: remote pick is ~/.local/bin/lanjump-pick; hooks must not keep
   # pointing at the Mac-only Application Support path.
   got=$(LANJUMP_PICK_BIN=/tmp/lanjump-pick snapshot_hook_shell)
-  expect snap/hook-env-bin "/bin/zsh /tmp/lanjump-pick --snapshot >/dev/null 2>&1" "$got"
+  expect snap/hook-env-bin 'zsh=$(command -v zsh) || { echo "lanjump: 找不到 zsh。" >&2; exit 127; }; "$zsh" /tmp/lanjump-pick --snapshot >/dev/null 2>&1' "$got"
   local hook_home hook_pick app_home app_pick stale_sr
   hook_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-hook-local.XXXXXX")
   mkdir -p "$hook_home/.local/bin"
   hook_pick=$hook_home/.local/bin/lanjump-pick
   : >"$hook_pick"
   got=$(unset LANJUMP_PICK_BIN; HOME=$hook_home snapshot_hook_shell)
-  expect snap/hook-local-bin "/bin/zsh $(printf %q "$hook_pick") --snapshot >/dev/null 2>&1" "$got"
+  expect snap/hook-local-bin "zsh=\$(command -v zsh) || { echo \"lanjump: 找不到 zsh。\" >&2; exit 127; }; \"\$zsh\" $(printf %q "$hook_pick") --snapshot >/dev/null 2>&1" "$got"
   if [[ $got == *'Application Support'* ]]; then
     print -u2 "FAIL snap/hook-local-bin leaked Application Support got=$(printf %q "$got")"
     (( fails++ ))
@@ -3300,7 +3300,7 @@ pick_selftest() {
   app_pick="$app_home/Library/Application Support/lanjump/lanjump-pick.zsh"
   : >"$app_pick"
   got=$(unset LANJUMP_PICK_BIN; HOME=$app_home snapshot_hook_shell)
-  expect snap/hook-app-default "/bin/zsh $(printf %q "$app_pick") --snapshot >/dev/null 2>&1" "$got"
+  expect snap/hook-app-default "zsh=\$(command -v zsh) || { echo \"lanjump: 找不到 zsh。\" >&2; exit 127; }; \"\$zsh\" $(printf %q "$app_pick") --snapshot >/dev/null 2>&1" "$got"
   if [[ $got == *'.local/bin/lanjump-pick'* ]]; then
     print -u2 "FAIL snap/hook-app-default used local/bin got=$(printf %q "$got")"
     (( fails++ ))
