@@ -1621,7 +1621,7 @@ lan_pub_install_cmd() {
 }
 
 try_ssh() {
-  ssh -o BatchMode=yes "${SSH_OPTS[@]}" "$@" /usr/bin/true >/dev/null 2>&1
+  ssh -o BatchMode=yes "${SSH_OPTS[@]}" "$@" true >/dev/null 2>&1
 }
 
 install_lan_pub() {

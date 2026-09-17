@@ -454,6 +454,51 @@ EOF
     (( fails++ ))
   fi
 
+  # #287: probe must use the same remote command as later verify (`true`).
+  # NixOS often has `true` on PATH but no /usr/bin/true; exit 127 there
+  # is not a key failure and must not drop the user onto the password path.
+  print -r -- 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyFor287Test lanjump@test' >"$KEY.pub"
+  rm -f "$tmpdir/try_ssh_287_args" "$tmpdir/try_ssh_287_path"
+  cat >"$fake_bin/ssh" <<EOF
+#!/bin/zsh
+print -r -- "\$*" >>"$tmpdir/try_ssh_287_args"
+cmd=\${@[-1]}
+if [[ \$* == *PreferredAuthentications=keyboard-interactive* ]]; then
+  print -r -- password-install >"$tmpdir/try_ssh_287_path"
+  exit 1
+fi
+if [[ \$cmd == /usr/bin/true ]]; then
+  exit 127
+fi
+if [[ \$cmd == true ]]; then
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$fake_bin/ssh"
+  rehash
+  if ! setup_access mac nixos.local; then
+    print -u2 "FAIL ssh/try-ssh-true/access key probe failed when only PATH true exists"
+    (( fails++ ))
+  fi
+  if [[ -f $tmpdir/try_ssh_287_path ]]; then
+    print -u2 "FAIL ssh/try-ssh-true/password-path missing /usr/bin/true was treated as a key failure"
+    (( fails++ ))
+  fi
+  if [[ -f $tmpdir/try_ssh_287_args ]]; then
+    if [[ $(<"$tmpdir/try_ssh_287_args") != *' true'* ]]; then
+      print -u2 "FAIL ssh/try-ssh-true/cmd probe remote command is not true got=$(printf %q "$(<"$tmpdir/try_ssh_287_args")")"
+      (( fails++ ))
+    fi
+    if [[ $(<"$tmpdir/try_ssh_287_args") == *'/usr/bin/true'* ]]; then
+      print -u2 "FAIL ssh/try-ssh-true/abs-cmd probe still uses /usr/bin/true got=$(printf %q "$(<"$tmpdir/try_ssh_287_args")")"
+      (( fails++ ))
+    fi
+  else
+    print -u2 "FAIL ssh/try-ssh-true/cmd probe did not invoke ssh"
+    (( fails++ ))
+  fi
+
   PICKER=$saved_picker
   unfunction terminfo_source 2>/dev/null || true
 
