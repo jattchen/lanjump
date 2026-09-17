@@ -348,6 +348,83 @@ host_selftest() {
   expect host/scan/keyscan-merge-other-ip 203.0.113.12 "${s_ip[2]}"
   functions[ssh_fp]=$_lj_save_ssh_fp
 
+  # #280: advertised _ssh._tcp port must stay on the discovery row
+  # and later SSH (not silently become 22).
+  local _lj_save_run_timed=$functions[run_timed]
+  local _lj_save_get_mac=$functions[get_mac]
+  local _lj_save_is_self=$functions[is_self_ip]
+  local bonjour_line discovered_port
+  local -a bf saved_ssh_opts
+  run_timed() {
+    local out=$2
+    shift 2
+    case "$*" in
+      *'dns-sd -B'*)
+        print -r -- $'Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n 9:00:00.000  Add        3  1 local.               _ssh._tcp.           pi' >"$out"
+        ;;
+      *'dns-sd -L'*)
+        print -r -- ' pi._ssh._tcp.local. can be reached at pi.local.:2222' >"$out"
+        ;;
+      *'dns-sd -G'*)
+        print -r -- $'Timestamp     A/R  if Hostname      Address         TTL\n 9:00:01.000  Add   1 pi.local.     192.168.1.50    120' >"$out"
+        ;;
+      *)
+        : >"$out"
+        ;;
+    esac
+  }
+  get_mac() { print -r -- 'aa:bb:cc:dd:ee:50'; }
+  is_self_ip() { return 1; }
+  bonjour_line=$(scan_bonjour)
+  functions[run_timed]=$_lj_save_run_timed
+  functions[get_mac]=$_lj_save_get_mac
+  functions[is_self_ip]=$_lj_save_is_self
+  bf=("${(@s:	:)bonjour_line}")
+  expect host/bonjour-port/host pi.local "${bf[2]:-}"
+  expect host/bonjour-port/ip 192.168.1.50 "${bf[3]:-}"
+  expect host/bonjour-port/scan 2222 "${bf[5]:-}"
+
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_last=()
+  items_kind=(local scan quit)
+  items_alias=(进入本机 '扫描局域网…' 退出)
+  items_user=('' '' '')
+  items_hostname=('' '' '')
+  items_ip=('' '' '')
+  items_mac=('' '' '')
+  items_status=('' '' '')
+  items_saved=('' '' '')
+  items_port=('' '' '')
+  s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  MYIPS=(127.0.0.1)
+  MYIP=""
+  while IFS=$'\t' read -r alias hostname ip mac port; do
+    [[ -n $alias || -n $ip ]] || continue
+    record_seen "$alias" "$hostname" "$ip" "$mac" "$port"
+    add_discovered "$alias" "$hostname" "$ip" "$mac" "$port"
+  done <<< "$bonjour_line"
+  discovered_port=
+  for (( i = 1; i <= ${#items_kind}; i++ )); do
+    if [[ ${items_kind[$i]} == host && ${items_alias[$i]} == pi ]]; then
+      discovered_port=${items_port[$i]:-}
+      break
+    fi
+  done
+  expect host/bonjour-port/item 2222 "$discovered_port"
+  if (( ${+functions[apply_ssh_port]} )); then
+    saved_ssh_opts=("${SSH_OPTS[@]}")
+    SSH_OPTS=()
+    apply_ssh_port "$discovered_port"
+    expect host/bonjour-port/ssh-opt '-o Port=2222' "${SSH_OPTS[*]}"
+    SSH_OPTS=("${saved_ssh_opts[@]}")
+  else
+    print -u2 "FAIL host/bonjour-port/ssh-opt missing apply_ssh_port"
+    (( fails++ ))
+  fi
+  if [[ ${functions[connect_item]} != *apply_ssh_port* ]]; then
+    print -u2 "FAIL host/bonjour-port/connect_item never applies advertised port"
+    (( fails++ ))
+  fi
+
   # #186: 「已保存 · 上次」 follows LAST_FILE (read_last), not max h_last.
   local saved_last_file=$LAST_FILE
   local last_tmp office_status studio_status
