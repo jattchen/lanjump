@@ -123,8 +123,11 @@ if [[ $mode == 升级 ]]; then
     ARCHIVE_URL="https://github.com/jattchen/lanjump/archive/${want_ver}.tar.gz"
   fi
   if [[ -n $have_ver && -n $want_ver && $have_ver == "$want_ver" ]]; then
-    print "没有新版本。当前已是 $(short_ver "$have_ver")。"
-    exit 0
+    # #355: same SHA is only a no-op when the files upgrade is asked to repair still exist.
+    if [[ -f $APP/lanjump.zsh && -f $APP/lanjump-pick.zsh ]]; then
+      print "没有新版本。当前已是 $(short_ver "$have_ver")。"
+      exit 0
+    fi
   fi
   if [[ -n $have_ver && -n $want_ver ]]; then
     print "正在从 $(short_ver "$have_ver") 升级到 $(short_ver "$want_ver") …"
