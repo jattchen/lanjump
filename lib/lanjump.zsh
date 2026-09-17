@@ -894,9 +894,9 @@ upsert_ssh_config() {
   mkdir -p "$HOME/.ssh"
   [[ -f $SSH_CONFIG ]] || : >"$SSH_CONFIG"
   chmod 600 "$SSH_CONFIG"
-  # Missing END: do not append (OpenSSH first-match would keep the old HostName).
-  # Replace the damaged LANJUMP Host in place; stop before a later user Host (#63).
-  # Probe only — do not strip dest (that hole is #272).
+  # Missing END: in-place rewrite only. Probe — do not strip dest (#272).
+  # Complete pair / first write must prepend (Host * first-match, #340).
+  local -i ssh_damaged=0
   if grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null &&
      ! awk -v b="$begin" -v e="$end" '
        $0 == b {
@@ -909,61 +909,64 @@ upsert_ssh_config() {
        }
        END { if (open) exit 1 }
      ' "$SSH_CONFIG"; then
+    ssh_damaged=1
+  fi
+  if (( !ssh_damaged )); then
     tmp=$(mktemp)
-    awk -v begin="$begin" -v end="$end" -v id="$id" -v user="$user" -v hn="$hostname" -v key="$KEY" -v port="$port" '
-      function emit() {
-        if (emitted) return
-        print ""
-        print begin
-        print "Host " id
-        print "  HostName " hn
-        if (port != "" && port != "22") print "  Port " port
-        print "  User " user
-        print "  IdentityFile " key
-        print "  IdentitiesOnly yes"
-        print "  AddKeysToAgent yes"
-        print "  UseKeychain yes"
-        print "  AddressFamily inet"
-        print "  StrictHostKeyChecking accept-new"
-        print "  ConnectTimeout 8"
-        print end
-        emitted = 1
-      }
-      $0 == begin && !emitted { skip = 1; next }
-      skip && $1 == "Host" && $2 == id { ours = 1; next }
-      skip && ours && /^[ \t]/ { next }
-      skip && ours && $0 == end { next }
-      skip { emit(); skip = 0; ours = 0; if ($0 != end) print; next }
-      { print }
-      END { emit() }
-    ' "$SSH_CONFIG" >"$tmp"
+    {
+      print "$begin"
+      print "Host ${id}"
+      print "  HostName ${hostname}"
+      if [[ -n $port && $port != 22 ]]; then
+        print "  Port ${port}"
+      fi
+      print "  User ${user}"
+      print "  IdentityFile ${KEY}"
+      print "  IdentitiesOnly yes"
+      print "  AddKeysToAgent yes"
+      print "  UseKeychain yes"
+      print "  AddressFamily inet"
+      print "  StrictHostKeyChecking accept-new"
+      print "  ConnectTimeout 8"
+      print "$end"
+      print
+      awk -v b="$begin" -v e="$end" '
+        $0 == b { skip = 1; next }
+        $0 == e { skip = 0; next }
+        !skip { print }
+      ' "$SSH_CONFIG"
+    } >"$tmp"
     replace_ssh_config "$tmp"
     return
   fi
   tmp=$(mktemp)
-  {
-    awk -v b="$begin" -v e="$end" '
-      $0 == b { skip = 1; next }
-      $0 == e { skip = 0; next }
-      !skip { print }
-    ' "$SSH_CONFIG"
-    print
-    print "$begin"
-    print "Host ${id}"
-    print "  HostName ${hostname}"
-    if [[ -n $port && $port != 22 ]]; then
-      print "  Port ${port}"
-    fi
-    print "  User ${user}"
-    print "  IdentityFile ${KEY}"
-    print "  IdentitiesOnly yes"
-    print "  AddKeysToAgent yes"
-    print "  UseKeychain yes"
-    print "  AddressFamily inet"
-    print "  StrictHostKeyChecking accept-new"
-    print "  ConnectTimeout 8"
-    print "$end"
-  } >"$tmp"
+  awk -v begin="$begin" -v end="$end" -v id="$id" -v user="$user" -v hn="$hostname" -v key="$KEY" -v port="$port" '
+    function emit() {
+      if (emitted) return
+      print ""
+      print begin
+      print "Host " id
+      print "  HostName " hn
+      if (port != "" && port != "22") print "  Port " port
+      print "  User " user
+      print "  IdentityFile " key
+      print "  IdentitiesOnly yes"
+      print "  AddKeysToAgent yes"
+      print "  UseKeychain yes"
+      print "  AddressFamily inet"
+      print "  StrictHostKeyChecking accept-new"
+      print "  ConnectTimeout 8"
+      print end
+      emitted = 1
+    }
+    $0 == begin && !emitted { skip = 1; next }
+    skip && $1 == "Host" && $2 == id { ours = 1; next }
+    skip && ours && /^[ \t]/ { next }
+    skip && ours && $0 == end { next }
+    skip { emit(); skip = 0; ours = 0; if ($0 != end) print; next }
+    { print }
+    END { emit() }
+  ' "$SSH_CONFIG" >"$tmp"
   replace_ssh_config "$tmp"
 }
 
