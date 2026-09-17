@@ -1575,6 +1575,23 @@ expect_contains attach-prefixed-remote/last 'LAST host=office' "$hay"
 expect_contains attach-prefixed-remote/last-before-attach $'LAST host=office\nREMOTE_PICK' "$hay"
 expect_absent attach-prefixed-remote/no-local 'PICK_EXEC' "$hay"
 
+# #378: aliases may contain colons; session names may not. Ghostty /
+# `lanjump attach 机器:session` must split on the last colon.
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+cli_dispatch attach 'office:2:dev' >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL attach-colon-host/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains attach-colon-host/attach 'REMOTE_PICK host=office:2' "$hay"
+expect_contains attach-colon-host/argv 'argv=--attach dev' "$hay"
+expect_contains attach-colon-host/last 'LAST host=office:2' "$hay"
+expect_absent attach-colon-host/no-first-split 'argv=--attach 2:dev' "$hay"
+expect_absent attach-colon-host/no-local 'PICK_EXEC' "$hay"
+
 TEST_LAST_HOST=office
 : >"$log"
 st=0
