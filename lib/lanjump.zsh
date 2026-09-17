@@ -520,8 +520,10 @@ load_hosts() {
 }
 
 # Same-dir temp + rename so concurrent readers never see a torn dest (#213/#264).
+# Follow a dest symlink so the directory entry stays a link (#274).
 replace_file_atomic() {
   local dest=$1 dir tmp
+  [[ -L $dest ]] && dest=${dest:A}
   dir=${dest:h}
   mkdir -p "$dir"
   tmp=$(mktemp "${dir}/.${dest:t}.XXXXXX") || return 1
@@ -649,14 +651,11 @@ strip_ssh_block() {
     }
     END { if (open) exit 1 }
   ' "$SSH_CONFIG" || return 1
-  local tmp
-  tmp=$(mktemp)
   awk -v b="$begin" -v e="$end" '
     $0 == b { skip = 1; next }
     $0 == e { skip = 0; next }
     !skip { print }
-  ' "$SSH_CONFIG" >"$tmp"
-  mv "$tmp" "$SSH_CONFIG"
+  ' "$SSH_CONFIG" | replace_file_atomic "$SSH_CONFIG" || return 1
   chmod 600 "$SSH_CONFIG"
 }
 
@@ -666,7 +665,11 @@ remove_ssh_config() {
 }
 
 replace_ssh_config() {
-  mv "$1" "$SSH_CONFIG"
+  cat "$1" | replace_file_atomic "$SSH_CONFIG" || {
+    rm -f "$1"
+    return 1
+  }
+  rm -f "$1"
   chmod 600 "$SSH_CONFIG"
 }
 
