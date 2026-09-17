@@ -423,9 +423,10 @@ for f in "$APP"/*(ND); do
 done
 old=$APP.old
 rm -rf "$old"
-# #335 recopies keepers immediately before the switch. #358: that recopy
-# plus the two mvs must hold the same hosts/settings locks as writers, or
-# a write after the last copy rides APP.old and is deleted.
+# #335 recopies keepers immediately before the switch. #358/#386: that
+# recopy plus the two mvs must hold the same hosts/settings/pin/snapshot
+# locks as writers, or a write after the last copy rides APP.old and is
+# deleted.
 recopy_keepers_and_switch() {
   local f name
   for f in "$APP"/*(ND); do
@@ -456,7 +457,9 @@ recopy_keepers_and_switch() {
 }
 with_data_file_lock "$APP/hosts" \
   with_data_file_lock "$APP/settings" \
-    recopy_keepers_and_switch || exit 1
+    with_data_file_lock "$APP/pinned-sessions" \
+      with_data_file_lock "$APP/session-snapshot" \
+        recopy_keepers_and_switch || exit 1
 stage=
 rm -rf "$old"
 write_picker_version_stamp

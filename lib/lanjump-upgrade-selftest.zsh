@@ -676,6 +676,74 @@ if [[ ! -f $app358/settings || $(<"$app358/settings") != NEW-SETTINGS ]]; then
   fail "#358 switch discarded a settings write after last recopy: $(<"$app358/settings" 2>/dev/null || print missing)"
 fi
 
+# #386: #358 locks hosts/settings across recopy+switch, but keepers also
+# include pinned-sessions and session-snapshot. A pin/snapshot writer in
+# the APP→APP.old window lands on the tree about to be deleted unless
+# recopy+switch holds those sidecar locks too.
+home386=$(mktemp -d)
+mkdir -p "$home386/Desktop" "$home386/.ssh" "$home386/Library/Application Support"
+HOME=$home386 /bin/zsh "$ROOT/install.zsh" >/dev/null
+app386="$home386/Library/Application Support/lanjump"
+print -r -- 'OLD-PINS' >"$app386/pinned-sessions"
+print -r -- 'OLD-SNAPSHOT' >"$app386/session-snapshot"
+mark386=$(mktemp -d)
+mvwrap386=$(mktemp -d)
+cat >"$mvwrap386/mv" <<EOF
+#!/bin/zsh
+src= dest=
+for a in "\$@"; do
+  [[ \$a == -* ]] && continue
+  src=\$dest
+  dest=\$a
+done
+mark=$(printf %q "$mark386")
+if [[ -n \$src && -n \$dest && -d \$src && \${src:t} == lanjump && \${dest:t} == lanjump.old ]]; then
+  live=\$src
+  (
+    lock_write() {
+      local dest=\$1 val=\$2 lock
+      local -i fd=-1 n=0
+      lock=\${dest}.lock
+      [[ -e \$lock ]] || : >"\$lock"
+      if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
+        zsystem flock -f fd "\$lock" || exit 1
+        print -r -- "\$val" >"\$dest"
+        zsystem flock -u fd
+        return
+      fi
+      while ! mkdir "\${lock}.d" 2>/dev/null; do
+        sleep 0.05
+        (( ++n > 200 )) && exit 1
+      done
+      print -r -- "\$val" >"\$dest"
+      rmdir "\${lock}.d" 2>/dev/null
+    }
+    lock_write "\$live/pinned-sessions" NEW-PINS
+    lock_write "\$live/session-snapshot" NEW-SNAPSHOT
+    : >"\$mark/wrote"
+  ) &!
+  for _ in {1..80}; do
+    [[ -f \$mark/wrote ]] && break
+    sleep 0.01
+  done
+  /bin/mv "\$@"
+  exit \$?
+fi
+exec /bin/mv "\$@"
+EOF
+chmod 755 "$mvwrap386/mv"
+HOME=$home386 PATH="$mvwrap386:$PATH" /bin/zsh "$ROOT/install.zsh" >/dev/null
+for _ in {1..200}; do
+  [[ -f $mark386/wrote ]] && break
+  sleep 0.05
+done
+if [[ ! -f $app386/pinned-sessions || $(<"$app386/pinned-sessions") != NEW-PINS ]]; then
+  fail "#386 switch discarded a pins write after last recopy: $(<"$app386/pinned-sessions" 2>/dev/null || print missing)"
+fi
+if [[ ! -f $app386/session-snapshot || $(<"$app386/session-snapshot") != NEW-SNAPSHOT ]]; then
+  fail "#386 switch discarded a snapshot write after last recopy: $(<"$app386/session-snapshot" 2>/dev/null || print missing)"
+fi
+
 # #338: piped/file:// tarball install has no git history in ROOT.
 # fetch_remote_ver must surface the commit epoch to the parent so the
 # picker gets `# lanjump-pick-version <epoch> <sha>`. Today that assignment
@@ -767,7 +835,7 @@ if (( st339 == 0 )); then
   fi
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$repairpkg" "$repairtar" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home358" "$mvwrap358" "$mark358" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$repairpkg" "$repairtar" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home358" "$mvwrap358" "$mark358" "$home386" "$mvwrap386" "$mark386" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
 
 if (( fails )); then
   exit 1
