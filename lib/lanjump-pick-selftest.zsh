@@ -1369,6 +1369,38 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #405: forget_killed_session must take pin then snapshot (upgrade #386).
+  # Holding session-snapshot then taking pin deadlocks with upgrade
+  # (zsystem flock has no timeout).
+  local -a lock405_order
+  local -i lock405_pin=-1 lock405_snap=-1 lock405_i
+  setup_last_snap gone gone
+  add_pin_record gone /tmp/gone
+  functions -c with_data_file_lock _lock405_with
+  lock405_order=()
+  with_data_file_lock() {
+    lock405_order+=("${1:t}")
+    _lock405_with "$@"
+  }
+  forget_killed_session gone
+  functions -c _lock405_with with_data_file_lock
+  unset -f _lock405_with
+  for (( lock405_i = 1; lock405_i <= ${#lock405_order}; lock405_i++ )); do
+    if [[ ${lock405_order[lock405_i]} == pinned-sessions && lock405_pin -lt 0 ]]; then
+      lock405_pin=$lock405_i
+    fi
+    if [[ ${lock405_order[lock405_i]} == session-snapshot && lock405_snap -lt 0 ]]; then
+      lock405_snap=$lock405_i
+    fi
+  done
+  if (( lock405_pin < 0 || lock405_snap < 0 )); then
+    print -u2 "FAIL delete/forget-lock-order missing pin or snapshot lock got=$(printf %q "${lock405_order[*]}")"
+    (( fails++ ))
+  elif (( lock405_snap < lock405_pin )); then
+    print -u2 "FAIL delete/forget-lock-order inverted snapshot before pin got=$(printf %q "${lock405_order[*]}")"
+    (( fails++ ))
+  fi
+
   pin_fixture
   cursor=1
   if ! session_delete_needs_pin_warning; then
