@@ -854,6 +854,37 @@ host_selftest() {
   LAST_FILE=$saved_last_file
   rm -f "$last266"
 
+  # #354: Bonjour aliases may start with #; load must not treat the row as a comment.
+  local hash_idx hosts354
+  hosts354=$(mktemp) || return 1
+  saved_hosts_file=$HOSTS_FILE
+  HOSTS_FILE=$hosts354
+  print -r -- '#2 Studio|mac|#2-studio.local|192.168.1.21|aa:bb:cc:dd:ee:02|456' >"$HOSTS_FILE"
+  load_hosts
+  expect host/hash-alias/count 1 "${#h_alias}"
+  expect host/hash-alias/alias '#2 Studio' "${h_alias[1]}"
+  expect host/hash-alias/user mac "${h_user[1]}"
+  expect host/hash-alias/hostname '#2-studio.local' "${h_hostname[1]}"
+  expect host/hash-alias/ip 192.168.1.21 "${h_ip[1]}"
+  expect host/hash-alias/mac aa:bb:cc:dd:ee:02 "${h_mac[1]}"
+  expect host/hash-alias/last 456 "${h_last[1]}"
+  save_hosts
+  load_hosts
+  expect host/hash-alias/reload-count 1 "${#h_alias}"
+  expect host/hash-alias/reload-alias '#2 Studio' "${h_alias[1]}"
+  expect host/hash-alias/reload-user mac "${h_user[1]}"
+  expect host/hash-alias/reload-hostname '#2-studio.local' "${h_hostname[1]}"
+  hash_idx=
+  for (( i = 1; i <= ${#h_alias}; i++ )); do
+    if [[ ${h_alias[$i]} == '#2 Studio' ]]; then
+      hash_idx=$i
+      break
+    fi
+  done
+  expect host/hash-alias/lookup 1 "$hash_idx"
+  HOSTS_FILE=$saved_hosts_file
+  rm -f "$hosts354"
+
   if (( fails )); then
     print -u2 "host-selftest: $fails failed"
     return 1
