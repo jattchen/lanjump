@@ -1720,10 +1720,11 @@ sync_picker() {
   local target=$1 user=$2
   local incoming_mtime
   # #286: only replace the remote copy when this picker is newer.
+  # #310: prefer the picker header stamp over two machines' file mtimes.
   incoming_mtime=$(stat -c %Y "$PICKER" 2>/dev/null) || incoming_mtime=$(stat -f %m "$PICKER" 2>/dev/null) || incoming_mtime=0
   [[ $incoming_mtime == [0-9]## ]] || incoming_mtime=0
   ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
-    'dest="$HOME/.local/bin/lanjump-pick"; mkdir -p "$HOME/.local/bin" || exit 1; tmp=$(mktemp "${TMPDIR:-/tmp}/lanjump-pick.XXXXXX") || exit 1; cat >"$tmp" || { rm -f "$tmp"; exit 1; }; keep=0; if [ -f "$dest" ]; then dest_mtime=$(stat -c %Y "$dest" 2>/dev/null || stat -f %m "$dest" 2>/dev/null || echo 0); incoming_mtime='"$incoming_mtime"'; case $dest_mtime in *[!0-9]*) dest_mtime=0 ;; esac; [ "$dest_mtime" -gt "$incoming_mtime" ] && keep=1; fi; if [ "$keep" -eq 1 ]; then rm -f "$tmp"; else chmod 755 "$tmp" && mv -f "$tmp" "$dest" || { rm -f "$tmp"; exit 1; }; fi' \
+    'dest="$HOME/.local/bin/lanjump-pick"; mkdir -p "$HOME/.local/bin" || exit 1; tmp=$(mktemp "$HOME/.local/bin/.lanjump-pick.XXXXXX") || exit 1; cat >"$tmp" || { rm -f "$tmp"; exit 1; }; keep=0; if [ -f "$dest" ]; then dest_ver=$(awk "/^# lanjump-pick-version / { print \$3; exit }" "$dest"); incoming_ver=$(awk "/^# lanjump-pick-version / { print \$3; exit }" "$tmp"); case $dest_ver in *[!0-9]*) dest_ver= ;; esac; case $incoming_ver in *[!0-9]*) incoming_ver= ;; esac; if [ -n "$dest_ver" ] || [ -n "$incoming_ver" ]; then [ -n "$dest_ver" ] || dest_ver=0; [ -n "$incoming_ver" ] || incoming_ver=0; [ "$dest_ver" -gt "$incoming_ver" ] && keep=1; else dest_mtime=$(stat -c %Y "$dest" 2>/dev/null || stat -f %m "$dest" 2>/dev/null || echo 0); incoming_mtime='"$incoming_mtime"'; case $dest_mtime in *[!0-9]*) dest_mtime=0 ;; esac; [ "$dest_mtime" -gt "$incoming_mtime" ] && keep=1; fi; fi; if [ "$keep" -eq 1 ]; then rm -f "$tmp"; else chmod 755 "$tmp" && mv -f "$tmp" "$dest" || { rm -f "$tmp"; exit 1; }; fi' \
     <"$PICKER" || return $?
   sync_terminfo "$target" "$user"
   return 0

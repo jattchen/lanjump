@@ -47,6 +47,11 @@ fetch_remote_ver() {
     return 0
   fi
   json=$(curl -fsSL -A lanjump -H 'Accept: application/vnd.github+json' "$VERSION_API") || return 1
+  REMOTE_COMMIT_TIME=$(print -r -- "$json" | python3 -c 'import json,sys
+from datetime import datetime
+j=json.load(sys.stdin)
+d=j["commit"]["committer"]["date"]
+print(int(datetime.fromisoformat(d.replace("Z","+00:00")).timestamp()))' 2>/dev/null) || REMOTE_COMMIT_TIME=
   if v=$(print -r -- "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])' 2>/dev/null); then
     print -r -- "$v"
     return 0
@@ -62,8 +67,35 @@ local_git_ver() {
   git -C "$ROOT" rev-parse HEAD 2>/dev/null || return 1
 }
 
+# #310: picker header stamp is commit time, not this machine's file mtime.
+write_picker_version_stamp() {
+  local picker="$APP/lanjump-pick.zsh" sha=${want_ver:-} epoch tmp first
+  [[ -f $picker && -n $sha ]] || return 0
+  if grep -q '^# lanjump-pick-version ' "$picker" 2>/dev/null; then
+    return 0
+  fi
+  epoch=$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null) || epoch=${REMOTE_COMMIT_TIME:-}
+  [[ $epoch == [0-9]## ]] || return 0
+  tmp=$(mktemp "${picker}.XXXXXX") || return 0
+  first=$(head -n 1 "$picker")
+  if [[ $first == '#!'* ]]; then
+    {
+      print -r -- "$first"
+      print -r -- "# lanjump-pick-version $epoch $sha"
+      tail -n +2 "$picker"
+    } >"$tmp"
+  else
+    {
+      print -r -- "# lanjump-pick-version $epoch $sha"
+      cat "$picker"
+    } >"$tmp"
+  fi
+  mv -f "$tmp" "$picker"
+}
+
 have_ver=
 want_ver=
+REMOTE_COMMIT_TIME=
 have_ver=$(read_local_ver) || have_ver=
 
 if [[ $mode == 升级 ]]; then
@@ -338,6 +370,7 @@ if ! mv "$stage" "$APP"; then
 fi
 stage=
 rm -rf "$old"
+write_picker_version_stamp
 
 if [[ -f $APP/lanjump-ghostty-attach ]]; then
   cp -f "$APP/lanjump-ghostty-attach" "$BIN_DIR/lanjump-ghostty-attach"
