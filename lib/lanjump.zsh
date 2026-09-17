@@ -1112,7 +1112,10 @@ upsert_ssh_config() {
         $0 == e { skip = 0; next }
         !skip { print }
       ' "$SSH_CONFIG"
-    } >"$tmp"
+    } >"$tmp" || {
+      rm -f "$tmp"
+      return 1
+    }
     replace_ssh_config "$tmp"
     return
   fi
@@ -1143,7 +1146,10 @@ upsert_ssh_config() {
     skip { emit(); skip = 0; ours = 0; if ($0 != end) print; next }
     { print }
     END { emit() }
-  ' "$SSH_CONFIG" >"$tmp"
+  ' "$SSH_CONFIG" >"$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
   replace_ssh_config "$tmp"
 }
 
