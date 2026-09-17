@@ -561,6 +561,38 @@ EOF
   expect_contains ssh/forget-ssh-fail/keep-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
   expect_contains ssh/forget-ssh-fail/keep-hn 'HostName office.local' "$ssh_got"
 
+  # #396: hosts write failure after SSH remove must restore the LANJUMP
+  # block. The row stays (load_hosts); ssh lanjump-… must too.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  read_ssh
+  expect_contains ssh/forget-save-fail/pre-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  functions -c save_hosts _ssh396_save
+  save_hosts() { return 1 }
+  if forget_saved 1; then
+    print -u2 "FAIL ssh/forget-save-fail forget_saved returned 0 after save_hosts failure"
+    (( fails++ ))
+  fi
+  functions -c _ssh396_save save_hosts
+  unfunction _ssh396_save
+  load_hosts
+  if [[ ${h_alias[1]:-} != office ]]; then
+    print -u2 "FAIL ssh/forget-save-fail dropped hosts row aliases=$(printf %q "${h_alias[*]}")"
+    (( fails++ ))
+  fi
+  local ssh396_disk
+  ssh396_disk=$(<"$HOSTS_FILE")
+  if [[ $ssh396_disk != *office.local* ]]; then
+    print -u2 "FAIL ssh/forget-save-fail hosts file lost office.local got=$(printf %q "$ssh396_disk")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/forget-save-fail/keep-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  expect_contains ssh/forget-save-fail/keep-host 'Host lanjump-office' "$ssh_got"
+  expect_contains ssh/forget-save-fail/keep-hn 'HostName office.local' "$ssh_got"
+
   # #387: prompt_username abort must return to the list, not connect.
   rm -f "$tmpdir/ssh387_access" "$tmpdir/ssh387_out"
   local ssh387_notice=$notice
