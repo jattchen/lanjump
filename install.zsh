@@ -314,6 +314,34 @@ EOF
   xattr -d com.apple.quarantine "$BIN_DIR/lanjump" 2>/dev/null || true
 }
 
+# Same sidecar protocol as lib with_data_file_lock. dest is renamed by
+# replace_file_atomic, so flock(dest) would not serialize writers.
+with_data_file_lock() {
+  local dest=$1
+  shift
+  local lock dir
+  local -i fd=-1 st=0 n=0
+  dir=${dest:h}
+  lock=${dest}.lock
+  mkdir -p "$dir"
+  [[ -e $lock ]] || : >"$lock"
+  if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
+    zsystem flock -f fd "$lock" || return 1
+    "$@"
+    st=$?
+    zsystem flock -u fd
+    return $st
+  fi
+  while ! mkdir "${lock}.d" 2>/dev/null; do
+    sleep 0.05
+    (( ++n > 200 )) && return 1
+  done
+  "$@"
+  st=$?
+  rmdir "${lock}.d" 2>/dev/null
+  return $st
+}
+
 if [[ $mode == 升级 || ! -f $ROOT/lib/lanjump.zsh || ! -f $ROOT/bin/lanjump || ! -f $ROOT/src/lanjump-keys.c ]]; then
   fetched=$(mktemp -d)
   if ! curl -fsSL "$ARCHIVE_URL" | tar -xz -C "$fetched"; then
@@ -395,33 +423,40 @@ for f in "$APP"/*(ND); do
 done
 old=$APP.old
 rm -rf "$old"
-# #335: recopy keepers immediately before the switch so a write that
-# landed on live $APP after the first stage copy is not left on APP.old.
-for f in "$APP"/*(ND); do
-  name=${f:t}
-  case $name in
-    lanjump.zsh|lanjump-pick.zsh|lanjump-ghostty-attach|lanjump-keys.py|lanjump-ime.py|lanjump-keys|lanjump.command)
-      continue
-      ;;
-  esac
-  rm -rf "$stage/$name"
-  cp -a "$f" "$stage/$name"
-done
-if ! mv "$APP" "$old"; then
-  exit 1
-fi
-if ! mv "$stage" "$APP"; then
-  mv -f "$old" "$APP"
-  exit 1
-fi
-# #334: a concurrent mkdir -p $APP between the two mvs makes BSD mv nest
-# APP.new as $APP/lanjump.new/. Do not discard APP.old unless the live
-# tree landed at the app root.
-if [[ ! -f $APP/lanjump.zsh ]]; then
-  rm -rf "$APP"
-  mv -f "$old" "$APP"
-  exit 1
-fi
+# #335 recopies keepers immediately before the switch. #358: that recopy
+# plus the two mvs must hold the same hosts/settings locks as writers, or
+# a write after the last copy rides APP.old and is deleted.
+recopy_keepers_and_switch() {
+  local f name
+  for f in "$APP"/*(ND); do
+    name=${f:t}
+    case $name in
+      lanjump.zsh|lanjump-pick.zsh|lanjump-ghostty-attach|lanjump-keys.py|lanjump-ime.py|lanjump-keys|lanjump.command)
+        continue
+        ;;
+    esac
+    rm -rf "$stage/$name"
+    cp -a "$f" "$stage/$name"
+  done
+  if ! mv "$APP" "$old"; then
+    return 1
+  fi
+  if ! mv "$stage" "$APP"; then
+    mv -f "$old" "$APP"
+    return 1
+  fi
+  # #334: a concurrent mkdir -p $APP between the two mvs makes BSD mv nest
+  # APP.new as $APP/lanjump.new/. Do not discard APP.old unless the live
+  # tree landed at the app root.
+  if [[ ! -f $APP/lanjump.zsh ]]; then
+    rm -rf "$APP"
+    mv -f "$old" "$APP"
+    return 1
+  fi
+}
+with_data_file_lock "$APP/hosts" \
+  with_data_file_lock "$APP/settings" \
+    recopy_keepers_and_switch || exit 1
 stage=
 rm -rf "$old"
 write_picker_version_stamp
