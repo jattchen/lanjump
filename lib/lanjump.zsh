@@ -1350,7 +1350,7 @@ merge_seen_by_hostkey() {
 do_scan() {
   local keep alias hostname ip mac
   local i n
-  local -i extra=0
+  local -i extra=0 persist_st=0
   keep=$(list_item_key $cursor) || keep=
   loading=1
   restore_tty
@@ -1375,7 +1375,7 @@ do_scan() {
     record_seen "$ip" "" "$ip" "$mac"
   done < <(scan_port22 "$MYIP" "$MASK")
   merge_seen_by_hostkey
-  persist_scan_hosts
+  persist_scan_hosts || persist_st=$?
   load_hosts
   build_items
   n=${#s_alias}
@@ -1389,7 +1389,11 @@ do_scan() {
   for (( i = 1; i <= n; i++ )); do
     [[ ${items_kind[$i]} == host && ${items_status[$i]} == 新发现 ]] && (( extra++ ))
   done
-  notice="扫描完成。新发现 ${extra} 台开了 SSH 的设备。"
+  if (( persist_st != 0 )); then
+    notice="没法记下这次扫描。"
+  else
+    notice="扫描完成。新发现 ${extra} 台开了 SSH 的设备。"
+  fi
   loading=0
   setup_tty
 }
