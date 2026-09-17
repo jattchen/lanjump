@@ -860,6 +860,62 @@ host_selftest() {
   HOME=$hosts333_saved_home
   rm -rf "$hosts333_home"
 
+  # #376: persist_scan_hosts returns 1 after a mid-loop SSH write
+  # failure. do_scan must not report 扫描完成.
+  local hosts376_home hosts376_saved_home hosts376_saved_ssh hosts376_saved_key
+  local _lj376_restore_tty _lj376_setup_tty _lj376_detect_lan
+  local _lj376_scan_bonjour _lj376_scan_port22 _lj376_merge _lj376_upsert
+  hosts376_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-376.XXXXXX") || return 1
+  hosts376_saved_home=$HOME
+  hosts376_saved_ssh=$SSH_CONFIG
+  hosts376_saved_key=$KEY
+  saved_hosts_file=$HOSTS_FILE
+  mkdir -p "$hosts376_home/Library/Application Support/lanjump" "$hosts376_home/.ssh"
+  HOSTS_FILE="$hosts376_home/Library/Application Support/lanjump/hosts"
+  SSH_CONFIG="$hosts376_home/.ssh/config"
+  KEY="$hosts376_home/.ssh/id_ed25519_lanjump"
+  HOME=$hosts376_home
+  : >"$HOSTS_FILE"
+  : >"$SSH_CONFIG"
+  MYIPS=(127.0.0.1)
+  MYIP=""
+  upsert_host office mac office.local 10.0.0.1 'aa:bb:cc:dd:ee:01'
+  _lj376_restore_tty=$functions[restore_tty]
+  _lj376_setup_tty=$functions[setup_tty]
+  _lj376_detect_lan=$functions[detect_lan]
+  _lj376_scan_bonjour=$functions[scan_bonjour]
+  _lj376_scan_port22=$functions[scan_port22]
+  _lj376_merge=$functions[merge_seen_by_hostkey]
+  _lj376_upsert=$functions[upsert_ssh_config]
+  restore_tty() { :; }
+  setup_tty() { :; }
+  detect_lan() { PREFIX=10.0.0 MYIP=10.0.0.9 MASK=255.255.255.0; }
+  scan_bonjour() { print -r -- $'office\toffice.local\t10.0.0.8\taa:bb:cc:dd:ee:01\t22'; }
+  scan_port22() { :; }
+  merge_seen_by_hostkey() { :; }
+  upsert_ssh_config() { return 1 }
+  cursor=1
+  notice=""
+  build_items
+  do_scan >/dev/null
+  functions[restore_tty]=$_lj376_restore_tty
+  functions[setup_tty]=$_lj376_setup_tty
+  functions[detect_lan]=$_lj376_detect_lan
+  functions[scan_bonjour]=$_lj376_scan_bonjour
+  functions[scan_port22]=$_lj376_scan_port22
+  functions[merge_seen_by_hostkey]=$_lj376_merge
+  functions[upsert_ssh_config]=$_lj376_upsert
+  if [[ $notice == *扫描完成* ]]; then
+    print -u2 "FAIL host/scan-persist-fail reported success notice=$(printf %q "$notice")"
+    (( fails++ ))
+  fi
+  expect host/scan-persist-fail/notice '没法记下这次扫描。' "$notice"
+  HOSTS_FILE=$saved_hosts_file
+  SSH_CONFIG=$hosts376_saved_ssh
+  KEY=$hosts376_saved_key
+  HOME=$hosts376_saved_home
+  rm -rf "$hosts376_home"
+
   # #266: print >"$LAST_FILE" truncates dest before the new alias exists.
   # Mirror hosts/atomic-write. Source-check the real mark_last (host-selftest
   # never stubs it; cli-selftest #168 does).
