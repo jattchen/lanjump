@@ -3928,7 +3928,7 @@ read_byte() {
 collect_index_digits() {
   local acc=$1
   local -i max=$2
-  local k
+  local k k2
   PENDING_KEY=""
   while index_prefix_ambiguous "$acc" $max; do
     read_byte_timeout $digit_wait || break
@@ -3936,7 +3936,29 @@ collect_index_digits() {
     case $k in
       [0-9]) acc="${acc}${k}" ;;
       $'\n'|$'\r'|' ') break ;;
-      $'\e') REPLY=""; return 0 ;;
+      $'\e')
+        # #262: drain CSI/SGR like read_key so PageUp ESC [ 5 ~ cannot
+        # leave 5 as the next num key. Do not replay the tail.
+        if read_byte 0.2; then
+          k2=$REPLY
+          if [[ $k2 == '[' || $k2 == 'O' ]]; then
+            if read_byte 0.2; then
+              k2=$REPLY
+              if [[ $k2 == [0-9] ]]; then
+                while read_byte 0.2; do
+                  [[ $REPLY == [A-Za-z~] ]] && break
+                done
+              elif [[ $k2 == '<' ]]; then
+                while read_byte 0.2; do
+                  [[ $REPLY == M || $REPLY == m ]] && break
+                done
+              fi
+            fi
+          fi
+        fi
+        REPLY=""
+        return 0
+        ;;
       *) PENDING_KEY=$k; REPLY=""; return 0 ;;
     esac
   done
