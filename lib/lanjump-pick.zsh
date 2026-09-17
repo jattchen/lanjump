@@ -211,7 +211,7 @@ snapshot_pick_bin() {
 snapshot_hook_shell() {
   local pick
   pick=$(snapshot_pick_bin)
-  print -r -- "/bin/zsh $(printf %q "$pick") --snapshot >/dev/null 2>&1"
+  print -r -- "zsh=\$(command -v zsh) || { echo \"lanjump: 找不到 zsh。\" >&2; exit 127; }; \"\$zsh\" $(printf %q "$pick") --snapshot >/dev/null 2>&1"
 }
 
 tmux_install_snapshot_hooks() {
@@ -243,13 +243,13 @@ tmux_install_snapshot_hooks() {
   if [[ -z $cmd || ( $cmd == *lanjump-pick* && $cmd == *--snapshot* ) ]]; then
     tmuxx set-hook -g "$hook" "run-shell -b $(printf %q "$inner")" 2>/dev/null || true
   fi
-  tick="#(/bin/zsh $quoted_pick --snapshot;)"
+  tick="#(zsh=\$(command -v zsh) || exit 127; \"\$zsh\" $quoted_pick --snapshot;)"
   sr=$(tmuxx show-options -gv status-right 2>/dev/null || true)
-  # Remote pick has no .zsh; replace a leftover Application Support tick.
-  app_pat='(#b)(*)\#\(/bin/zsh*lanjump-pick.zsh*--snapshot;\)(*)'
+  # Replace leftover /bin/zsh ticks (Application Support or remote pick).
+  app_pat='(#b)(*)\#\(/bin/zsh*lanjump-pick*--snapshot;\)(*)'
   if [[ $sr == *"$tick"* ]]; then
     :
-  elif [[ $pick != *lanjump-pick.zsh && $sr == $~app_pat ]]; then
+  elif [[ $sr == $~app_pat ]]; then
     sr="${match[1]}$tick${match[2]}"
     tmuxx set-option -g status-right "$sr" 2>/dev/null || true
   elif [[ $sr != *lanjump-pick.zsh* && $sr != *"$quoted_pick"* ]]; then

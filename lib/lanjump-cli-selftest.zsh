@@ -323,6 +323,63 @@ expect_contains remote/cli-term/version 'TERM_PROGRAM_VERSION=440' "$hay"
 expect_contains remote/cli-term/attach --attach "$hay"
 expect_contains remote/cli-term/pick-bin 'LANJUMP_PICK_BIN=$HOME/.local/bin/lanjump-pick' "$hay"
 
+# #341: NixOS has zsh on PATH but no /bin/zsh. After the key works,
+# remote pick must resolve zsh from PATH or the login dies with 127.
+expect_absent remote/cli-term/no-hard-bin-zsh 'exec /bin/zsh' "$hay"
+if [[ $hay != *'command -v zsh'* && $hay != *'/usr/bin/env zsh'* ]]; then
+  print -u2 "FAIL remote/cli-term/find-zsh missing command -v zsh or /usr/bin/env zsh got=$(printf %q "$hay")"
+  (( fails++ ))
+fi
+expect_contains remote/cli-term/zsh-missing-msg '远端找不到 zsh' "$hay"
+
+: >"$log"
+cli_remote_print studio
+hay=$(read_log)
+if [[ $hay == *'/bin/zsh'* && $hay == *lanjump-pick* ]]; then
+  print -u2 "FAIL remote/cli-print/no-hard-bin-zsh still uses /bin/zsh for lanjump-pick got=$(printf %q "$hay")"
+  (( fails++ ))
+fi
+if [[ $hay != *'command -v zsh'* && $hay != *'command\ -v\ zsh'* && $hay != *'/usr/bin/env zsh'* ]]; then
+  print -u2 "FAIL remote/cli-print/find-zsh missing command -v zsh or /usr/bin/env zsh got=$(printf %q "$hay")"
+  (( fails++ ))
+fi
+
+: >"$log"
+cli_remote_pick studio
+hay=$(read_log)
+rcmd341=
+while IFS= read -r _lj341_line; do
+  if [[ $_lj341_line == REMOTE_CMD* ]]; then
+    rcmd341=${_lj341_line#REMOTE_CMD }
+  fi
+done <<<"$hay"
+unset _lj341_line
+if [[ -z $rcmd341 ]]; then
+  print -u2 "FAIL remote/path-zsh missing REMOTE_CMD got=$(printf %q "$hay")"
+  (( fails++ ))
+else
+  remote341=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-341-remote.XXXXXX")
+  mkdir -p "$remote341/home/.local/bin"
+  print -r -- $'#!/bin/sh\necho PATH_ZSH >>"$LANJUMP_341_MARK"\nexec /bin/sh "$@"' >"$remote341/home/.local/bin/zsh"
+  chmod +x "$remote341/home/.local/bin/zsh"
+  print -r -- $'#!/bin/sh\necho PICKER >>"$LANJUMP_341_MARK"\nexit 0' >"$remote341/home/.local/bin/lanjump-pick"
+  chmod +x "$remote341/home/.local/bin/lanjump-pick"
+  : >"$remote341/mark"
+  st=0
+  LANJUMP_341_MARK=$remote341/mark HOME=$remote341/home \
+    PATH=/usr/bin:/bin \
+    /bin/sh -c "$rcmd341" || st=$?
+  if (( st == 127 )); then
+    print -u2 "FAIL remote/path-zsh exec exited 127 with zsh only on PATH"
+    (( fails++ ))
+  fi
+  if [[ ! -f $remote341/mark || $(<"$remote341/mark") != *PATH_ZSH* ]]; then
+    print -u2 "FAIL remote/path-zsh did not exec PATH zsh got=$(printf %q "$(<"$remote341/mark" 2>/dev/null || true)") cmd=$(printf %q "$rcmd341")"
+    (( fails++ ))
+  fi
+  rm -rf "$remote341"
+fi
+
 : >"$log"
 cli_open_tabs local lanjump
 assert_local_open local/open-tabs "$(read_log)" lanjump
