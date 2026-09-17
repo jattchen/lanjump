@@ -328,9 +328,10 @@ if [[ $(<"$appdir/lanjump-pick.zsh") != OLD-PICK ]]; then
   fail "failed upgrade left mixed lanjump-pick.zsh: $(<"$appdir/lanjump-pick.zsh")"
 fi
 
-# #278: staging into $APP.new is not enough if commit still mvs files one by
-# one. Simulate the second file-level stage→APP mv dying (main already new,
-# IME still old). Live $APP must stay all-old or become all-new, never mixed.
+# #278: the live switch is now two directory mvs (APP→APP.old, then
+# APP.new→APP). The inject must actually hit that commit — a file-level
+# lanjump.new→lanjump stub stays silent and the upgrade just succeeds.
+# Live $APP must stay all-old or become all-new, never mixed.
 print -r -- 'OLD-MAIN' >"$appdir/lanjump.zsh"
 print -r -- 'OLD-IME' >"$appdir/lanjump-ime.py"
 print -r -- 'KEEP-SETTINGS' >"$appdir/settings"
@@ -350,32 +351,31 @@ cp "$ROOT/install.zsh" "$mixpkg/lanjump-main/"
 mixtar=$(mktemp)
 tar -czf "$mixtar" -C "$mixpkg" lanjump-main
 
-mvcount=$(mktemp)
-print -r -- 0 >"$mvcount"
 mvwrap=$(mktemp -d)
-cat >"$mvwrap/mv" <<EOF
+cat >"$mvwrap/mv" <<'EOF'
 #!/bin/zsh
 src= dest=
-for a in "\$@"; do
-  [[ \$a == -* ]] && continue
-  src=\$dest
-  dest=\$a
+for a in "$@"; do
+  [[ $a == -* ]] && continue
+  src=$dest
+  dest=$a
 done
-if [[ -n \$src && -n \$dest && -f \$src && \${src:h:t} == lanjump.new && \${dest:h:t} == lanjump ]]; then
-  n=\$(<$(printf %q "$mvcount"))
-  n=\$(( n + 1 ))
-  print -r -- \$n >$(printf %q "$mvcount")
-  if (( n >= 2 )); then
-    print -u2 'mv-stub: mid-commit failure'
-    exit 1
-  fi
+# Current commit is directory-level: APP→APP.old, then APP.new→APP.
+# Fail the second rename so install.zsh must restore APP.old.
+# A file-level ${src:h:t}==lanjump.new check never matches a directory source.
+if [[ -n $src && -n $dest && -d $src && ${src:t} == lanjump.new && ${dest:t} == lanjump ]]; then
+  print -u2 'mv-stub: mid-commit failure'
+  exit 1
 fi
-exec /bin/mv "\$@"
+exec /bin/mv "$@"
 EOF
 chmod 755 "$mvwrap/mv"
 
 mix_sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 out=$(HOME=$fakehome PATH="$mvwrap:$PATH" LANJUMP_REMOTE_SHA=$mix_sha LANJUMP_ARCHIVE_URL="file://${mixtar}" "$fakehome/.local/bin/lanjump" upgrade 2>&1) || true
+if [[ $out != *'mv-stub: mid-commit failure'* ]]; then
+  fail "#278 directory-level commit was not interrupted: $out"
+fi
 main=$(<"$appdir/lanjump.zsh")
 ime=$(<"$appdir/lanjump-ime.py")
 if [[ $main == NEW-MAIN && $ime == OLD-IME ]] || [[ $main == OLD-MAIN && $ime == NEW-IME ]]; then
@@ -486,7 +486,7 @@ if [[ ! -f $app306/session-snapshot || $(<"$app306/session-snapshot") != KEEP-SN
   fail "#306 reinstall wiped snapshot after interrupted commit"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306"
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306"
 
 if (( fails )); then
   exit 1
