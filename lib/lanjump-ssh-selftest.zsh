@@ -292,6 +292,71 @@ EOF
   expect_contains ssh/print-raw/hostname '  HostName office\n  ProxyCommand bad' "$ssh_got"
   expect_absent ssh/print-raw/injected-proxy $'\n  ProxyCommand bad\n' "$ssh_got"
 
+  # #418: splice short-write must not replace the live SSH config.
+  # The new LANJUMP block can land in tmp before the remaining Hosts;
+  # a failed write still yields a smaller file, so replace_file_atomic
+  # succeeds and other Hosts are truncated.
+  cat >"$SSH_CONFIG" <<'EOF'
+# BEGIN LANJUMP lanjump-office
+Host lanjump-office
+  HostName 10.0.0.8
+  User mac
+# END LANJUMP lanjump-office
+Host keep-me
+  HostName other.local
+  User other
+EOF
+  local ssh418_old
+  ssh418_old=$(<"$SSH_CONFIG")
+  awk() {
+    if [[ $* == *'if (open) exit 1'* ]]; then
+      command awk "$@"
+      return $?
+    fi
+    command awk "$@" | command head -c 40
+    return 1
+  }
+  if upsert_ssh_config lanjump-office mac 10.0.0.99; then
+    print -u2 "FAIL ssh/splice-short-write upsert returned 0 after short splice"
+    (( fails++ ))
+  fi
+  unfunction awk
+  read_ssh
+  if [[ $ssh_got != "$ssh418_old" ]]; then
+    print -u2 "FAIL ssh/splice-short-write live config replaced after short splice got=$(printf %q "$ssh_got")"
+    (( fails++ ))
+  fi
+
+  # Same short-write on the damaged-block (missing END) path.
+  cat >"$SSH_CONFIG" <<'EOF'
+# BEGIN LANJUMP lanjump-office
+Host lanjump-office
+  HostName 10.0.0.8
+  User mac
+Host keep-me
+  HostName other.local
+  User other
+EOF
+  ssh418_old=$(<"$SSH_CONFIG")
+  awk() {
+    if [[ $* == *'if (open) exit 1'* ]]; then
+      command awk "$@"
+      return $?
+    fi
+    command awk "$@" | command head -c 40
+    return 1
+  }
+  if upsert_ssh_config lanjump-office mac 10.0.0.99; then
+    print -u2 "FAIL ssh/splice-short-write/damaged upsert returned 0 after short splice"
+    (( fails++ ))
+  fi
+  unfunction awk
+  read_ssh
+  if [[ $ssh_got != "$ssh418_old" ]]; then
+    print -u2 "FAIL ssh/splice-short-write/damaged live config replaced after short splice got=$(printf %q "$ssh_got")"
+    (( fails++ ))
+  fi
+
   # Happy path: a complete block is still removed; later Host stays.
   cat >"$SSH_CONFIG" <<'EOF'
 # BEGIN LANJUMP lanjump-office
