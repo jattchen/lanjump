@@ -96,8 +96,13 @@ print
 fetched=
 stage=
 cleanup() {
+  if [[ ! -e $APP && -d $APP.old ]]; then
+    mv -f "$APP.old" "$APP"
+  fi
   [[ -n $fetched ]] && rm -rf "$fetched"
-  [[ -n $stage ]] && rm -rf "$stage"
+  if [[ -n $stage && -d $stage && $stage != "$APP" ]]; then
+    rm -rf "$stage"
+  fi
 }
 trap cleanup EXIT
 trap 'print -u2 "${mode}失败。"' ERR
@@ -298,12 +303,24 @@ rm -f "$keys_err"
 cp -f "$ROOT/bin/lanjump.command" "$stage/lanjump.command"
 chmod 755 "$stage/lanjump.command"
 
-for f in lanjump.zsh lanjump-pick.zsh lanjump-ghostty-attach lanjump-keys.py lanjump-ime.py lanjump-keys lanjump.command; do
-  [[ -e $stage/$f ]] || continue
-  mv -f "$stage/$f" "$APP/$f"
+# Carry keepers (settings, hosts, install.zsh, …) into the staged tree, then
+# switch the live dir in one rename. A crash mid-loop of per-file mv used to
+# leave a mixed old/new $APP (e.g. new main, old IME).
+for f in "$APP"/*(ND); do
+  [[ -e $stage/${f:t} ]] && continue
+  cp -a "$f" "$stage/${f:t}"
 done
-rm -rf "$stage"
+old=$APP.old
+rm -rf "$old"
+if ! mv "$APP" "$old"; then
+  exit 1
+fi
+if ! mv "$stage" "$APP"; then
+  mv -f "$old" "$APP"
+  exit 1
+fi
 stage=
+rm -rf "$old"
 
 if [[ -f $APP/lanjump-ghostty-attach ]]; then
   cp -f "$APP/lanjump-ghostty-attach" "$BIN_DIR/lanjump-ghostty-attach"
