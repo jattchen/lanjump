@@ -744,6 +744,80 @@ if [[ ! -f $app386/session-snapshot || $(<"$app386/session-snapshot") != NEW-SNA
   fail "#386 switch discarded a snapshot write after last recopy: $(<"$app386/session-snapshot" 2>/dev/null || print missing)"
 fi
 
+# #419: #358/#386 lock hosts/settings/pin/snapshot across recopy+switch,
+# but keepers also include session-filter, last_target, and last-session.
+# Those writers do not take the four existing locks. A write in the
+# APP→APP.old window lands on the tree about to be deleted unless
+# recopy+switch holds those sidecar locks too.
+home419=$(mktemp -d)
+mkdir -p "$home419/Desktop" "$home419/.ssh" "$home419/Library/Application Support"
+HOME=$home419 /bin/zsh "$ROOT/install.zsh" >/dev/null
+app419="$home419/Library/Application Support/lanjump"
+print -r -- 'OLD-FILTER' >"$app419/session-filter"
+print -r -- 'OLD-LAST-TARGET' >"$app419/last_target"
+print -r -- 'OLD-LAST-SESSION' >"$app419/last-session"
+mark419=$(mktemp -d)
+mvwrap419=$(mktemp -d)
+cat >"$mvwrap419/mv" <<EOF
+#!/bin/zsh
+src= dest=
+for a in "\$@"; do
+  [[ \$a == -* ]] && continue
+  src=\$dest
+  dest=\$a
+done
+mark=$(printf %q "$mark419")
+if [[ -n \$src && -n \$dest && -d \$src && \${src:t} == lanjump && \${dest:t} == lanjump.old ]]; then
+  live=\$src
+  (
+    lock_write() {
+      local dest=\$1 val=\$2 lock
+      local -i fd=-1 n=0
+      lock=\${dest}.lock
+      [[ -e \$lock ]] || : >"\$lock"
+      if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
+        zsystem flock -f fd "\$lock" || exit 1
+        print -r -- "\$val" >"\$dest"
+        zsystem flock -u fd
+        return
+      fi
+      while ! mkdir "\${lock}.d" 2>/dev/null; do
+        sleep 0.05
+        (( ++n > 200 )) && exit 1
+      done
+      print -r -- "\$val" >"\$dest"
+      rmdir "\${lock}.d" 2>/dev/null
+    }
+    lock_write "\$live/session-filter" NEW-FILTER
+    lock_write "\$live/last_target" NEW-LAST-TARGET
+    lock_write "\$live/last-session" NEW-LAST-SESSION
+    : >"\$mark/wrote"
+  ) &!
+  for _ in {1..80}; do
+    [[ -f \$mark/wrote ]] && break
+    sleep 0.01
+  done
+  /bin/mv "\$@"
+  exit \$?
+fi
+exec /bin/mv "\$@"
+EOF
+chmod 755 "$mvwrap419/mv"
+HOME=$home419 PATH="$mvwrap419:$PATH" /bin/zsh "$ROOT/install.zsh" >/dev/null
+for _ in {1..200}; do
+  [[ -f $mark419/wrote ]] && break
+  sleep 0.05
+done
+if [[ ! -f $app419/session-filter || $(<"$app419/session-filter") != NEW-FILTER ]]; then
+  fail "#419 switch discarded a session-filter write after last recopy: $(<"$app419/session-filter" 2>/dev/null || print missing)"
+fi
+if [[ ! -f $app419/last_target || $(<"$app419/last_target") != NEW-LAST-TARGET ]]; then
+  fail "#419 switch discarded a last_target write after last recopy: $(<"$app419/last_target" 2>/dev/null || print missing)"
+fi
+if [[ ! -f $app419/last-session || $(<"$app419/last-session") != NEW-LAST-SESSION ]]; then
+  fail "#419 switch discarded a last-session write after last recopy: $(<"$app419/last-session" 2>/dev/null || print missing)"
+fi
+
 # #338: piped/file:// tarball install has no git history in ROOT.
 # fetch_remote_ver must surface the commit epoch to the parent so the
 # picker gets `# lanjump-pick-version <epoch> <sha>`. Today that assignment
@@ -835,7 +909,7 @@ if (( st339 == 0 )); then
   fi
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$repairpkg" "$repairtar" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home358" "$mvwrap358" "$mark358" "$home386" "$mvwrap386" "$mark386" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$repairpkg" "$repairtar" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home358" "$mvwrap358" "$mark358" "$home386" "$mvwrap386" "$mark386" "$home419" "$mvwrap419" "$mark419" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
 
 if (( fails )); then
   exit 1
