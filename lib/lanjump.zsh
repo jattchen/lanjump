@@ -2607,8 +2607,9 @@ cli_dispatch() {
       if (( ${#extra} )); then
         spec=${extra[1]}
         if [[ $spec == *:* ]]; then
-          host=${spec%%:*}
-          session=${spec#*:}
+          # #378: session names forbid colons; aliases may contain them.
+          host=${spec%:*}
+          session=${spec##*:}
         else
           session=$spec
           # #85: unprefixed attach is local; go still follows last host.
