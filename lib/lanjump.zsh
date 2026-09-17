@@ -226,7 +226,7 @@ toggle_ime() {
 }
 
 mark_last() {
-  print -r -- "$1" >"$LAST_FILE"
+  print -r -- "$1" | replace_file_atomic "$LAST_FILE"
 }
 
 read_last() {
