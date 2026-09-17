@@ -1709,8 +1709,11 @@ forget_killed_session() {
   [[ -n $name ]] || return 0
   load_session_snapshot
   drop_snap_record "$name"
-  save_session_snapshot
-  remove_pin_record "$name"
+  if ! save_session_snapshot; then
+    load_session_snapshot
+    return 1
+  fi
+  remove_pin_record "$name" || return 1
 }
 
 save_session_snapshot() {
@@ -3116,7 +3119,7 @@ toggle_session_pin() {
   local -i i on=0
   old=$name
   if [[ ${items_pinned[$cursor]:-0} == 1 ]]; then
-    remove_pin_record "$name"
+    remove_pin_record "$name" || return
     tmux_set_pinned "$name" 0
     on=0
   else
@@ -4376,12 +4379,10 @@ prompt_delete() {
   print -n "确认删除请输入 y，其他键取消: "
   read -r ans
   if [[ $ans == y || $ans == Y ]]; then
-    if ! tmuxx kill-session -t "=$name"; then
+    if ! tmuxx kill-session -t "=$name" || ! forget_killed_session "$name"; then
       print "删除失败。"
       print -n "按回车继续…"
       read -r
-    else
-      forget_killed_session "$name"
     fi
   fi
   setup_tty
