@@ -2034,7 +2034,10 @@ connect_item() {
   apply_ssh_port "$port"
   restore_tty
   if [[ -z $user ]]; then
-    prompt_username
+    if ! prompt_username; then
+      setup_tty
+      return
+    fi
     user=$REPLY
   fi
   if [[ -z $ip && -z $hostname ]]; then
