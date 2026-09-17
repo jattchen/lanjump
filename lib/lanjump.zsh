@@ -19,7 +19,7 @@ KEY="$HOME/.ssh/id_ed25519_lanjump"
 PICKER="$APP/lanjump-pick.zsh"
 SSH_CONFIG="$HOME/.ssh/config"
 
-typeset -a h_alias h_user h_hostname h_ip h_mac h_port h_last
+typeset -a h_alias h_user h_hostname h_ip h_mac h_port h_ssh_id h_last
 typeset -a items_kind items_alias items_user items_hostname items_ip items_mac items_port items_status items_saved
 typeset -a cli_recent_names
 typeset -a s_alias s_host s_ip s_mac s_port
@@ -500,8 +500,9 @@ ssh_id_tag() {
   print -r -- "$tag"
 }
 
-# ASCII aliases stay slug-only. CJK (or any lossy slug) is not unique
-# after non-ASCII is stripped (#285), so suffix MAC, else IP, or refuse.
+# ASCII aliases stay slug-only until another host already owns that
+# id (#313). CJK (or any lossy slug) is not unique after non-ASCII is
+# stripped (#285), so suffix MAC, else IP, or refuse.
 ssh_id_from_alias() {
   local alias=$1 mac=${2:-} ip=${3:-}
   local s=${alias:l}
@@ -521,8 +522,40 @@ ssh_id_from_alias() {
   print -r -- "lanjump-${s}"
 }
 
+# Written id wins; otherwise the natural id. exclude is the row being
+# updated so a rename does not collide with itself.
+ssh_id_taken() {
+  local want=$1 exclude=${2:-0}
+  local i n=${#h_alias} id
+  for (( i = 1; i <= n; i++ )); do
+    (( i == exclude )) && continue
+    id=${h_ssh_id[$i]:-}
+    if [[ -z $id ]]; then
+      id=$(ssh_id_from_alias "${h_alias[$i]}" "${h_mac[$i]}" "${h_ip[$i]}") || continue
+    fi
+    [[ $id == "$want" ]] && return 0
+  done
+  return 1
+}
+
+# Natural id, or MAC/IP suffix when that slug is already live. Refuse
+# rather than write a second host into the same SSH block.
+alloc_ssh_id() {
+  local alias=$1 mac=$2 ip=$3 exclude=${4:-0}
+  local id tag candidate
+  id=$(ssh_id_from_alias "$alias" "$mac" "$ip") || return 1
+  if ssh_id_taken "$id" "$exclude"; then
+    tag=$(ssh_id_tag "$mac") || tag=$(ssh_id_tag "$ip") || return 1
+    candidate="lanjump-${id#lanjump-}-${tag}"
+    [[ $candidate != "$id" ]] || return 1
+    ssh_id_taken "$candidate" "$exclude" && return 1
+    id=$candidate
+  fi
+  print -r -- "$id"
+}
+
 load_hosts() {
-  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_last=()
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
   [[ -f $HOSTS_FILE ]] || return
   local line
   local -a f
@@ -530,16 +563,27 @@ load_hosts() {
     [[ -z $line || $line == \#* ]] && continue
     f=("${(@s:|:)line}")
     (( ${#f} >= 6 )) || continue
+    # #313: optional ssh_id sits before last when it is a written Host id.
     # #280: optional port sits before last. A 1–65535 field there is
     # the advertised SSH port; otherwise the row is the pre-port format.
     # #219: extra | belongs to the alias (Bonjour names).
-    if (( ${#f} >= 7 )) && [[ ${f[-2]} == [1-9][0-9](#c0,4) ]] && (( f[-2] <= 65535 )); then
+    if (( ${#f} >= 8 )) && [[ ${f[-2]} == lanjump-* ]]; then
+      h_alias+=("${(j:|:)f[1,-8]}")
+      h_user+=("${f[-7]}")
+      h_hostname+=("${f[-6]}")
+      h_ip+=("${f[-5]}")
+      h_mac+=("${f[-4]}")
+      h_port+=("${f[-3]}")
+      h_ssh_id+=("${f[-2]}")
+      h_last+=("${f[-1]}")
+    elif (( ${#f} >= 7 )) && [[ ${f[-2]} == [1-9][0-9](#c0,4) ]] && (( f[-2] <= 65535 )); then
       h_alias+=("${(j:|:)f[1,-7]}")
       h_user+=("${f[-6]}")
       h_hostname+=("${f[-5]}")
       h_ip+=("${f[-4]}")
       h_mac+=("${f[-3]}")
       h_port+=("${f[-2]}")
+      h_ssh_id+=("")
       h_last+=("${f[-1]}")
     else
       h_alias+=("${(j:|:)f[1,-6]}")
@@ -548,6 +592,7 @@ load_hosts() {
       h_ip+=("${f[-3]}")
       h_mac+=("${f[-2]}")
       h_port+=("22")
+      h_ssh_id+=("")
       h_last+=("${f[-1]}")
     fi
   done <"$HOSTS_FILE"
@@ -574,9 +619,13 @@ replace_file_atomic() {
 save_hosts() {
   local i n=${#h_alias}
   {
-    print -r -- "# alias|user|hostname|ip|mac|port|last"
+    print -r -- "# alias|user|hostname|ip|mac|port|ssh_id|last"
     for (( i = 1; i <= n; i++ )); do
-      print -r -- "${h_alias[$i]}|${h_user[$i]//|/-}|${h_hostname[$i]//|/-}|${h_ip[$i]}|${h_mac[$i]}|${h_port[$i]:-22}|${h_last[$i]}"
+      if [[ -n ${h_ssh_id[$i]:-} ]]; then
+        print -r -- "${h_alias[$i]}|${h_user[$i]//|/-}|${h_hostname[$i]//|/-}|${h_ip[$i]}|${h_mac[$i]}|${h_port[$i]:-22}|${h_ssh_id[$i]}|${h_last[$i]}"
+      else
+        print -r -- "${h_alias[$i]}|${h_user[$i]//|/-}|${h_hostname[$i]//|/-}|${h_ip[$i]}|${h_mac[$i]}|${h_port[$i]:-22}|${h_last[$i]}"
+      fi
     done
   } | replace_file_atomic "$HOSTS_FILE"
 }
@@ -624,9 +673,13 @@ find_saved() {
 
 upsert_host() {
   local alias=$1 user=$2 hostname=$3 ip=$4 mac=$5 port=${6:-22}
-  local idx
+  local idx old_id id
   idx=$(find_saved "$mac" "$hostname" "$ip")
   if [[ -n $idx ]]; then
+    old_id=${h_ssh_id[$idx]:-}
+    if [[ -z $old_id ]]; then
+      old_id=$(ssh_id_from_alias "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}") || old_id=""
+    fi
     h_alias[$idx]=$alias
     h_user[$idx]=$user
     [[ -n $hostname ]] && h_hostname[$idx]=$hostname
@@ -641,13 +694,19 @@ upsert_host() {
     h_ip+=("$ip")
     h_mac+=("$mac")
     h_port+=("${port:-22}")
+    h_ssh_id+=("")
     h_last+=("$EPOCHSECONDS")
+    idx=${#h_alias}
+    old_id=""
+  fi
+  if id=$(alloc_ssh_id "$alias" "$mac" "$ip" "$idx"); then
+    if [[ -n $old_id && $old_id != "$id" ]]; then
+      remove_ssh_config "$old_id"
+    fi
+    upsert_ssh_config "$id" "$user" "${hostname:-$ip}" "$port"
+    h_ssh_id[$idx]=$id
   fi
   save_hosts
-  local id
-  if id=$(ssh_id_from_alias "$alias" "$mac" "$ip"); then
-    upsert_ssh_config "$id" "$user" "${hostname:-$ip}" "$port"
-  fi
 }
 
 forget_saved() {
@@ -655,12 +714,14 @@ forget_saved() {
   local n=${#h_alias}
   (( idx >= 1 && idx <= n )) || return
   local id
-  if id=$(ssh_id_from_alias "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}"); then
-    remove_ssh_config "$id"
+  id=${h_ssh_id[$idx]:-}
+  if [[ -z $id ]]; then
+    id=$(ssh_id_from_alias "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}") || id=""
   fi
-  local -a na nu nh ni nm np nl
+  [[ -n $id ]] && remove_ssh_config "$id"
+  local -a na nu nh ni nm np ns nl
   local i
-  na=() nu=() nh=() ni=() nm=() np=() nl=()
+  na=() nu=() nh=() ni=() nm=() np=() ns=() nl=()
   for (( i = 1; i <= n; i++ )); do
     (( i == idx )) && continue
     na+=("${h_alias[$i]}")
@@ -669,6 +730,7 @@ forget_saved() {
     ni+=("${h_ip[$i]}")
     nm+=("${h_mac[$i]}")
     np+=("${h_port[$i]:-22}")
+    ns+=("${h_ssh_id[$i]:-}")
     nl+=("${h_last[$i]}")
   done
   h_alias=("${na[@]}")
@@ -677,6 +739,7 @@ forget_saved() {
   h_ip=("${ni[@]}")
   h_mac=("${nm[@]}")
   h_port=("${np[@]}")
+  h_ssh_id=("${ns[@]}")
   h_last=("${nl[@]}")
   save_hosts
 }

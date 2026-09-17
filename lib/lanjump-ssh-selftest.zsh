@@ -9,7 +9,7 @@ ssh_selftest() {
   local real_ssh="$orig_home/.ssh/config"
   local real_hash="" new_hash=""
   local tmpdir ssh_got saved_ssh saved_hosts saved_key saved_home
-  local -a saved_alias saved_user saved_hostname saved_ip saved_mac saved_last
+  local -a saved_alias saved_user saved_hostname saved_ip saved_mac saved_ssh_id saved_last
 
   tmpdir=$(mktemp -d) || return 1
   [[ -f $real_ssh ]] && real_hash=$(shasum -a 256 "$real_ssh")
@@ -23,6 +23,7 @@ ssh_selftest() {
   saved_hostname=("${h_hostname[@]}")
   saved_ip=("${h_ip[@]}")
   saved_mac=("${h_mac[@]}")
+  saved_ssh_id=("${h_ssh_id[@]}")
   saved_last=("${h_last[@]}")
 
   SSH_CONFIG="$tmpdir/config"
@@ -235,7 +236,7 @@ EOF
   # sanitized to lanjump-host; later connect overwrote HostName and
   # forgetting either deleted the shared block.
   : >"$SSH_CONFIG"
-  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_last=()
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
   upsert_host '书房' mac study.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
   upsert_host '客厅' mac living.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
   read_ssh
@@ -245,6 +246,34 @@ EOF
   read_ssh
   expect_absent ssh/cjk-id/forget-study 'HostName study.local' "$ssh_got"
   expect_contains ssh/cjk-id/forget-living 'HostName living.local' "$ssh_got"
+
+  # #313: ASCII near-names that slug to the same id must not share one
+  # live SSH Host block. office mac / office-mac both became
+  # lanjump-office-mac and the later HostName won.
+  : >"$SSH_CONFIG"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host 'office mac' mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  upsert_host 'office-mac' mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
+  read_ssh
+  expect_contains ssh/ascii-id/office-hn 'HostName office.local' "$ssh_got"
+  expect_contains ssh/ascii-id/studio-hn 'HostName studio.local' "$ssh_got"
+  forget_saved 1
+  read_ssh
+  expect_absent ssh/ascii-id/forget-office 'HostName office.local' "$ssh_got"
+  expect_contains ssh/ascii-id/forget-studio 'HostName studio.local' "$ssh_got"
+
+  # #313: rename / id change must drop the previous BEGIN/END pair.
+  : >"$SSH_CONFIG"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  read_ssh
+  expect_contains ssh/rename-id/old-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  upsert_host work mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  read_ssh
+  expect_absent ssh/rename-id/stale-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  expect_absent ssh/rename-id/stale-end '# END LANJUMP lanjump-office' "$ssh_got"
+  expect_contains ssh/rename-id/new-begin '# BEGIN LANJUMP lanjump-work' "$ssh_got"
+  expect_contains ssh/rename-id/new-hn 'HostName office.local' "$ssh_got"
 
   # #256: KEY.pub comment with ' must still be a valid remote install script
   # that writes the full line. Callers pass this string as the ssh command.
@@ -567,6 +596,7 @@ EOF
   h_hostname=("${saved_hostname[@]}")
   h_ip=("${saved_ip[@]}")
   h_mac=("${saved_mac[@]}")
+  h_ssh_id=("${saved_ssh_id[@]}")
   h_last=("${saved_last[@]}")
   rm -rf "$tmpdir"
 
