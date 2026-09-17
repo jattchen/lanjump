@@ -457,6 +457,36 @@ host_selftest() {
   HOSTS_FILE=$saved_hosts_file
   rm -f "$hosts264"
 
+  # #266: print >"$LAST_FILE" truncates dest before the new alias exists.
+  # Mirror hosts/atomic-write. Source-check the real mark_last (host-selftest
+  # never stubs it; cli-selftest #168 does).
+  if [[ ${functions[mark_last]} != *replace_file_atomic* ]]; then
+    print -u2 "FAIL last/atomic-write missing replace_file_atomic"
+    (( fails++ ))
+  fi
+  local last266 last266_mid
+  local -i last266_torn=0
+  last266=$(mktemp) || return 1
+  saved_last_file=$LAST_FILE
+  LAST_FILE=$last266
+  print -r -- office >"$LAST_FILE"
+  print() {
+    last266_mid=$(<"$LAST_FILE")
+    if [[ -z $last266_mid ]]; then
+      last266_torn=1
+    fi
+    builtin print "$@"
+  }
+  mark_last studio
+  unfunction print
+  if (( last266_torn )); then
+    print -u2 "FAIL last/atomic-write dest was torn mid-save"
+    (( fails++ ))
+  fi
+  expect last/atomic-write-alias studio "$(read_last)"
+  LAST_FILE=$saved_last_file
+  rm -f "$last266"
+
   if (( fails )); then
     print -u2 "host-selftest: $fails failed"
     return 1
