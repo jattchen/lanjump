@@ -393,7 +393,36 @@ if [[ -x $app283/lanjump-keys || -x $home283/.local/bin/lanjump-keys ]]; then
   fail "#283 installed a fake helper without python3"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283"
+# #306: SIGKILL/power-loss after APP→APP.old and before APP.new→APP leaves
+# user data only in APP.old. The next install must restore that copy, not
+# mkdir -p an empty APP and then rm -rf the only remaining tree.
+home306=$(mktemp -d)
+mkdir -p "$home306/Desktop" "$home306/.ssh" "$home306/Library/Application Support"
+HOME=$home306 /bin/zsh "$ROOT/install.zsh" >/dev/null
+app306="$home306/Library/Application Support/lanjump"
+print -r -- 'KEEP-HOSTS' >"$app306/hosts"
+print -r -- 'KEEP-SETTINGS' >"$app306/settings"
+print -r -- 'KEEP-PINS' >"$app306/pinned-sessions"
+print -r -- 'KEEP-SNAPSHOT' >"$app306/session-snapshot"
+mv "$app306" "$app306.old"
+HOME=$home306 /bin/zsh "$ROOT/install.zsh" >/dev/null
+if [[ ! -d $app306 ]]; then
+  fail "#306 reinstall left live APP missing after interrupted commit"
+fi
+if [[ ! -f $app306/hosts || $(<"$app306/hosts") != KEEP-HOSTS ]]; then
+  fail "#306 reinstall wiped hosts after interrupted commit"
+fi
+if [[ ! -f $app306/settings || $(<"$app306/settings") != KEEP-SETTINGS ]]; then
+  fail "#306 reinstall wiped settings after interrupted commit"
+fi
+if [[ ! -f $app306/pinned-sessions || $(<"$app306/pinned-sessions") != KEEP-PINS ]]; then
+  fail "#306 reinstall wiped pins after interrupted commit"
+fi
+if [[ ! -f $app306/session-snapshot || $(<"$app306/session-snapshot") != KEEP-SNAPSHOT ]]; then
+  fail "#306 reinstall wiped snapshot after interrupted commit"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306"
 
 if (( fails )); then
   exit 1
