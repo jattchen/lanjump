@@ -560,7 +560,9 @@ load_hosts() {
   local line
   local -a f
   while IFS= read -r line; do
-    [[ -z $line || $line == \#* ]] && continue
+    [[ -z $line ]] && continue
+    # Header only. A Bonjour alias may start with # (#354).
+    [[ $line == '# alias|'* ]] && continue
     f=("${(@s:|:)line}")
     (( ${#f} >= 6 )) || continue
     # #313: optional ssh_id sits before last when it is a written Host id.
