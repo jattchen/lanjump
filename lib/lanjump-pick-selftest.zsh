@@ -3268,6 +3268,16 @@ pick_selftest() {
     print -u2 "FAIL snap/hook-app-default used local/bin got=$(printf %q "$got")"
     (( fails++ ))
   fi
+  # #286: local install wins over a synced ~/.local/bin leftover.
+  local both_home both_local both_app
+  both_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-hook-both.XXXXXX")
+  mkdir -p "$both_home/.local/bin" "$both_home/Library/Application Support/lanjump"
+  both_local=$both_home/.local/bin/lanjump-pick
+  both_app="$both_home/Library/Application Support/lanjump/lanjump-pick.zsh"
+  : >"$both_local"
+  : >"$both_app"
+  got=$(unset LANJUMP_PICK_BIN; HOME=$both_home snapshot_pick_bin)
+  expect snap/prefer-app-over-synced "$both_app" "$got"
   : >"$tmux_log"
   unset LANJUMP_PICK_BIN
   LANJUMP_PICK_BIN=$hook_pick

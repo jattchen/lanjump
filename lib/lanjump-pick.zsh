@@ -197,6 +197,10 @@ tmux_prepare_keys() {
 snapshot_pick_bin() {
   if [[ -n ${LANJUMP_PICK_BIN:-} ]]; then
     print -r -- "$LANJUMP_PICK_BIN"
+  elif [[ -f "$HOME/Library/Application Support/lanjump/lanjump-pick.zsh" ]]; then
+    # #286: a local install beats a synced ~/.local/bin copy that an
+    # older machine may have overwritten on connect.
+    print -r -- "$HOME/Library/Application Support/lanjump/lanjump-pick.zsh"
   elif [[ -f $HOME/.local/bin/lanjump-pick ]]; then
     print -r -- "$HOME/.local/bin/lanjump-pick"
   else
