@@ -81,6 +81,35 @@ if [[ $out != *$(print -r -- ${local_sha[1,7]})* ]]; then
   fail "skip message missing current version: $out"
 fi
 
+# #355: same remote SHA must still reinstall if a required file is missing.
+# Official recovery is `lanjump upgrade`; a version-only skip leaves picker gone.
+repairpkg=$(mktemp -d)
+mkdir -p "$repairpkg/lanjump-main"/{bin,lib,src}
+cp "$ROOT/bin/lanjump.command" "$repairpkg/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$repairpkg/lanjump-main/bin/"
+cp "$ROOT/lib/"* "$repairpkg/lanjump-main/lib/"
+cp "$ROOT/src/lanjump-keys.c" "$repairpkg/lanjump-main/src/"
+cp "$ROOT/install.zsh" "$repairpkg/lanjump-main/install.zsh"
+print -r -- '# REPAIR-PICKER-355' >>"$repairpkg/lanjump-main/lib/lanjump-pick.zsh"
+repairtar=$(mktemp)
+tar -czf "$repairtar" -C "$repairpkg" lanjump-main
+rm -f "$fakehome/Library/Application Support/lanjump/lanjump-pick.zsh"
+
+st=0
+out=$(HOME=$fakehome LANJUMP_REMOTE_SHA=$local_sha LANJUMP_ARCHIVE_URL="file://${repairtar}" "$fakehome/.local/bin/lanjump" upgrade) || st=$?
+if [[ $out == *没有新版本* ]]; then
+  fail "#355 same SHA with missing picker must not skip: $out"
+fi
+if (( st )); then
+  fail "#355 repair upgrade failed ($st): $out"
+fi
+if [[ ! -f "$fakehome/Library/Application Support/lanjump/lanjump-pick.zsh" ]]; then
+  fail "#355 upgrade did not restore missing picker"
+fi
+if ! grep -q 'REPAIR-PICKER-355' "$fakehome/Library/Application Support/lanjump/lanjump-pick.zsh"; then
+  fail "#355 upgrade did not reinstall picker from archive"
+fi
+
 # After official Lanjump.command is gone, a user-copied lanjump.command with one
 # extra env line must survive upgrade. Cannot coexist with Lanjump.command on
 # a case-insensitive volume.
@@ -670,7 +699,7 @@ if (( st339 == 0 )); then
   fi
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$repairpkg" "$repairtar" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
 
 if (( fails )); then
   exit 1
