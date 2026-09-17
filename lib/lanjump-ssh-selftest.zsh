@@ -565,6 +565,52 @@ EOF
     (( fails++ ))
   fi
 
+  # #307: tty hangup must not treat a failed read as an empty username.
+  if ! (( ${+functions[prompt_username]} )); then
+    print -u2 "FAIL username/tty-eof missing prompt_username"
+    (( fails++ ))
+  elif ! command -v python3 >/dev/null; then
+    print -u2 "FAIL username/tty-eof missing python3"
+    (( fails++ ))
+  else
+    local eof_dir eof_st=0
+    eof_dir=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-307.XXXXXX") || return 1
+    {
+      typeset -f trim
+      typeset -f prompt_username
+      print -r -- 'restore_tty() { : }'
+      print -r -- 'prompt_username'
+    } >"$eof_dir/run.zsh"
+    python3 - "$eof_dir" <<'PY'
+import os, subprocess, sys
+d = sys.argv[1]
+try:
+    r = subprocess.run(
+        ["/bin/zsh", os.path.join(d, "run.zsh")],
+        preexec_fn=os.setsid,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=open(os.path.join(d, "err"), "wb"),
+        timeout=1.5,
+    )
+    sys.exit(r.returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(99)
+PY
+    eof_st=$?
+    if (( eof_st == 99 )); then
+      print -u2 "FAIL username/tty-eof spun (treated read fail as empty name)"
+      (( fails++ ))
+    elif [[ -f $eof_dir/err ]] && grep -q '用户名不能为空' "$eof_dir/err"; then
+      print -u2 "FAIL username/tty-eof treated read fail as empty name"
+      (( fails++ ))
+    elif (( eof_st == 0 )); then
+      print -u2 "FAIL username/tty-eof accepted empty name on read fail"
+      (( fails++ ))
+    fi
+    rm -rf "$eof_dir"
+  fi
+
   if (( fails )); then
     print -u2 "ssh-selftest: $fails failed"
     return 1

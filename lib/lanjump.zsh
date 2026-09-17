@@ -1520,7 +1520,7 @@ prompt_username() {
   print -u2
   while true; do
     print -u2 -n "这台机器的 SSH 用户名（必填）: "
-    read -r user </dev/tty
+    read -r user </dev/tty || return 1
     user=$(trim "$user")
     user=${user//$'\r'/}
     if [[ -n $user ]]; then
