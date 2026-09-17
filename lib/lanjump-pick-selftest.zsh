@@ -3197,6 +3197,43 @@ pick_selftest() {
     print -u2 "FAIL snap/tty --snapshot should not need a tty"
     (( fails++ ))
   fi
+  # #277: foreign hook in slot 91 must survive install. Do not -gu [91] blindly.
+  local hook91_file hook91_got
+  typeset -g PICK_SELFTEST_HOOK91_DIR
+  PICK_SELFTEST_HOOK91_DIR=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-hook91.XXXXXX")
+  hook91_file=$PICK_SELFTEST_HOOK91_DIR/client-attached\[91\]
+  print -r -- 'run-shell -b /usr/local/bin/other-plugin' >"$hook91_file"
+  LANJUMP_PICK_BIN=/opt/lanjump/lanjump-pick.zsh
+  tmuxx() {
+    local hook file
+    case $1 in
+      show-hooks)
+        hook=${@[-1]}
+        file="$PICK_SELFTEST_HOOK91_DIR/$hook"
+        if [[ -f "$file" ]]; then
+          print -r -- "$hook $(<"$file")"
+        else
+          print -r -- "$hook "
+        fi
+        ;;
+      set-hook)
+        hook=$3
+        file="$PICK_SELFTEST_HOOK91_DIR/$hook"
+        if [[ $2 == -gu ]]; then
+          rm -f -- "$file"
+        elif [[ $2 == -g ]]; then
+          print -r -- "${@[4,-1]}" >"$file"
+        fi
+        ;;
+    esac
+    return 0
+  }
+  tmux_install_snapshot_hooks
+  hook91_got=
+  [[ -f "$hook91_file" ]] && hook91_got=$(<"$hook91_file")
+  expect snap/hook-keep-foreign-91 'run-shell -b /usr/local/bin/other-plugin' "$hook91_got"
+  rm -rf "$PICK_SELFTEST_HOOK91_DIR"
+  unset PICK_SELFTEST_HOOK91_DIR
   # #162: remote pick is ~/.local/bin/lanjump-pick; hooks must not keep
   # pointing at the Mac-only Application Support path.
   got=$(LANJUMP_PICK_BIN=/tmp/lanjump-pick snapshot_hook_shell)
