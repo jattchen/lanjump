@@ -1302,8 +1302,10 @@ load_pinned_sessions() {
 }
 
 # Same-dir temp + rename so concurrent readers never see a torn dest (#213).
+# Follow a dest symlink so the directory entry stays a link (#309).
 replace_file_atomic() {
   local dest=$1 dir tmp
+  [[ -L $dest ]] && dest=${dest:A}
   dir=${dest:h}
   mkdir -p "$dir"
   tmp=$(mktemp "${dir}/.${dest:t}.XXXXXX") || return 1
