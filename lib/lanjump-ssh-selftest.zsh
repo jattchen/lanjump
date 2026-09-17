@@ -761,6 +761,74 @@ EOF
     (( fails++ ))
   fi
 
+  # #424: same leftover reallocates lanjump-office, but the new-block
+  # upsert_ssh_config fails (disk full / replace fail). #413 only
+  # restores the old block on a later save_hosts failure; this path
+  # returns after the new write. Old block must come back; hosts row
+  # stays (load_hosts). ssh lanjump-… must still resolve the leftover.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host Office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  upsert_host office mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
+  load_hosts
+  leftover_id=${h_ssh_id[2]:-}
+  if [[ -z $leftover_id || $leftover_id == lanjump-office ]]; then
+    print -u2 "FAIL ssh/swap-id-upsert-fail/setup leftover id should be suffixed got=$(printf %q "$leftover_id")"
+    (( fails++ ))
+  fi
+  forget_saved 1
+  load_hosts
+  leftover_id=${h_ssh_id[1]:-}
+  if [[ ${h_alias[1]:-} != office || -z $leftover_id || $leftover_id == lanjump-office ]]; then
+    print -u2 "FAIL ssh/swap-id-upsert-fail/leftover want=office+suffix alias=$(printf %q "${h_alias[1]:-}") id=$(printf %q "$leftover_id")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/swap-id-upsert-fail/pre-old-begin "# BEGIN LANJUMP ${leftover_id}" "$ssh_got"
+  expect_contains ssh/swap-id-upsert-fail/pre-old-hn 'HostName studio.local' "$ssh_got"
+  if grep -qFx '# BEGIN LANJUMP lanjump-office' "$SSH_CONFIG"; then
+    print -u2 "FAIL ssh/swap-id-upsert-fail/pre-natural still has natural id block"
+    (( fails++ ))
+  fi
+  functions -c upsert_ssh_config _ssh424_upsert
+  upsert_ssh_config() {
+    if [[ $1 == lanjump-office ]]; then
+      return 1
+    fi
+    _ssh424_upsert "$@"
+  }
+  if upsert_host office mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02'; then
+    print -u2 "FAIL ssh/swap-id-upsert-fail upsert_host returned 0 after new-block SSH write failure"
+    (( fails++ ))
+  fi
+  functions -c _ssh424_upsert upsert_ssh_config
+  unfunction _ssh424_upsert
+  load_hosts
+  if [[ ${h_alias[1]:-} != office ]]; then
+    print -u2 "FAIL ssh/swap-id-upsert-fail dropped hosts row aliases=$(printf %q "${h_alias[*]}")"
+    (( fails++ ))
+  fi
+  local ssh424_disk
+  ssh424_disk=$(<"$HOSTS_FILE")
+  if [[ $ssh424_disk != *studio.local* ]]; then
+    print -u2 "FAIL ssh/swap-id-upsert-fail hosts file lost studio.local got=$(printf %q "$ssh424_disk")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/swap-id-upsert-fail/keep-old-begin "# BEGIN LANJUMP ${leftover_id}" "$ssh_got"
+  expect_contains ssh/swap-id-upsert-fail/keep-old-host "Host ${leftover_id}" "$ssh_got"
+  expect_contains ssh/swap-id-upsert-fail/keep-old-hn 'HostName studio.local' "$ssh_got"
+  if grep -qFx '# BEGIN LANJUMP lanjump-office' "$SSH_CONFIG"; then
+    print -u2 "FAIL ssh/swap-id-upsert-fail/new-first-write left a first-write lanjump-office block"
+    (( fails++ ))
+  fi
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$leftover_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  if [[ $resolved_hn != studio.local ]]; then
+    print -u2 "FAIL ssh/swap-id-upsert-fail/hostname-wins want=studio.local got=$(printf %q "$resolved_hn") id=$(printf %q "$leftover_id")"
+    (( fails++ ))
+  fi
+
   # #387: prompt_username abort must return to the list, not connect.
   rm -f "$tmpdir/ssh387_access" "$tmpdir/ssh387_out"
   local ssh387_notice=$notice
