@@ -665,6 +665,11 @@ remove_ssh_config() {
   strip_ssh_block "# BEGIN LANJUMP ${id}" "# END LANJUMP ${id}"
 }
 
+replace_ssh_config() {
+  mv "$1" "$SSH_CONFIG"
+  chmod 600 "$SSH_CONFIG"
+}
+
 upsert_ssh_config() {
   local id=$1 user=$2 hostname=$3
   local begin="# BEGIN LANJUMP ${id}"
@@ -675,7 +680,19 @@ upsert_ssh_config() {
   chmod 600 "$SSH_CONFIG"
   # Missing END: do not append (OpenSSH first-match would keep the old HostName).
   # Replace the damaged LANJUMP Host in place; stop before a later user Host (#63).
-  if ! strip_ssh_block "$begin" "$end" && grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null; then
+  # Probe only — do not strip dest (that hole is #272).
+  if grep -qF "$begin" "$SSH_CONFIG" 2>/dev/null &&
+     ! awk -v b="$begin" -v e="$end" '
+       $0 == b {
+         if (open) exit 1
+         open = 1
+         next
+       }
+       $0 == e {
+         if (open) open = 0
+       }
+       END { if (open) exit 1 }
+     ' "$SSH_CONFIG"; then
     tmp=$(mktemp)
     awk -v begin="$begin" -v end="$end" -v id="$id" -v user="$user" -v hn="$hostname" -v key="$KEY" '
       function emit() {
@@ -703,11 +720,16 @@ upsert_ssh_config() {
       { print }
       END { emit() }
     ' "$SSH_CONFIG" >"$tmp"
-    mv "$tmp" "$SSH_CONFIG"
-    chmod 600 "$SSH_CONFIG"
+    replace_ssh_config "$tmp"
     return
   fi
+  tmp=$(mktemp)
   {
+    awk -v b="$begin" -v e="$end" '
+      $0 == b { skip = 1; next }
+      $0 == e { skip = 0; next }
+      !skip { print }
+    ' "$SSH_CONFIG"
     print
     print "$begin"
     print "Host ${id}"
@@ -721,7 +743,8 @@ upsert_ssh_config() {
     print "  StrictHostKeyChecking accept-new"
     print "  ConnectTimeout 8"
     print "$end"
-  } >>"$SSH_CONFIG"
+  } >"$tmp"
+  replace_ssh_config "$tmp"
 }
 
 run_timed() {

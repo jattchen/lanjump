@@ -136,6 +136,53 @@ EOF
     (( fails++ ))
   fi
 
+  # #272: happy-path upsert must replace dest in one write. strip-then-append
+  # leaves a window with no Host (crash / concurrent ssh).
+  cat >"$SSH_CONFIG" <<'EOF'
+# BEGIN LANJUMP lanjump-office
+Host lanjump-office
+  HostName 10.0.0.8
+  User mac
+# END LANJUMP lanjump-office
+Host keep-me
+  HostName other.local
+  User other
+EOF
+  local ssh272_old ssh272_mid
+  local -i ssh272_hole=0
+  ssh272_old=$(<"$SSH_CONFIG")
+  mv() {
+    command mv "$@"
+    if [[ ${@[-1]} == "$SSH_CONFIG" ]]; then
+      ssh272_mid=$(<"$SSH_CONFIG")
+      if [[ $ssh272_mid != "$ssh272_old" && $ssh272_mid != *'Host lanjump-office'* ]]; then
+        ssh272_hole=1
+      fi
+    fi
+  }
+  print() {
+    builtin print "$@"
+    ssh272_mid=$(<"$SSH_CONFIG")
+    if [[ $ssh272_mid != "$ssh272_old" && $ssh272_mid != *'Host lanjump-office'* ]]; then
+      ssh272_hole=1
+    fi
+  }
+  upsert_ssh_config lanjump-office mac 10.0.0.99
+  unfunction print mv
+  if (( ssh272_hole )); then
+    print -u2 "FAIL ssh/upsert-atomic dest lacked Host mid-write"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/upsert-atomic/keep-host 'Host keep-me' "$ssh_got"
+  expect_contains ssh/upsert-atomic/keep-hostname 'HostName other.local' "$ssh_got"
+  expect_contains ssh/upsert-atomic/keep-user 'User other' "$ssh_got"
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.99 ]]; then
+    print -u2 "FAIL ssh/upsert-atomic/hostname-wins want=10.0.0.99 got=$(printf %q "$resolved_hn")"
+    (( fails++ ))
+  fi
+
   # Happy path: a complete block is still removed; later Host stays.
   cat >"$SSH_CONFIG" <<'EOF'
 # BEGIN LANJUMP lanjump-office
