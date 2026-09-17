@@ -5,7 +5,7 @@
 # bulk_idle_unpinned_names, delete_idle_unpinned_sessions,
 # forget_killed_session, drop_snap_record, rename_snap_record,
 # session_delete_needs_pin_warning, pin_delete_warning_text,
-# rename_pin_record, restore_pinned_sessions, numeric_session_name,
+# rename_pin_record, prompt_rename, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, collect_work_session_names, should_restore_sessions, restore_saved_sessions,
 # maybe_restore_sessions, print_pinned_names, print_workspace_names,
 # has_named_session, ensure_named_session_for_attach, print_recent_names,
@@ -6223,6 +6223,162 @@ PY
     (( fails++ ))
   fi
   rm -rf "$pin276_home"
+
+  # #315: pin file write failure must not paint list/tmux as pinned or renamed.
+  local pin315_home pin315_saved_home pin315_tmux pin315_log
+  local pin315_tmux_name pin315_draw_id pin315_draw_pinned
+  local pin315_load_keep pin315_items_id
+  local -i pin315_has_tmux=$HAS_TMUX
+  pin315_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-315.XXXXXX") || return 1
+  pin315_saved_home=$HOME
+  HOME=$pin315_home
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  pin315_tmux=$pin315_home/tmux.log
+  : >"$pin315_tmux"
+  functions -c replace_file_atomic _pin315_replace
+  functions -c tmuxx _pin315_tmuxx
+  functions -c restore_tty _pin315_restore_tty
+  functions -c setup_tty _pin315_setup_tty
+  functions -c draw _pin315_draw
+  replace_file_atomic() { return 1 }
+  tmuxx() {
+    print -r -- "$*" >>"$pin315_tmux"
+    case $1 in
+      display-message)
+        print -r -- /tmp/keep
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  HAS_TMUX=1
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  items_kind=(session)
+  items_id=(keep)
+  items_name=(keep)
+  items_pinned=(0)
+  all_id=(keep)
+  all_name=(keep)
+  all_pinned=(0)
+  cursor=1
+  toggle_session_pin
+  if [[ ${items_pinned[1]} == 1 ]]; then
+    print -u2 "FAIL pin/write-fail-ui still marked pinned"
+    (( fails++ ))
+  fi
+  if [[ ${all_pinned[1]} == 1 ]]; then
+    print -u2 "FAIL pin/write-fail-ui all_pinned still 1"
+    (( fails++ ))
+  fi
+  pin315_log=$(<"$pin315_tmux")
+  if [[ $pin315_log == *'@lanjump_pinned 1'* ]]; then
+    print -u2 "FAIL pin/write-fail-ui tmux still pinned got=$(printf %q "$pin315_log")"
+    (( fails++ ))
+  fi
+  functions -c _pin315_replace replace_file_atomic
+  load_pinned_sessions
+  if pin_record_exists keep; then
+    print -u2 "FAIL pin/write-fail-ui pin file has keep"
+    (( fails++ ))
+  fi
+
+  print -r -- $'name keep\ncwd /tmp/keep\ngrok gid-keep\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  load_pinned_sessions
+  functions -c replace_file_atomic _pin315_replace
+  replace_file_atomic() { return 1 }
+  pin315_tmux_name=keep
+  pin315_draw_id=
+  pin315_draw_pinned=
+  : >"$pin315_tmux"
+  tmuxx() {
+    print -r -- "$*" >>"$pin315_tmux"
+    case $1 in
+      has-session) return 1 ;;
+      rename-session)
+        pin315_tmux_name=${@[-1]}
+        return 0
+        ;;
+      list-sessions)
+        if [[ $* == *-F* ]]; then
+          print -r -- $'100\x1f'"$pin315_tmux_name"$'\x1f1\x1f0\x1f/tmp/keep\x1fkeep\x1fkeep\x1fzsh'
+        fi
+        return 0
+        ;;
+      *) return 0 ;;
+    esac
+  }
+  functions -c load_items _pin315_load_items
+  restore_tty() { : }
+  setup_tty() { : }
+  load_items() {
+    print -r -- "${1:-}" >"$pin315_home/load_keep"
+    _pin315_load_items "$@"
+    print -r -- "${items_id[*]}" >"$pin315_home/items_id"
+    print -r -- "${items_pinned[*]}" >"$pin315_home/items_pinned"
+  }
+  draw() {
+    pin315_draw_id=${items_id[1]:-}
+    pin315_draw_pinned=${items_pinned[1]:-}
+    print -r -- "${items_id[1]:-}" >"$pin315_home/draw_id"
+    print -r -- "${items_pinned[1]:-}" >"$pin315_home/draw_pinned"
+  }
+  items_kind=(session)
+  items_id=(keep)
+  items_name=(keep)
+  items_pinned=(1)
+  cursor=1
+  # Here-doc keeps prompt_rename in this shell so draw/tmux state is visible.
+  prompt_rename >/dev/null <<'EOF'
+keep-renamed
+EOF
+  pin315_draw_id=$(<"$pin315_home/draw_id" 2>/dev/null)
+  pin315_draw_pinned=$(<"$pin315_home/draw_pinned" 2>/dev/null)
+  pin315_load_keep=$(<"$pin315_home/load_keep" 2>/dev/null)
+  pin315_items_id=$(<"$pin315_home/items_id" 2>/dev/null)
+  if [[ ${pin315_load_keep:-} == keep-renamed ]]; then
+    print -u2 "FAIL pin/rename-write-fail-ui load_items kept keep-renamed"
+    (( fails++ ))
+  fi
+  if [[ ${pin315_items_id:-} == *keep-renamed* ]]; then
+    print -u2 "FAIL pin/rename-write-fail-ui list has keep-renamed got=$(printf %q "$pin315_items_id")"
+    (( fails++ ))
+  fi
+  if [[ ${pin315_draw_id:-} == keep-renamed ]]; then
+    print -u2 "FAIL pin/rename-write-fail-ui redrew as keep-renamed"
+    (( fails++ ))
+  fi
+  if [[ ${pin315_draw_id:-} == keep-renamed && ${pin315_draw_pinned:-} == 1 ]]; then
+    print -u2 "FAIL pin/rename-write-fail-ui marked keep-renamed pinned"
+    (( fails++ ))
+  fi
+  pin315_log=$(<"$pin315_tmux")
+  if [[ $pin315_log == *'rename-session -t =keep keep-renamed'* && $pin315_log != *'rename-session -t =keep-renamed keep'* ]]; then
+    print -u2 "FAIL pin/rename-write-fail-ui tmux left as keep-renamed got=$(printf %q "$pin315_log")"
+    (( fails++ ))
+  fi
+  functions -c _pin315_replace replace_file_atomic
+  load_pinned_sessions
+  if ! pin_record_exists keep; then
+    print -u2 "FAIL pin/rename-write-fail-ui pin file lost keep"
+    (( fails++ ))
+  fi
+  if pin_record_exists keep-renamed; then
+    print -u2 "FAIL pin/rename-write-fail-ui pin file has keep-renamed"
+    (( fails++ ))
+  fi
+  functions -c _pin315_tmuxx tmuxx
+  functions -c _pin315_restore_tty restore_tty
+  functions -c _pin315_setup_tty setup_tty
+  functions -c _pin315_draw draw
+  functions -c _pin315_load_items load_items
+  unset -f _pin315_replace _pin315_tmuxx _pin315_restore_tty _pin315_setup_tty \
+    _pin315_draw _pin315_load_items
+  HAS_TMUX=$pin315_has_tmux
+  HOME=$pin315_saved_home
+  rm -rf "$pin315_home"
 
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
