@@ -302,6 +302,31 @@ host_selftest() {
   expect host/scan/ip-fallback-keeps-hostname office.local "${h_hostname[1]}"
   expect host/scan/ip-fallback-keeps-mac 'aa:bb:cc:dd:ee:01' "${h_mac[1]}"
 
+  # #304: Same mDNS hostname from another MAC must not steal that alias's IP/MAC.
+  h_alias=(foo)
+  h_user=(mac)
+  h_hostname=(foo.local)
+  h_ip=(192.168.1.10)
+  h_mac=('aa:bb:cc:dd:ee:01')
+  h_last=(100)
+  items_kind=(host local scan quit)
+  items_alias=(foo 进入本机 '扫描局域网…' 退出)
+  items_user=(mac '' '' '')
+  items_hostname=(foo.local '' '' '')
+  items_ip=(192.168.1.10 '' '' '')
+  items_mac=('aa:bb:cc:dd:ee:01' '' '' '')
+  items_status=('已保存' '' '' '')
+  items_saved=(1 '' '' '')
+  s_alias=() s_host=() s_ip=() s_mac=()
+  MYIPS=(127.0.0.1)
+  MYIP=""
+  record_seen foo foo.local 192.168.1.99 'ff:ee:dd:cc:bb:aa'
+  add_discovered foo foo.local 192.168.1.99 'ff:ee:dd:cc:bb:aa'
+  expect host/scan/hostname-keeps-alias foo "${h_alias[1]}"
+  expect host/scan/hostname-keeps-hostname foo.local "${h_hostname[1]}"
+  expect host/scan/hostname-keeps-ip 192.168.1.10 "${h_ip[1]}"
+  expect host/scan/hostname-keeps-mac 'aa:bb:cc:dd:ee:01' "${h_mac[1]}"
+
   # #217: /23 is the interface prefix; 192.168.3.10/23 must include 192.168.2.x.
   if ! (( ${+functions[scan_lan_prefixes]} )); then
     print -u2 "FAIL host/scan/netmask-23 missing scan_lan_prefixes"

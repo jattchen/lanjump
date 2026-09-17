@@ -595,6 +595,10 @@ find_saved() {
   if [[ -n $hostname ]]; then
     for (( i = 1; i <= n; i++ )); do
       if [[ -n ${h_hostname[$i]} && ${h_hostname[$i]} == "$hostname" ]]; then
+        # Hostname is only a merge key when the saved row has no MAC.
+        # Otherwise an unauthenticated mDNS name can overwrite a known
+        # machine's IP and MAC (#304).
+        [[ -n ${h_mac[$i]} ]] && continue
         print -r -- $i
         return
       fi
