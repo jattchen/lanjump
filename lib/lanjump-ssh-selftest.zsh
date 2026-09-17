@@ -628,6 +628,45 @@ EOF
     (( fails++ ))
   fi
 
+  # #377: old-format rows (no ssh_id) still load. Scan-only Office /
+  # office both slug to lanjump-office; persist must allocate like
+  # connect (alloc_ssh_id) so they do not share one Host block.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  cat >"$HOSTS_FILE" <<'EOF'
+# alias|user|hostname|ip|mac|last
+Office|mac|office.local|10.0.0.8|aa:bb:cc:dd:ee:01|100
+office|mac|studio.local|10.0.0.9|aa:bb:cc:dd:ee:02|101
+EOF
+  s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  s_host=(office.local studio.local)
+  s_ip=(10.0.0.8 10.0.0.9)
+  s_mac=('aa:bb:cc:dd:ee:01' 'aa:bb:cc:dd:ee:02')
+  s_port=(22 22)
+  persist_scan_hosts
+  read_ssh
+  expect_contains ssh/scan-alloc-id/office-hn 'HostName office.local' "$ssh_got"
+  expect_contains ssh/scan-alloc-id/studio-hn 'HostName studio.local' "$ssh_got"
+  local office_id studio_id
+  office_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="office.local" {print id; exit}' "$SSH_CONFIG")
+  studio_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="studio.local" {print id; exit}' "$SSH_CONFIG")
+  if [[ -z $office_id || -z $studio_id || $office_id == "$studio_id" ]]; then
+    print -u2 "FAIL ssh/scan-alloc-id/distinct-host office_id=$(printf %q "$office_id") studio_id=$(printf %q "$studio_id")"
+    (( fails++ ))
+  else
+    resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$office_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+    if [[ $resolved_hn != office.local ]]; then
+      print -u2 "FAIL ssh/scan-alloc-id/office-wins want=office.local got=$(printf %q "$resolved_hn") id=$(printf %q "$office_id")"
+      (( fails++ ))
+    fi
+    resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$studio_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+    if [[ $resolved_hn != studio.local ]]; then
+      print -u2 "FAIL ssh/scan-alloc-id/studio-wins want=studio.local got=$(printf %q "$resolved_hn") id=$(printf %q "$studio_id")"
+      (( fails++ ))
+    fi
+  fi
+
   # #314: two upsert_ssh_config writers read then replace the whole SSH file.
   # A reads, yields, then writes; B writes in the gap. Both Host blocks must remain.
   local ssh314_home ssh314_fn
