@@ -422,6 +422,135 @@ EOF
     (( fails++ ))
   fi
 
+  # #359: hosts write failure after SSH upsert must roll back the new
+  # SSH block, fail upsert_host, and stop connect from entering a session.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  functions -c save_hosts _ssh359_save
+  save_hosts() { return 1 }
+  if upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'; then
+    print -u2 "FAIL ssh/hosts-write-fail upsert_host returned 0 after hosts write failure"
+    (( fails++ ))
+  fi
+  functions -c _ssh359_save save_hosts
+  unfunction _ssh359_save
+  local ssh359_disk
+  ssh359_disk=$(<"$HOSTS_FILE")
+  if [[ $ssh359_disk == *office.local* || $ssh359_disk == *lanjump-office* ]]; then
+    print -u2 "FAIL ssh/hosts-write-fail persisted hosts row got=$(printf %q "$ssh359_disk")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_absent ssh/hosts-write-fail/ssh-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  expect_absent ssh/hosts-write-fail/ssh-host 'Host lanjump-office' "$ssh_got"
+  expect_absent ssh/hosts-write-fail/ssh-hn 'HostName office.local' "$ssh_got"
+  load_hosts
+  if (( ${#h_alias} )); then
+    print -u2 "FAIL ssh/hosts-write-fail leftover hosts aliases=$(printf %q "${h_alias[*]}") ssh_id=$(printf %q "${h_ssh_id[*]}")"
+    (( fails++ ))
+  fi
+
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  rm -f "$tmpdir/ssh359_session" "$tmpdir/ssh359_sync" "$tmpdir/ssh359_last"
+  local ssh359_notice=$notice
+  local -a ssh359_saved_opts ssh359_kind ssh359_alias ssh359_user ssh359_hn ssh359_ip ssh359_mac ssh359_port
+  ssh359_saved_opts=("${SSH_OPTS[@]}")
+  ssh359_kind=("${items_kind[@]}")
+  ssh359_alias=("${items_alias[@]}")
+  ssh359_user=("${items_user[@]}")
+  ssh359_hn=("${items_hostname[@]}")
+  ssh359_ip=("${items_ip[@]}")
+  ssh359_mac=("${items_mac[@]}")
+  ssh359_port=("${items_port[@]}")
+  items_kind=(host)
+  items_alias=(office)
+  items_user=(mac)
+  items_hostname=(office.local)
+  items_ip=(10.0.0.8)
+  items_mac=('aa:bb:cc:dd:ee:01')
+  items_port=(22)
+  functions -c apply_ssh_port _ssh359_port
+  functions -c restore_tty _ssh359_restore
+  functions -c setup_tty _ssh359_setup
+  functions -c setup_access _ssh359_access
+  functions -c ssh_tty _ssh359_tty
+  functions -c sync_picker _ssh359_sync
+  functions -c mark_last _ssh359_mark
+  functions -c save_hosts _ssh359_save2
+  apply_ssh_port() { : }
+  restore_tty() { : }
+  setup_tty() { : }
+  setup_access() { return 0 }
+  ssh() { return 0 }
+  ssh_tty() {
+    print -r -- connected >"$tmpdir/ssh359_session"
+    return 10
+  }
+  sync_picker() {
+    print -r -- synced >"$tmpdir/ssh359_sync"
+    return 0
+  }
+  mark_last() { print -r -- "$1" >"$tmpdir/ssh359_last" }
+  save_hosts() { return 1 }
+  connect_item 1
+  unfunction ssh
+  functions -c _ssh359_port apply_ssh_port
+  functions -c _ssh359_restore restore_tty
+  functions -c _ssh359_setup setup_tty
+  functions -c _ssh359_access setup_access
+  functions -c _ssh359_tty ssh_tty
+  functions -c _ssh359_sync sync_picker
+  functions -c _ssh359_mark mark_last
+  functions -c _ssh359_save2 save_hosts
+  unfunction _ssh359_port _ssh359_restore _ssh359_setup _ssh359_access \
+    _ssh359_tty _ssh359_sync _ssh359_mark _ssh359_save2
+  SSH_OPTS=("${ssh359_saved_opts[@]}")
+  items_kind=("${ssh359_kind[@]}")
+  items_alias=("${ssh359_alias[@]}")
+  items_user=("${ssh359_user[@]}")
+  items_hostname=("${ssh359_hn[@]}")
+  items_ip=("${ssh359_ip[@]}")
+  items_mac=("${ssh359_mac[@]}")
+  items_port=("${ssh359_port[@]}")
+  notice=$ssh359_notice
+  if [[ -f $tmpdir/ssh359_session || -f $tmpdir/ssh359_sync || -f $tmpdir/ssh359_last ]]; then
+    print -u2 "FAIL ssh/hosts-write-fail/connect treated upsert failure as a successful session"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_absent ssh/hosts-write-fail/connect-ssh-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  expect_absent ssh/hosts-write-fail/connect-ssh-hn 'HostName office.local' "$ssh_got"
+
+  # #359: forget_saved must keep the hosts row when SSH remove fails.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  functions -c remove_ssh_config _ssh359_rm
+  remove_ssh_config() { return 1 }
+  if forget_saved 1; then
+    print -u2 "FAIL ssh/forget-ssh-fail forget_saved returned 0 after SSH remove failure"
+    (( fails++ ))
+  fi
+  functions -c _ssh359_rm remove_ssh_config
+  unfunction _ssh359_rm
+  load_hosts
+  if [[ ${h_alias[1]:-} != office ]]; then
+    print -u2 "FAIL ssh/forget-ssh-fail dropped hosts row aliases=$(printf %q "${h_alias[*]}")"
+    (( fails++ ))
+  fi
+  ssh359_disk=$(<"$HOSTS_FILE")
+  if [[ $ssh359_disk != *office.local* ]]; then
+    print -u2 "FAIL ssh/forget-ssh-fail hosts file lost office.local got=$(printf %q "$ssh359_disk")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/forget-ssh-fail/keep-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+  expect_contains ssh/forget-ssh-fail/keep-hn 'HostName office.local' "$ssh_got"
+
   # #314: two upsert_ssh_config writers read then replace the whole SSH file.
   # A reads, yields, then writes; B writes in the gap. Both Host blocks must remain.
   local ssh314_home ssh314_fn
