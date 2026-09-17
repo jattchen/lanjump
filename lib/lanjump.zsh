@@ -490,13 +490,34 @@ get_mac() {
   norm_mac "$mac"
 }
 
+ssh_id_tag() {
+  local tag=${1:l}
+  tag=${tag//:/-}
+  tag=${tag//[^a-z0-9._-]/-}
+  tag=${tag##-}
+  tag=${tag%%-}
+  [[ -n $tag ]] || return 1
+  print -r -- "$tag"
+}
+
+# ASCII aliases stay slug-only. CJK (or any lossy slug) is not unique
+# after non-ASCII is stripped (#285), so suffix MAC, else IP, or refuse.
 ssh_id_from_alias() {
-  local s=${1:l}
+  local alias=$1 mac=${2:-} ip=${3:-}
+  local s=${alias:l}
+  local -i lossy=0
+  [[ $alias != *[^A-Za-z0-9._\ -]* ]] || lossy=1
   s=${s// /-}
   s=${s//[^a-z0-9._-]/-}
   s=${s##-}
   s=${s%%-}
   [[ -n $s ]] || s="host"
+  if (( lossy )); then
+    local tag
+    tag=$(ssh_id_tag "$mac") || tag=$(ssh_id_tag "$ip") || return 1
+    print -r -- "lanjump-${s}-${tag}"
+    return
+  fi
   print -r -- "lanjump-${s}"
 }
 
@@ -619,7 +640,10 @@ upsert_host() {
     h_last+=("$EPOCHSECONDS")
   fi
   save_hosts
-  upsert_ssh_config "$(ssh_id_from_alias "$alias")" "$user" "${hostname:-$ip}" "$port"
+  local id
+  if id=$(ssh_id_from_alias "$alias" "$mac" "$ip"); then
+    upsert_ssh_config "$id" "$user" "${hostname:-$ip}" "$port"
+  fi
 }
 
 forget_saved() {
@@ -627,8 +651,9 @@ forget_saved() {
   local n=${#h_alias}
   (( idx >= 1 && idx <= n )) || return
   local id
-  id=$(ssh_id_from_alias "${h_alias[$idx]}")
-  remove_ssh_config "$id"
+  if id=$(ssh_id_from_alias "${h_alias[$idx]}" "${h_mac[$idx]}" "${h_ip[$idx]}"); then
+    remove_ssh_config "$id"
+  fi
   local -a na nu nh ni nm np nl
   local i
   na=() nu=() nh=() ni=() nm=() np=() nl=()

@@ -231,6 +231,21 @@ EOF
   expect_contains ssh/complete/keep-host 'Host keep-me' "$ssh_got"
   expect_contains ssh/complete/keep-hostname 'HostName other.local' "$ssh_got"
 
+  # #285: CJK aliases must not share one SSH Host id. 书房/客厅 both
+  # sanitized to lanjump-host; later connect overwrote HostName and
+  # forgetting either deleted the shared block.
+  : >"$SSH_CONFIG"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_last=()
+  upsert_host '书房' mac study.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  upsert_host '客厅' mac living.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
+  read_ssh
+  expect_contains ssh/cjk-id/study-hn 'HostName study.local' "$ssh_got"
+  expect_contains ssh/cjk-id/living-hn 'HostName living.local' "$ssh_got"
+  forget_saved 1
+  read_ssh
+  expect_absent ssh/cjk-id/forget-study 'HostName study.local' "$ssh_got"
+  expect_contains ssh/cjk-id/forget-living 'HostName living.local' "$ssh_got"
+
   # #256: KEY.pub comment with ' must still be a valid remote install script
   # that writes the full line. Callers pass this string as the ssh command.
   local pub_line install_cmd remote_home remote_keys
