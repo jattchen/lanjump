@@ -1,7 +1,7 @@
 # Sourced by lanjump.zsh --ssh-selftest.
 # Expects strip_ssh_block, remove_ssh_config, upsert_ssh_config, forget_saved,
-# ssh_id_from_alias, lan_pub_install_cmd. Uses temp files only; never the
-# real ~/.ssh/config.
+# persist_scan_hosts, ssh_id_from_alias, lan_pub_install_cmd. Uses temp files
+# only; never the real ~/.ssh/config.
 
 ssh_selftest() {
   local -i fails=0
@@ -576,6 +576,47 @@ EOF
   expect_contains ssh/missing-block-upsert/new-begin '# BEGIN LANJUMP lanjump-work' "$ssh_got"
   expect_contains ssh/missing-block-upsert/new-hn 'HostName studio.local' "$ssh_got"
   expect_absent ssh/missing-block-upsert/old-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
+
+  # #361: persist_scan_hosts must refresh HostName/Port in the LANJUMP
+  # block. DHCP IP change or 2222→22 left ssh lanjump-xxx on the old
+  # address until the next connect/upsert_host.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac '' 10.0.0.8 'aa:bb:cc:dd:ee:01' 2222
+  read_ssh
+  expect_contains ssh/scan-sync/old-hn 'HostName 10.0.0.8' "$ssh_got"
+  expect_contains ssh/scan-sync/old-port 'Port 2222' "$ssh_got"
+  s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  s_host=('')
+  s_ip=(10.0.0.99)
+  s_mac=('aa:bb:cc:dd:ee:01')
+  s_port=(22)
+  persist_scan_hosts
+  load_hosts
+  if [[ ${h_ip[1]:-} != 10.0.0.99 ]]; then
+    print -u2 "FAIL ssh/scan-sync/hosts-ip want=10.0.0.99 got=$(printf %q "${h_ip[1]:-}")"
+    (( fails++ ))
+  fi
+  if [[ ${h_port[1]:-} != 22 ]]; then
+    print -u2 "FAIL ssh/scan-sync/hosts-port want=22 got=$(printf %q "${h_port[1]:-}")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/scan-sync/new-hn 'HostName 10.0.0.99' "$ssh_got"
+  expect_absent ssh/scan-sync/stale-hn 'HostName 10.0.0.8' "$ssh_got"
+  expect_absent ssh/scan-sync/stale-port 'Port 2222' "$ssh_got"
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  local resolved_port
+  resolved_port=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="port"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.99 ]]; then
+    print -u2 "FAIL ssh/scan-sync/hostname-wins want=10.0.0.99 got=$(printf %q "$resolved_hn")"
+    (( fails++ ))
+  fi
+  if [[ $resolved_port != 22 ]]; then
+    print -u2 "FAIL ssh/scan-sync/port-wins want=22 got=$(printf %q "$resolved_port")"
+    (( fails++ ))
+  fi
 
   # #314: two upsert_ssh_config writers read then replace the whole SSH file.
   # A reads, yields, then writes; B writes in the gap. Both Host blocks must remain.
