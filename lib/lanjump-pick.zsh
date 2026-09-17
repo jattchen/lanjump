@@ -1583,7 +1583,11 @@ ensure_pinnable_session_name() {
     REPLY=$name
     return 1
   }
-  rename_snap_record "$name" "$new"
+  if ! rename_snap_record "$name" "$new"; then
+    tmuxx rename-session -t "=$new" "$name" 2>/dev/null || true
+    REPLY=$name
+    return 1
+  fi
   REPLY=$new
 }
 
