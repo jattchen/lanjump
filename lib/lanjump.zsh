@@ -841,7 +841,9 @@ upsert_host() {
     old_id=""
   fi
   if id=$(alloc_ssh_id "$alias" "$mac" "$ip" "$idx"); then
-    if [[ -n $old_id && $old_id != "$id" ]]; then
+    # Empty ssh_id computes old_id from the alias slug. Another row
+    # may already own that live Host; keep it and write the new id (#399).
+    if [[ -n $old_id && $old_id != "$id" ]] && ! ssh_id_taken "$old_id" "$idx"; then
       if ! remove_ssh_config "$old_id"; then
         load_hosts
         return 1
