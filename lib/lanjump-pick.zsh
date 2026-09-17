@@ -1998,6 +1998,18 @@ restore_read_key() {
   restore_plain_key "$k"
 }
 
+# Blocking read. After consecutive EOF/hangup failures, restore tty and
+# exit so the restore-window loop cannot spin at 100% CPU (#270).
+restore_read_key_or_exit() {
+  if restore_read_key; then
+    _read_key_fails=0
+    return 0
+  fi
+  (( ++_read_key_fails >= 8 )) || return 1
+  restore_tty
+  exit 1
+}
+
 restore_pick_toggle() {
   local i=$1
   [[ ${restore_pick_kind[$i]:-} == item ]] || return
@@ -2055,7 +2067,7 @@ prompt_restore_windows() {
   trap draw_restore_pick WINCH
   while true; do
     draw_restore_pick
-    restore_read_key || continue
+    restore_read_key_or_exit || continue
     case $REPLY in
       up)
         (( restore_pick_cursor-- ))
@@ -2421,6 +2433,18 @@ settings_input_read() {
       settings_input_char=$k
       ;;
   esac
+}
+
+# Blocking read. After consecutive EOF/hangup failures, restore tty and
+# exit so the settings input loop cannot spin at 100% CPU (#270).
+settings_input_read_or_exit() {
+  if settings_input_read; then
+    _read_key_fails=0
+    return 0
+  fi
+  (( ++_read_key_fails >= 8 )) || return 1
+  restore_tty
+  exit 1
 }
 
 # n sessions, want_new=1 means t (or CLI --open-tabs). n>1 always wants a
@@ -4585,7 +4609,7 @@ picker_boot_after_first_draw
 while true; do
   if (( settings_on && settings_input_on )); then
     preview_defer=0
-    settings_input_read || continue
+    settings_input_read_or_exit || continue
     case $REPLY in
       enter)
         settings_commit_input

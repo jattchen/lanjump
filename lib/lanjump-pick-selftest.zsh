@@ -25,7 +25,7 @@
 # attach_command_for, new_session_flag_invalid, prompt_new,
 # prompt_new_pin_cwd, prompt_new_ask_pin, prompt_new_commit_pin, create_named_session, unique_non_numeric_session_name,
 # ensure_pinnable_session_name, pin_named_session, toggle_session_pin, read_key, read_key_or_exit,
-# settings_input_read, PENDING_KEY.
+# restore_read_key_or_exit, settings_input_read, settings_input_read_or_exit, PENDING_KEY.
 
 _pick_src_file=${0:A:h}/lanjump-pick.zsh
 
@@ -5441,6 +5441,59 @@ pick_selftest() {
   fi
   if grep -E -q '^[[:space:]]*read_key \|\| continue' "$_pick_src_file"; then
     print -u2 "FAIL key/eof-spin pick loop still continues forever on read fail"
+    (( fails++ ))
+  fi
+
+  # #270: restore window list (and settings input) have the same
+  # `|| continue` gap. Closed stdin must restore_tty and exit, not spin.
+  if ! (( ${+functions[restore_read_key_or_exit]} )); then
+    print -u2 "FAIL restore/eof-spin missing restore_read_key_or_exit"
+    (( fails++ ))
+  else
+    local eof_st=0
+    PENDING_KEY=""
+    (
+      restore_tty() { : }
+      typeset -i _read_key_fails=0
+      local -i n=0
+      while true; do
+        (( ++n > 40 )) && exit 99
+        restore_read_key_or_exit || continue
+      done
+    ) </dev/null
+    eof_st=$?
+    if (( eof_st != 1 )); then
+      print -u2 "FAIL restore/eof-spin exit got=$eof_st want=1 (99=spun)"
+      (( fails++ ))
+    fi
+  fi
+  if grep -E -q '^[[:space:]]*restore_read_key \|\| continue' "$_pick_src_file"; then
+    print -u2 "FAIL restore/eof-spin restore loop still continues forever on read fail"
+    (( fails++ ))
+  fi
+  if ! (( ${+functions[settings_input_read_or_exit]} )); then
+    print -u2 "FAIL settings/eof-spin missing settings_input_read_or_exit"
+    (( fails++ ))
+  else
+    local eof_st=0
+    PENDING_KEY=""
+    (
+      restore_tty() { : }
+      typeset -i _read_key_fails=0
+      local -i n=0
+      while true; do
+        (( ++n > 40 )) && exit 99
+        settings_input_read_or_exit || continue
+      done
+    ) </dev/null
+    eof_st=$?
+    if (( eof_st != 1 )); then
+      print -u2 "FAIL settings/eof-spin exit got=$eof_st want=1 (99=spun)"
+      (( fails++ ))
+    fi
+  fi
+  if grep -E -q '^[[:space:]]*settings_input_read \|\| continue' "$_pick_src_file"; then
+    print -u2 "FAIL settings/eof-spin settings loop still continues forever on read fail"
     (( fails++ ))
   fi
 
