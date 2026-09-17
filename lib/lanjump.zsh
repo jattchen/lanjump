@@ -678,7 +678,9 @@ save_hosts() {
 # Scan persist: same protocol as upsert_host (#314). Reload under the
 # hosts lock, apply s_* onto that table, then write so a stale list
 # window cannot drop a concurrent upsert (#333). Merged rows also
-# refresh the LANJUMP SSH HostName/Port (#361). Mid-loop SSH failure
+# refresh the LANJUMP SSH HostName/Port (#361) with the selected
+# LAN IP when known, so ssh lanjump-xxx does not re-resolve mDNS
+# (#435). Mid-loop SSH failure
 # or save_hosts failure restores this pass's SSH writes (#385) —
 # rewrite the pre-scan block, or remove an id allocated this pass.
 persist_scan_hosts() {
@@ -747,7 +749,7 @@ persist_scan_hosts() {
             [[ -z $pre_port ]] && pre_port=22
           fi
         fi
-        if ! upsert_ssh_config "$id" "${h_user[$idx]}" "${h_hostname[$idx]:-${h_ip[$idx]}}" "${h_port[$idx]:-22}"; then
+        if ! upsert_ssh_config "$id" "${h_user[$idx]}" "${h_ip[$idx]:-${h_hostname[$idx]}}" "${h_port[$idx]:-22}"; then
           rollback_scan_ssh
           unfunction rollback_scan_ssh
           load_hosts
@@ -910,7 +912,9 @@ upsert_host() {
         [[ -z $pre_port ]] && pre_port=22
       fi
     fi
-    if ! upsert_ssh_config "$id" "$user" "${hostname:-$ip}" "$port"; then
+    # Prefer the selected LAN IP so ssh lanjump-xxx does not
+    # re-resolve mDNS onto Docker/VPN (#435).
+    if ! upsert_ssh_config "$id" "$user" "${ip:-$hostname}" "$port"; then
       if (( old_removed )) && [[ -n $old_id && -n $old_hn ]]; then
         upsert_ssh_config "$old_id" "$old_user" "$old_hn" "$old_port" || true
       fi

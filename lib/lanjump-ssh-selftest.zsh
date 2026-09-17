@@ -385,12 +385,12 @@ EOF
   upsert_host '书房' mac study.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
   upsert_host '客厅' mac living.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
   read_ssh
-  expect_contains ssh/cjk-id/study-hn 'HostName study.local' "$ssh_got"
-  expect_contains ssh/cjk-id/living-hn 'HostName living.local' "$ssh_got"
+  expect_contains ssh/cjk-id/study-hn 'HostName 10.0.0.8' "$ssh_got"
+  expect_contains ssh/cjk-id/living-hn 'HostName 10.0.0.9' "$ssh_got"
   forget_saved 1
   read_ssh
-  expect_absent ssh/cjk-id/forget-study 'HostName study.local' "$ssh_got"
-  expect_contains ssh/cjk-id/forget-living 'HostName living.local' "$ssh_got"
+  expect_absent ssh/cjk-id/forget-study 'HostName 10.0.0.8' "$ssh_got"
+  expect_contains ssh/cjk-id/forget-living 'HostName 10.0.0.9' "$ssh_got"
 
   # #313: ASCII near-names that slug to the same id must not share one
   # live SSH Host block. office mac / office-mac both became
@@ -401,12 +401,12 @@ EOF
   upsert_host 'office mac' mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
   upsert_host 'office-mac' mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
   read_ssh
-  expect_contains ssh/ascii-id/office-hn 'HostName office.local' "$ssh_got"
-  expect_contains ssh/ascii-id/studio-hn 'HostName studio.local' "$ssh_got"
+  expect_contains ssh/ascii-id/office-hn 'HostName 10.0.0.8' "$ssh_got"
+  expect_contains ssh/ascii-id/studio-hn 'HostName 10.0.0.9' "$ssh_got"
   forget_saved 1
   read_ssh
-  expect_absent ssh/ascii-id/forget-office 'HostName office.local' "$ssh_got"
-  expect_contains ssh/ascii-id/forget-studio 'HostName studio.local' "$ssh_got"
+  expect_absent ssh/ascii-id/forget-office 'HostName 10.0.0.8' "$ssh_got"
+  expect_contains ssh/ascii-id/forget-studio 'HostName 10.0.0.9' "$ssh_got"
 
   # #313: rename / id change must drop the previous BEGIN/END pair.
   : >"$SSH_CONFIG"
@@ -420,7 +420,7 @@ EOF
   expect_absent ssh/rename-id/stale-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
   expect_absent ssh/rename-id/stale-end '# END LANJUMP lanjump-office' "$ssh_got"
   expect_contains ssh/rename-id/new-begin '# BEGIN LANJUMP lanjump-work' "$ssh_got"
-  expect_contains ssh/rename-id/new-hn 'HostName office.local' "$ssh_got"
+  expect_contains ssh/rename-id/new-hn 'HostName 10.0.0.8' "$ssh_got"
 
   # #336: another window renamed the alias (new ssh id on disk). Forget
   # with the stale in-memory index/id must still drop the current block.
@@ -624,7 +624,7 @@ EOF
   fi
   read_ssh
   expect_contains ssh/forget-ssh-fail/keep-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
-  expect_contains ssh/forget-ssh-fail/keep-hn 'HostName office.local' "$ssh_got"
+  expect_contains ssh/forget-ssh-fail/keep-hn 'HostName 10.0.0.8' "$ssh_got"
 
   # #396: hosts write failure after SSH remove must restore the LANJUMP
   # block. The row stays (load_hosts); ssh lanjump-… must too.
@@ -656,7 +656,7 @@ EOF
   read_ssh
   expect_contains ssh/forget-save-fail/keep-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
   expect_contains ssh/forget-save-fail/keep-host 'Host lanjump-office' "$ssh_got"
-  expect_contains ssh/forget-save-fail/keep-hn 'HostName office.local' "$ssh_got"
+  expect_contains ssh/forget-save-fail/keep-hn 'HostName 10.0.0.8' "$ssh_got"
 
   # #404: reconnect of a saved row keeps the same id. hosts write
   # failure must not delete the live LANJUMP block; restore the
@@ -667,7 +667,7 @@ EOF
   upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
   read_ssh
   expect_contains ssh/reconnect-save-fail/pre-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
-  expect_contains ssh/reconnect-save-fail/pre-hn 'HostName office.local' "$ssh_got"
+  expect_contains ssh/reconnect-save-fail/pre-hn 'HostName 10.0.0.8' "$ssh_got"
   functions -c save_hosts _ssh404_save
   save_hosts() { return 1 }
   if upsert_host office mac studio.local 10.0.0.99 'aa:bb:cc:dd:ee:01'; then
@@ -690,11 +690,11 @@ EOF
   read_ssh
   expect_contains ssh/reconnect-save-fail/keep-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
   expect_contains ssh/reconnect-save-fail/keep-host 'Host lanjump-office' "$ssh_got"
-  expect_contains ssh/reconnect-save-fail/keep-hn 'HostName office.local' "$ssh_got"
-  expect_absent ssh/reconnect-save-fail/new-hn 'HostName studio.local' "$ssh_got"
+  expect_contains ssh/reconnect-save-fail/keep-hn 'HostName 10.0.0.8' "$ssh_got"
+  expect_absent ssh/reconnect-save-fail/new-hn 'HostName 10.0.0.99' "$ssh_got"
   resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
-  if [[ $resolved_hn != office.local ]]; then
-    print -u2 "FAIL ssh/reconnect-save-fail/hostname-wins want=office.local got=$(printf %q "$resolved_hn")"
+  if [[ $resolved_hn != 10.0.0.8 ]]; then
+    print -u2 "FAIL ssh/reconnect-save-fail/hostname-wins want=10.0.0.8 got=$(printf %q "$resolved_hn")"
     (( fails++ ))
   fi
 
@@ -723,7 +723,7 @@ EOF
   fi
   read_ssh
   expect_contains ssh/swap-id-save-fail/pre-old-begin "# BEGIN LANJUMP ${leftover_id}" "$ssh_got"
-  expect_contains ssh/swap-id-save-fail/pre-old-hn 'HostName studio.local' "$ssh_got"
+  expect_contains ssh/swap-id-save-fail/pre-old-hn 'HostName 10.0.0.9' "$ssh_got"
   if grep -qFx '# BEGIN LANJUMP lanjump-office' "$SSH_CONFIG"; then
     print -u2 "FAIL ssh/swap-id-save-fail/pre-natural still has natural id block"
     (( fails++ ))
@@ -750,14 +750,14 @@ EOF
   read_ssh
   expect_contains ssh/swap-id-save-fail/keep-old-begin "# BEGIN LANJUMP ${leftover_id}" "$ssh_got"
   expect_contains ssh/swap-id-save-fail/keep-old-host "Host ${leftover_id}" "$ssh_got"
-  expect_contains ssh/swap-id-save-fail/keep-old-hn 'HostName studio.local' "$ssh_got"
+  expect_contains ssh/swap-id-save-fail/keep-old-hn 'HostName 10.0.0.9' "$ssh_got"
   if grep -qFx '# BEGIN LANJUMP lanjump-office' "$SSH_CONFIG"; then
     print -u2 "FAIL ssh/swap-id-save-fail/new-first-write left a first-write lanjump-office block"
     (( fails++ ))
   fi
   resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$leftover_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
-  if [[ $resolved_hn != studio.local ]]; then
-    print -u2 "FAIL ssh/swap-id-save-fail/hostname-wins want=studio.local got=$(printf %q "$resolved_hn") id=$(printf %q "$leftover_id")"
+  if [[ $resolved_hn != 10.0.0.9 ]]; then
+    print -u2 "FAIL ssh/swap-id-save-fail/hostname-wins want=10.0.0.9 got=$(printf %q "$resolved_hn") id=$(printf %q "$leftover_id")"
     (( fails++ ))
   fi
 
@@ -786,7 +786,7 @@ EOF
   fi
   read_ssh
   expect_contains ssh/swap-id-upsert-fail/pre-old-begin "# BEGIN LANJUMP ${leftover_id}" "$ssh_got"
-  expect_contains ssh/swap-id-upsert-fail/pre-old-hn 'HostName studio.local' "$ssh_got"
+  expect_contains ssh/swap-id-upsert-fail/pre-old-hn 'HostName 10.0.0.9' "$ssh_got"
   if grep -qFx '# BEGIN LANJUMP lanjump-office' "$SSH_CONFIG"; then
     print -u2 "FAIL ssh/swap-id-upsert-fail/pre-natural still has natural id block"
     (( fails++ ))
@@ -818,14 +818,14 @@ EOF
   read_ssh
   expect_contains ssh/swap-id-upsert-fail/keep-old-begin "# BEGIN LANJUMP ${leftover_id}" "$ssh_got"
   expect_contains ssh/swap-id-upsert-fail/keep-old-host "Host ${leftover_id}" "$ssh_got"
-  expect_contains ssh/swap-id-upsert-fail/keep-old-hn 'HostName studio.local' "$ssh_got"
+  expect_contains ssh/swap-id-upsert-fail/keep-old-hn 'HostName 10.0.0.9' "$ssh_got"
   if grep -qFx '# BEGIN LANJUMP lanjump-office' "$SSH_CONFIG"; then
     print -u2 "FAIL ssh/swap-id-upsert-fail/new-first-write left a first-write lanjump-office block"
     (( fails++ ))
   fi
   resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$leftover_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
-  if [[ $resolved_hn != studio.local ]]; then
-    print -u2 "FAIL ssh/swap-id-upsert-fail/hostname-wins want=studio.local got=$(printf %q "$resolved_hn") id=$(printf %q "$leftover_id")"
+  if [[ $resolved_hn != 10.0.0.9 ]]; then
+    print -u2 "FAIL ssh/swap-id-upsert-fail/hostname-wins want=10.0.0.9 got=$(printf %q "$resolved_hn") id=$(printf %q "$leftover_id")"
     (( fails++ ))
   fi
 
@@ -925,7 +925,7 @@ EOF
   fi
   read_ssh
   expect_contains ssh/missing-block-upsert/new-begin '# BEGIN LANJUMP lanjump-work' "$ssh_got"
-  expect_contains ssh/missing-block-upsert/new-hn 'HostName studio.local' "$ssh_got"
+  expect_contains ssh/missing-block-upsert/new-hn 'HostName 10.0.0.9' "$ssh_got"
   expect_absent ssh/missing-block-upsert/old-begin '# BEGIN LANJUMP lanjump-office' "$ssh_got"
 
   # #361: persist_scan_hosts must refresh HostName/Port in the LANJUMP
@@ -969,6 +969,37 @@ EOF
     (( fails++ ))
   fi
 
+  # #435: persist_scan and reconnect must write the selected LAN IP as
+  # HostName. Dual-NIC mDNS (office.local) can still resolve to
+  # Docker/VPN; list connect already uses IP (#362).
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  read_ssh
+  expect_contains ssh/scan-ip-hostname/reconnect-hn 'HostName 10.0.0.8' "$ssh_got"
+  expect_absent ssh/scan-ip-hostname/reconnect-mdns 'HostName office.local' "$ssh_got"
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.8 ]]; then
+    print -u2 "FAIL ssh/scan-ip-hostname/reconnect-wins want=10.0.0.8 got=$(printf %q "$resolved_hn")"
+    (( fails++ ))
+  fi
+  s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  s_host=(office.local)
+  s_ip=(10.0.0.99)
+  s_mac=('aa:bb:cc:dd:ee:01')
+  s_port=(22)
+  persist_scan_hosts
+  read_ssh
+  expect_contains ssh/scan-ip-hostname/scan-hn 'HostName 10.0.0.99' "$ssh_got"
+  expect_absent ssh/scan-ip-hostname/scan-mdns 'HostName office.local' "$ssh_got"
+  expect_absent ssh/scan-ip-hostname/scan-stale 'HostName 10.0.0.8' "$ssh_got"
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.99 ]]; then
+    print -u2 "FAIL ssh/scan-ip-hostname/scan-wins want=10.0.0.99 got=$(printf %q "$resolved_hn")"
+    (( fails++ ))
+  fi
+
   # #377: old-format rows (no ssh_id) still load. Scan-only Office /
   # office both slug to lanjump-office; persist must allocate like
   # connect (alloc_ssh_id) so they do not share one Host block.
@@ -987,23 +1018,23 @@ EOF
   s_port=(22 22)
   persist_scan_hosts
   read_ssh
-  expect_contains ssh/scan-alloc-id/office-hn 'HostName office.local' "$ssh_got"
-  expect_contains ssh/scan-alloc-id/studio-hn 'HostName studio.local' "$ssh_got"
+  expect_contains ssh/scan-alloc-id/office-hn 'HostName 10.0.0.8' "$ssh_got"
+  expect_contains ssh/scan-alloc-id/studio-hn 'HostName 10.0.0.9' "$ssh_got"
   local office_id studio_id
-  office_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="office.local" {print id; exit}' "$SSH_CONFIG")
-  studio_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="studio.local" {print id; exit}' "$SSH_CONFIG")
+  office_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="10.0.0.8" {print id; exit}' "$SSH_CONFIG")
+  studio_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="10.0.0.9" {print id; exit}' "$SSH_CONFIG")
   if [[ -z $office_id || -z $studio_id || $office_id == "$studio_id" ]]; then
     print -u2 "FAIL ssh/scan-alloc-id/distinct-host office_id=$(printf %q "$office_id") studio_id=$(printf %q "$studio_id")"
     (( fails++ ))
   else
     resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$office_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
-    if [[ $resolved_hn != office.local ]]; then
-      print -u2 "FAIL ssh/scan-alloc-id/office-wins want=office.local got=$(printf %q "$resolved_hn") id=$(printf %q "$office_id")"
+    if [[ $resolved_hn != 10.0.0.8 ]]; then
+      print -u2 "FAIL ssh/scan-alloc-id/office-wins want=10.0.0.8 got=$(printf %q "$resolved_hn") id=$(printf %q "$office_id")"
       (( fails++ ))
     fi
     resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$studio_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
-    if [[ $resolved_hn != studio.local ]]; then
-      print -u2 "FAIL ssh/scan-alloc-id/studio-wins want=studio.local got=$(printf %q "$resolved_hn") id=$(printf %q "$studio_id")"
+    if [[ $resolved_hn != 10.0.0.9 ]]; then
+      print -u2 "FAIL ssh/scan-alloc-id/studio-wins want=10.0.0.9 got=$(printf %q "$resolved_hn") id=$(printf %q "$studio_id")"
       (( fails++ ))
     fi
   fi
@@ -1041,22 +1072,22 @@ EOF
     (( fails++ ))
   fi
   read_ssh
-  expect_contains ssh/scan-dup-id/office-hn 'HostName office.local' "$ssh_got"
-  expect_contains ssh/scan-dup-id/studio-hn 'HostName studio.local' "$ssh_got"
-  office_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="office.local" {print id; exit}' "$SSH_CONFIG")
-  studio_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="studio.local" {print id; exit}' "$SSH_CONFIG")
+  expect_contains ssh/scan-dup-id/office-hn 'HostName 10.0.0.81' "$ssh_got"
+  expect_contains ssh/scan-dup-id/studio-hn 'HostName 10.0.0.91' "$ssh_got"
+  office_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="10.0.0.81" {print id; exit}' "$SSH_CONFIG")
+  studio_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="10.0.0.91" {print id; exit}' "$SSH_CONFIG")
   if [[ -z $office_id || -z $studio_id || $office_id == "$studio_id" ]]; then
     print -u2 "FAIL ssh/scan-dup-id/distinct-host office_id=$(printf %q "$office_id") studio_id=$(printf %q "$studio_id")"
     (( fails++ ))
   else
     resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$office_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
-    if [[ $resolved_hn != office.local ]]; then
-      print -u2 "FAIL ssh/scan-dup-id/office-wins want=office.local got=$(printf %q "$resolved_hn") id=$(printf %q "$office_id")"
+    if [[ $resolved_hn != 10.0.0.81 ]]; then
+      print -u2 "FAIL ssh/scan-dup-id/office-wins want=10.0.0.81 got=$(printf %q "$resolved_hn") id=$(printf %q "$office_id")"
       (( fails++ ))
     fi
     resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$studio_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
-    if [[ $resolved_hn != studio.local ]]; then
-      print -u2 "FAIL ssh/scan-dup-id/studio-wins want=studio.local got=$(printf %q "$resolved_hn") id=$(printf %q "$studio_id")"
+    if [[ $resolved_hn != 10.0.0.91 ]]; then
+      print -u2 "FAIL ssh/scan-dup-id/studio-wins want=10.0.0.91 got=$(printf %q "$resolved_hn") id=$(printf %q "$studio_id")"
       (( fails++ ))
     fi
   fi
@@ -1099,9 +1130,9 @@ EOF
   read_ssh
   expect_contains ssh/connect-keep-shared-ssh/office-host $'Host lanjump-office\n' "$ssh_got"
   expect_contains ssh/connect-keep-shared-ssh/office-hn 'HostName office.local' "$ssh_got"
-  expect_contains ssh/connect-keep-shared-ssh/studio-hn 'HostName studio.local' "$ssh_got"
+  expect_contains ssh/connect-keep-shared-ssh/studio-hn 'HostName 10.0.0.9' "$ssh_got"
   office_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="office.local" {print id; exit}' "$SSH_CONFIG")
-  studio_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="studio.local" {print id; exit}' "$SSH_CONFIG")
+  studio_id=$(awk '$1=="Host" && $2 ~ /^lanjump-/ {id=$2} $1=="HostName" && $2=="10.0.0.9" {print id; exit}' "$SSH_CONFIG")
   if [[ $office_id != lanjump-office || -z $studio_id || $studio_id == "$office_id" ]]; then
     print -u2 "FAIL ssh/connect-keep-shared-ssh/distinct-host office_id=$(printf %q "$office_id") studio_id=$(printf %q "$studio_id")"
     (( fails++ ))
@@ -1112,8 +1143,8 @@ EOF
       (( fails++ ))
     fi
     resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$studio_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
-    if [[ $resolved_hn != studio.local ]]; then
-      print -u2 "FAIL ssh/connect-keep-shared-ssh/studio-wins want=studio.local got=$(printf %q "$resolved_hn") id=$(printf %q "$studio_id")"
+    if [[ $resolved_hn != 10.0.0.9 ]]; then
+      print -u2 "FAIL ssh/connect-keep-shared-ssh/studio-wins want=10.0.0.9 got=$(printf %q "$resolved_hn") id=$(printf %q "$studio_id")"
       (( fails++ ))
     fi
   fi
