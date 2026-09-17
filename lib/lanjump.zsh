@@ -19,10 +19,10 @@ KEY="$HOME/.ssh/id_ed25519_lanjump"
 PICKER="$APP/lanjump-pick.zsh"
 SSH_CONFIG="$HOME/.ssh/config"
 
-typeset -a h_alias h_user h_hostname h_ip h_mac h_last
-typeset -a items_kind items_alias items_user items_hostname items_ip items_mac items_status items_saved
+typeset -a h_alias h_user h_hostname h_ip h_mac h_port h_last
+typeset -a items_kind items_alias items_user items_hostname items_ip items_mac items_port items_status items_saved
 typeset -a cli_recent_names
-typeset -a s_alias s_host s_ip s_mac
+typeset -a s_alias s_host s_ip s_mac s_port
 typeset -a MYIPS
 cursor=1
 cli_recent_cur=1
@@ -501,7 +501,7 @@ ssh_id_from_alias() {
 }
 
 load_hosts() {
-  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_last=()
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_last=()
   [[ -f $HOSTS_FILE ]] || return
   local line
   local -a f
@@ -509,13 +509,26 @@ load_hosts() {
     [[ -z $line || $line == \#* ]] && continue
     f=("${(@s:|:)line}")
     (( ${#f} >= 6 )) || continue
+    # #280: optional port sits before last. A 1–65535 field there is
+    # the advertised SSH port; otherwise the row is the pre-port format.
     # #219: extra | belongs to the alias (Bonjour names).
-    h_alias+=("${(j:|:)f[1,-6]}")
-    h_user+=("${f[-5]}")
-    h_hostname+=("${f[-4]}")
-    h_ip+=("${f[-3]}")
-    h_mac+=("${f[-2]}")
-    h_last+=("${f[-1]}")
+    if (( ${#f} >= 7 )) && [[ ${f[-2]} == [1-9][0-9](#c0,4) ]] && (( f[-2] <= 65535 )); then
+      h_alias+=("${(j:|:)f[1,-7]}")
+      h_user+=("${f[-6]}")
+      h_hostname+=("${f[-5]}")
+      h_ip+=("${f[-4]}")
+      h_mac+=("${f[-3]}")
+      h_port+=("${f[-2]}")
+      h_last+=("${f[-1]}")
+    else
+      h_alias+=("${(j:|:)f[1,-6]}")
+      h_user+=("${f[-5]}")
+      h_hostname+=("${f[-4]}")
+      h_ip+=("${f[-3]}")
+      h_mac+=("${f[-2]}")
+      h_port+=("22")
+      h_last+=("${f[-1]}")
+    fi
   done <"$HOSTS_FILE"
 }
 
@@ -540,9 +553,9 @@ replace_file_atomic() {
 save_hosts() {
   local i n=${#h_alias}
   {
-    print -r -- "# alias|user|hostname|ip|mac|last"
+    print -r -- "# alias|user|hostname|ip|mac|port|last"
     for (( i = 1; i <= n; i++ )); do
-      print -r -- "${h_alias[$i]}|${h_user[$i]//|/-}|${h_hostname[$i]//|/-}|${h_ip[$i]}|${h_mac[$i]}|${h_last[$i]}"
+      print -r -- "${h_alias[$i]}|${h_user[$i]//|/-}|${h_hostname[$i]//|/-}|${h_ip[$i]}|${h_mac[$i]}|${h_port[$i]:-22}|${h_last[$i]}"
     done
   } | replace_file_atomic "$HOSTS_FILE"
 }
@@ -585,7 +598,7 @@ find_saved() {
 }
 
 upsert_host() {
-  local alias=$1 user=$2 hostname=$3 ip=$4 mac=$5
+  local alias=$1 user=$2 hostname=$3 ip=$4 mac=$5 port=${6:-22}
   local idx
   idx=$(find_saved "$mac" "$hostname" "$ip")
   if [[ -n $idx ]]; then
@@ -594,6 +607,7 @@ upsert_host() {
     [[ -n $hostname ]] && h_hostname[$idx]=$hostname
     [[ -n $ip ]] && h_ip[$idx]=$ip
     [[ -n $mac ]] && h_mac[$idx]=$mac
+    [[ -n $port ]] && h_port[$idx]=$port
     h_last[$idx]=$EPOCHSECONDS
   else
     h_alias+=("$alias")
@@ -601,10 +615,11 @@ upsert_host() {
     h_hostname+=("$hostname")
     h_ip+=("$ip")
     h_mac+=("$mac")
+    h_port+=("${port:-22}")
     h_last+=("$EPOCHSECONDS")
   fi
   save_hosts
-  upsert_ssh_config "$(ssh_id_from_alias "$alias")" "$user" "${hostname:-$ip}"
+  upsert_ssh_config "$(ssh_id_from_alias "$alias")" "$user" "${hostname:-$ip}" "$port"
 }
 
 forget_saved() {
@@ -614,9 +629,9 @@ forget_saved() {
   local id
   id=$(ssh_id_from_alias "${h_alias[$idx]}")
   remove_ssh_config "$id"
-  local -a na nu nh ni nm nl
+  local -a na nu nh ni nm np nl
   local i
-  na=() nu=() nh=() ni=() nm=() nl=()
+  na=() nu=() nh=() ni=() nm=() np=() nl=()
   for (( i = 1; i <= n; i++ )); do
     (( i == idx )) && continue
     na+=("${h_alias[$i]}")
@@ -624,6 +639,7 @@ forget_saved() {
     nh+=("${h_hostname[$i]}")
     ni+=("${h_ip[$i]}")
     nm+=("${h_mac[$i]}")
+    np+=("${h_port[$i]:-22}")
     nl+=("${h_last[$i]}")
   done
   h_alias=("${na[@]}")
@@ -631,6 +647,7 @@ forget_saved() {
   h_hostname=("${nh[@]}")
   h_ip=("${ni[@]}")
   h_mac=("${nm[@]}")
+  h_port=("${np[@]}")
   h_last=("${nl[@]}")
   save_hosts
 }
@@ -674,7 +691,7 @@ replace_ssh_config() {
 }
 
 upsert_ssh_config() {
-  local id=$1 user=$2 hostname=$3
+  local id=$1 user=$2 hostname=$3 port=${4:-22}
   local begin="# BEGIN LANJUMP ${id}"
   local end="# END LANJUMP ${id}"
   local tmp
@@ -697,13 +714,14 @@ upsert_ssh_config() {
        END { if (open) exit 1 }
      ' "$SSH_CONFIG"; then
     tmp=$(mktemp)
-    awk -v begin="$begin" -v end="$end" -v id="$id" -v user="$user" -v hn="$hostname" -v key="$KEY" '
+    awk -v begin="$begin" -v end="$end" -v id="$id" -v user="$user" -v hn="$hostname" -v key="$KEY" -v port="$port" '
       function emit() {
         if (emitted) return
         print ""
         print begin
         print "Host " id
         print "  HostName " hn
+        if (port != "" && port != "22") print "  Port " port
         print "  User " user
         print "  IdentityFile " key
         print "  IdentitiesOnly yes"
@@ -737,6 +755,9 @@ upsert_ssh_config() {
     print "$begin"
     print "Host ${id}"
     print "  HostName ${hostname}"
+    if [[ -n $port && $port != 22 ]]; then
+      print "  Port ${port}"
+    fi
     print "  User ${user}"
     print "  IdentityFile ${KEY}"
     print "  IdentitiesOnly yes"
@@ -805,7 +826,7 @@ scan_bonjour() {
     }' "$resolve_tmp" | tail -1)
     rm -f "$resolve_tmp"
     is_self_ip "$ip" && continue
-    print -r -- "${inst}"$'\t'"${host}"$'\t'"${ip}"$'\t'"$(get_mac "$ip")"
+    print -r -- "${inst}"$'\t'"${host}"$'\t'"${ip}"$'\t'"$(get_mac "$ip")"$'\t'"${port:-22}"
   done <"$inst_file"
   rm -f "$tmp" "$inst_file"
 }
@@ -834,7 +855,7 @@ scan_port22() {
 }
 
 build_items() {
-  items_kind=() items_alias=() items_user=() items_hostname=() items_ip=() items_mac=() items_status=() items_saved=()
+  items_kind=() items_alias=() items_user=() items_hostname=() items_ip=() items_mac=() items_port=() items_status=() items_saved=()
   local i n=${#h_alias} idx last
   last=$(read_last)
   if (( n )); then
@@ -852,6 +873,7 @@ build_items() {
       items_hostname+=("${h_hostname[$idx]}")
       items_ip+=("${h_ip[$idx]}")
       items_mac+=("${h_mac[$idx]}")
+      items_port+=("${h_port[$idx]:-22}")
       if [[ ${h_alias[$idx]} == "$last" && $last != local ]]; then
         items_status+=("已保存 · 上次")
       else
@@ -866,6 +888,7 @@ build_items() {
   items_hostname+=("")
   items_ip+=("")
   items_mac+=("")
+  items_port+=("")
   items_status+=("")
   items_saved+=("")
 
@@ -875,6 +898,7 @@ build_items() {
   items_hostname+=("")
   items_ip+=("")
   items_mac+=("")
+  items_port+=("")
   items_status+=("")
   items_saved+=("")
 
@@ -884,6 +908,7 @@ build_items() {
   items_hostname+=("")
   items_ip+=("")
   items_mac+=("")
+  items_port+=("")
   items_status+=("")
   items_saved+=("")
 
@@ -896,7 +921,7 @@ build_items() {
 }
 
 add_discovered() {
-  local alias=$1 hostname=$2 ip=$3 mac=$4
+  local alias=$1 hostname=$2 ip=$3 mac=$4 port=${5:-22}
   local idx
   is_self_ip "$ip" && return
   idx=$(find_saved "$mac" "$hostname" "$ip")
@@ -904,15 +929,18 @@ add_discovered() {
     [[ -n $hostname ]] && h_hostname[$idx]=$hostname
     [[ -n $ip ]] && h_ip[$idx]=$ip
     [[ -n $mac ]] && h_mac[$idx]=$mac
+    [[ -n $port && $port != 22 ]] && h_port[$idx]=$port
     return
   fi
   local i n=${#items_kind}
   for (( i = 1; i <= n; i++ )); do
     if [[ ${items_kind[$i]} == host ]]; then
       if [[ -n $ip && ${items_ip[$i]} == "$ip" ]]; then
+        [[ -n $port && $port != 22 ]] && items_port[$i]=$port
         return
       fi
       if [[ -n $mac && -n ${items_mac[$i]} && ${items_mac[$i]} == "$mac" ]]; then
+        [[ -n $port && $port != 22 ]] && items_port[$i]=$port
         return
       fi
     fi
@@ -926,12 +954,16 @@ add_discovered() {
     fi
   done
   (( insert_at > 0 )) || return
+  while (( ${#items_port} < n )); do
+    items_port+=("22")
+  done
   items_kind=("${(@)items_kind[1,insert_at-1]}" host "${(@)items_kind[insert_at,-1]}")
   items_alias=("${(@)items_alias[1,insert_at-1]}" "$alias" "${(@)items_alias[insert_at,-1]}")
   items_user=("${(@)items_user[1,insert_at-1]}" "" "${(@)items_user[insert_at,-1]}")
   items_hostname=("${(@)items_hostname[1,insert_at-1]}" "$hostname" "${(@)items_hostname[insert_at,-1]}")
   items_ip=("${(@)items_ip[1,insert_at-1]}" "$ip" "${(@)items_ip[insert_at,-1]}")
   items_mac=("${(@)items_mac[1,insert_at-1]}" "$mac" "${(@)items_mac[insert_at,-1]}")
+  items_port=("${(@)items_port[1,insert_at-1]}" "${port:-22}" "${(@)items_port[insert_at,-1]}")
   items_status=("${(@)items_status[1,insert_at-1]}" "新发现" "${(@)items_status[insert_at,-1]}")
   items_saved=("${(@)items_saved[1,insert_at-1]}" "" "${(@)items_saved[insert_at,-1]}")
 }
@@ -959,7 +991,7 @@ mark_online() {
 }
 
 record_seen() {
-  local alias=$1 hostname=$2 ip=$3 mac=$4
+  local alias=$1 hostname=$2 ip=$3 mac=$4 port=${5:-22}
   local idx
   is_self_ip "$ip" && return
   idx=$(find_saved "$mac" "$hostname" "$ip")
@@ -967,6 +999,7 @@ record_seen() {
     [[ -n $hostname ]] && h_hostname[$idx]=$hostname
     [[ -n $ip ]] && h_ip[$idx]=$ip
     [[ -n $mac ]] && h_mac[$idx]=$mac
+    [[ -n $port && $port != 22 ]] && h_port[$idx]=$port
   fi
   local i n=${#s_ip}
   for (( i = 1; i <= n; i++ )); do
@@ -974,6 +1007,7 @@ record_seen() {
       [[ -n $hostname && -z ${s_host[$i]} ]] && s_host[$i]=$hostname
       [[ -n $mac && -z ${s_mac[$i]} ]] && s_mac[$i]=$mac
       [[ -n $alias && ${s_alias[$i]} == "$ip" ]] && s_alias[$i]=$alias
+      [[ -n $port && $port != 22 ]] && s_port[$i]=$port
       return
     fi
   done
@@ -981,6 +1015,7 @@ record_seen() {
   s_host+=("$hostname")
   s_ip+=("$ip")
   s_mac+=("$mac")
+  s_port+=("${port:-22}")
 }
 
 ssh_fp() {
@@ -1029,10 +1064,16 @@ merge_seen_by_hostkey() {
       if [[ -z ${s_host[$i]} && -n ${s_host[$j]} ]]; then
         s_host[$i]=${s_host[$j]}
       fi
+      if [[ ${s_port[$i]:-22} == 22 && ${s_port[$j]:-22} != 22 ]]; then
+        s_port[$i]=${s_port[$j]}
+      fi
       if [[ -f $known ]] && grep -qF "${s_ip[$j]} " "$known" && ! grep -qF "${s_ip[$i]} " "$known"; then
         s_ip[$i]=${s_ip[$j]}
         s_mac[$i]=${s_mac[$j]}
         [[ -n ${s_host[$j]} ]] && s_host[$i]=${s_host[$j]}
+        if [[ ${s_port[$j]:-22} != 22 ]]; then
+          s_port[$i]=${s_port[$j]}
+        fi
         if ! is_numeric_alias "${s_alias[$j]}"; then
           s_alias[$i]=${s_alias[$j]}
         fi
@@ -1040,19 +1081,21 @@ merge_seen_by_hostkey() {
       s_ip[$j]=""
     done
   done
-  local -a na nh ni nm
-  na=() nh=() ni=() nm=()
+  local -a na nh ni nm np
+  na=() nh=() ni=() nm=() np=()
   for (( i = 1; i <= n; i++ )); do
     [[ -n ${s_ip[$i]} ]] || continue
     na+=("${s_alias[$i]}")
     nh+=("${s_host[$i]}")
     ni+=("${s_ip[$i]}")
     nm+=("${s_mac[$i]}")
+    np+=("${s_port[$i]:-22}")
   done
   s_alias=("${na[@]}")
   s_host=("${nh[@]}")
   s_ip=("${ni[@]}")
   s_mac=("${nm[@]}")
+  s_port=("${np[@]}")
 }
 
 do_scan() {
@@ -1071,16 +1114,16 @@ do_scan() {
     return
   fi
   print "正在扫描 Bonjour SSH 和 $(scan_lan_label "$MYIP" "$MASK") 的 22 端口…"
-  s_alias=() s_host=() s_ip=() s_mac=()
-  while IFS=$'\t' read -r alias hostname ip mac; do
+  s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  while IFS=$'\t' read -r alias hostname ip mac port; do
     [[ -n $alias || -n $ip ]] || continue
     [[ -z $alias ]] && alias=${hostname:-$ip}
-    record_seen "$alias" "$hostname" "$ip" "$mac"
+    record_seen "$alias" "$hostname" "$ip" "$mac" "$port"
   done < <(scan_bonjour)
   while IFS= read -r ip; do
     [[ -n $ip ]] || continue
     mac=$(get_mac "$ip")
-    record_seen "$ip" "" "$ip" "$mac"
+    record_seen "$ip" "" "$ip" "$mac" 22
   done < <(scan_port22 "$MYIP" "$MASK")
   merge_seen_by_hostkey
   save_hosts
@@ -1088,7 +1131,7 @@ do_scan() {
   build_items
   n=${#s_alias}
   for (( i = 1; i <= n; i++ )); do
-    add_discovered "${s_alias[$i]}" "${s_host[$i]}" "${s_ip[$i]}" "${s_mac[$i]}"
+    add_discovered "${s_alias[$i]}" "${s_host[$i]}" "${s_ip[$i]}" "${s_mac[$i]}" "${s_port[$i]:-22}"
     mark_online "${s_ip[$i]}" "${s_mac[$i]}" "${s_host[$i]}"
   done
   restore_list_cursor "$keep"
@@ -1471,6 +1514,28 @@ target_for() {
 typeset -a SSH_OPTS
 SSH_OPTS=(-o AddressFamily=inet -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8)
 
+# #280: advertised _ssh._tcp port must reach later ssh (default 22 is a no-op).
+apply_ssh_port() {
+  local port=${1:-22}
+  local -a keep
+  local i
+  keep=()
+  for (( i = 1; i <= ${#SSH_OPTS}; i++ )); do
+    if [[ ${SSH_OPTS[$i]} == -o && ${SSH_OPTS[i+1]:-} == Port=* ]]; then
+      (( i++ ))
+      continue
+    fi
+    if [[ ${SSH_OPTS[$i]} == -oPort=* ]]; then
+      continue
+    fi
+    keep+=("${SSH_OPTS[$i]}")
+  done
+  SSH_OPTS=("${keep[@]}")
+  if [[ $port == [1-9][0-9](#c0,4) && $port != 22 ]] && (( port <= 65535 )); then
+    SSH_OPTS+=(-o "Port=${port}")
+  fi
+}
+
 # Interactive SSH only. Batch/key-install calls stay plain ssh.
 # grok wrap intercepts OSC 52 on this Mac (needed by Apple Terminal) and
 # writes them to pbcopy. Ghostty/iTerm2 already handle OSC 52; wrap is a no-op there.
@@ -1636,8 +1701,10 @@ connect_item() {
   local hostname=${items_hostname[$i]}
   local ip=${items_ip[$i]}
   local mac=${items_mac[$i]}
+  local port=${items_port[$i]:-22}
   local target
 
+  apply_ssh_port "$port"
   restore_tty
   if [[ -z $user ]]; then
     prompt_username
@@ -1667,7 +1734,7 @@ connect_item() {
     return
   fi
   [[ -z $mac ]] && mac=$(get_mac "$ip")
-  upsert_host "$alias" "$user" "$hostname" "$ip" "$mac"
+  upsert_host "$alias" "$user" "$hostname" "$ip" "$mac" "$port"
   mark_last "$alias"
   if ! sync_picker "$target" "$user"; then
     print "无法把 tmux 选择界面同步到对方。"
@@ -1859,6 +1926,7 @@ cli_remote_pick() {
   user=${h_user[$idx]}
   hostname=${h_hostname[$idx]}
   ip=${h_ip[$idx]}
+  apply_ssh_port "${h_port[$idx]:-22}"
   target=$(target_for "$hostname" "$ip")
   if ! setup_access "$user" "$target"; then
     print -u2 "无法登录 ${user}@${target}。"
@@ -1893,6 +1961,7 @@ cli_remote_print() {
   user=${h_user[$idx]}
   hostname=${h_hostname[$idx]}
   ip=${h_ip[$idx]}
+  apply_ssh_port "${h_port[$idx]:-22}"
   target=$(target_for "$hostname" "$ip")
   if ! setup_access "$user" "$target"; then
     print -u2 "无法登录 ${user}@${target}。"
