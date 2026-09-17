@@ -665,6 +665,32 @@ save_hosts() {
   } | replace_file_atomic "$HOSTS_FILE"
 }
 
+# Scan persist: same protocol as upsert_host (#314). Reload under the
+# hosts lock, apply s_* onto that table, then write so a stale list
+# window cannot drop a concurrent upsert (#333).
+persist_scan_hosts() {
+  local st=0 i n idx
+  if [[ -z ${_LANJUMP_HOSTS_LOCKED:-} ]]; then
+    _LANJUMP_HOSTS_LOCKED=1
+    with_data_file_lock "$HOSTS_FILE" persist_scan_hosts
+    st=$?
+    unset _LANJUMP_HOSTS_LOCKED
+    return $st
+  fi
+  load_hosts
+  n=${#s_ip}
+  for (( i = 1; i <= n; i++ )); do
+    idx=$(find_saved "${s_mac[$i]}" "${s_host[$i]}" "${s_ip[$i]}")
+    if [[ -n $idx ]]; then
+      [[ -n ${s_host[$i]} ]] && h_hostname[$idx]=${s_host[$i]}
+      [[ -n ${s_ip[$i]} ]] && h_ip[$idx]=${s_ip[$i]}
+      [[ -n ${s_mac[$i]} ]] && h_mac[$idx]=${s_mac[$i]}
+      [[ -n ${s_port[$i]} ]] && h_port[$idx]=${s_port[$i]}
+    fi
+  done
+  save_hosts
+}
+
 find_saved() {
   local mac=$1 hostname=$2 ip=$3
   local i n=${#h_alias}
@@ -1305,7 +1331,7 @@ do_scan() {
     record_seen "$ip" "" "$ip" "$mac"
   done < <(scan_port22 "$MYIP" "$MASK")
   merge_seen_by_hostkey
-  save_hosts
+  persist_scan_hosts
   load_hosts
   build_items
   n=${#s_alias}
