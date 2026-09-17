@@ -359,7 +359,7 @@ write_cli_launcher
 
 path_note=0
 if [[ :$PATH: != *:$BIN_DIR:* ]]; then
-  if [[ ! -f $ZSHRC ]] || ! grep -qE '(^|[[:space:]])(export[[:space:]]+)?PATH=.*(\$HOME|~)/\.local/bin' "$ZSHRC" 2>/dev/null; then
+  if [[ ! -f $ZSHRC ]] || ! grep -vE '^[[:space:]]*#' "$ZSHRC" 2>/dev/null | grep -qE '(^|[[:space:]])(export[[:space:]]+)?PATH=.*(\$HOME|~)/\.local/bin'; then
     if [[ ! -f $ZSHRC ]]; then
       print '# lanjump' > "$ZSHRC"
       print "$PATH_LINE" >> "$ZSHRC"

@@ -353,7 +353,16 @@ if [[ $out != *没有新版本* ]]; then
   fail "piped install first upgrade should skip: $out"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar"
+# #282: a commented PATH line must not count as already configured.
+pathhome=$(mktemp -d)
+mkdir -p "$pathhome/Desktop" "$pathhome/.ssh" "$pathhome/Library/Application Support"
+print -r -- '# export PATH="$HOME/.local/bin:$PATH"' >"$pathhome/.zshrc"
+HOME=$pathhome /bin/zsh "$ROOT/install.zsh" >/dev/null
+if ! grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$pathhome/.zshrc"; then
+  fail "#282 commented PATH line counted as configured: $(<"$pathhome/.zshrc")"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar" "$pathhome"
 
 if (( fails )); then
   exit 1
