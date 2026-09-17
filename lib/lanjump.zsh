@@ -940,14 +940,9 @@ upsert_ssh_config() {
     replace_ssh_config "$tmp"
     return
   fi
+  # Prepend so a preceding Host * cannot cover User/Port (OpenSSH first-match).
   tmp=$(mktemp)
   {
-    awk -v b="$begin" -v e="$end" '
-      $0 == b { skip = 1; next }
-      $0 == e { skip = 0; next }
-      !skip { print }
-    ' "$SSH_CONFIG"
-    print
     print "$begin"
     print "Host ${id}"
     print "  HostName ${hostname}"
@@ -963,6 +958,12 @@ upsert_ssh_config() {
     print "  StrictHostKeyChecking accept-new"
     print "  ConnectTimeout 8"
     print "$end"
+    print
+    awk -v b="$begin" -v e="$end" '
+      $0 == b { skip = 1; next }
+      $0 == e { skip = 0; next }
+      !skip { print }
+    ' "$SSH_CONFIG"
   } >"$tmp"
   replace_ssh_config "$tmp"
 }

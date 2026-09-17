@@ -213,6 +213,35 @@ EOF
   fi
   rm -f "$SSH_CONFIG"
 
+  # #340: first-write LANJUMP block must win over a preceding Host *
+  # (OpenSSH first-match). Appending after Host * User/Port leaves
+  # ssh -G showing the global values.
+  cat >"$SSH_CONFIG" <<'EOF'
+Host *
+  User global
+  Port 2222
+EOF
+  upsert_ssh_config lanjump-office mac 10.0.0.8 2200
+  read_ssh
+  expect_contains ssh/host-star-order/keep-star 'Host *' "$ssh_got"
+  expect_contains ssh/host-star-order/keep-global 'User global' "$ssh_got"
+  local resolved_user resolved_port
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  resolved_user=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="user"{print $2; exit}')
+  resolved_port=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="port"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.8 ]]; then
+    print -u2 "FAIL ssh/host-star-order/hostname want=10.0.0.8 got=$(printf %q "$resolved_hn")"
+    (( fails++ ))
+  fi
+  if [[ $resolved_user != mac ]]; then
+    print -u2 "FAIL ssh/host-star-order/user want=mac got=$(printf %q "$resolved_user")"
+    (( fails++ ))
+  fi
+  if [[ $resolved_port != 2200 ]]; then
+    print -u2 "FAIL ssh/host-star-order/port want=2200 got=$(printf %q "$resolved_port")"
+    (( fails++ ))
+  fi
+
   # Happy path: a complete block is still removed; later Host stays.
   cat >"$SSH_CONFIG" <<'EOF'
 # BEGIN LANJUMP lanjump-office
