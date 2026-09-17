@@ -667,6 +667,89 @@ EOF
     fi
   fi
 
+  # #385: two saved hosts, scan rewrites both IPs, second upsert_ssh_config
+  # fails. The first HostName must stay on the old IP; hosts file unchanged.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac '' 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  upsert_host studio mac '' 10.0.0.9 'aa:bb:cc:dd:ee:02'
+  read_ssh
+  expect_contains ssh/scan-persist-rollback/pre-office 'HostName 10.0.0.8' "$ssh_got"
+  expect_contains ssh/scan-persist-rollback/pre-studio 'HostName 10.0.0.9' "$ssh_got"
+  local ssh385_hosts_before ssh385_hosts_after
+  ssh385_hosts_before=$(<"$HOSTS_FILE")
+  s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  s_host=('' '')
+  s_ip=(10.0.0.81 10.0.0.91)
+  s_mac=('aa:bb:cc:dd:ee:01' 'aa:bb:cc:dd:ee:02')
+  s_port=(22 22)
+  functions -c upsert_ssh_config _ssh385_upsert
+  upsert_ssh_config() {
+    if [[ $3 == 10.0.0.91 ]]; then
+      return 1
+    fi
+    _ssh385_upsert "$@"
+  }
+  if persist_scan_hosts; then
+    print -u2 "FAIL ssh/scan-persist-rollback persist_scan_hosts returned 0 after second SSH write failure"
+    (( fails++ ))
+  fi
+  functions -c _ssh385_upsert upsert_ssh_config
+  unfunction _ssh385_upsert
+  read_ssh
+  expect_contains ssh/scan-persist-rollback/office-old-hn 'HostName 10.0.0.8' "$ssh_got"
+  expect_absent ssh/scan-persist-rollback/office-new-hn 'HostName 10.0.0.81' "$ssh_got"
+  expect_contains ssh/scan-persist-rollback/studio-old-hn 'HostName 10.0.0.9' "$ssh_got"
+  expect_absent ssh/scan-persist-rollback/studio-new-hn 'HostName 10.0.0.91' "$ssh_got"
+  ssh385_hosts_after=$(<"$HOSTS_FILE")
+  if [[ $ssh385_hosts_after != "$ssh385_hosts_before" ]]; then
+    print -u2 "FAIL ssh/scan-persist-rollback hosts file changed got=$(printf %q "$ssh385_hosts_after")"
+    (( fails++ ))
+  fi
+  load_hosts
+  if [[ ${h_ip[1]:-} != 10.0.0.8 || ${h_ip[2]:-} != 10.0.0.9 ]]; then
+    print -u2 "FAIL ssh/scan-persist-rollback/hosts-ip want=10.0.0.8 10.0.0.9 got=$(printf %q "${h_ip[*]}")"
+    (( fails++ ))
+  fi
+
+  # #385: every SSH write succeeds, then save_hosts fails. Restore each
+  # HostName this pass already rewrote; hosts file stays on the old IPs.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac '' 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  upsert_host studio mac '' 10.0.0.9 'aa:bb:cc:dd:ee:02'
+  ssh385_hosts_before=$(<"$HOSTS_FILE")
+  s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  s_host=('' '')
+  s_ip=(10.0.0.81 10.0.0.91)
+  s_mac=('aa:bb:cc:dd:ee:01' 'aa:bb:cc:dd:ee:02')
+  s_port=(22 22)
+  functions -c save_hosts _ssh385_save
+  save_hosts() { return 1 }
+  if persist_scan_hosts; then
+    print -u2 "FAIL ssh/scan-save-rollback persist_scan_hosts returned 0 after save_hosts failure"
+    (( fails++ ))
+  fi
+  functions -c _ssh385_save save_hosts
+  unfunction _ssh385_save
+  read_ssh
+  expect_contains ssh/scan-save-rollback/office-old-hn 'HostName 10.0.0.8' "$ssh_got"
+  expect_absent ssh/scan-save-rollback/office-new-hn 'HostName 10.0.0.81' "$ssh_got"
+  expect_contains ssh/scan-save-rollback/studio-old-hn 'HostName 10.0.0.9' "$ssh_got"
+  expect_absent ssh/scan-save-rollback/studio-new-hn 'HostName 10.0.0.91' "$ssh_got"
+  ssh385_hosts_after=$(<"$HOSTS_FILE")
+  if [[ $ssh385_hosts_after != "$ssh385_hosts_before" ]]; then
+    print -u2 "FAIL ssh/scan-save-rollback hosts file changed got=$(printf %q "$ssh385_hosts_after")"
+    (( fails++ ))
+  fi
+  load_hosts
+  if [[ ${h_ip[1]:-} != 10.0.0.8 || ${h_ip[2]:-} != 10.0.0.9 ]]; then
+    print -u2 "FAIL ssh/scan-save-rollback/hosts-ip want=10.0.0.8 10.0.0.9 got=$(printf %q "${h_ip[*]}")"
+    (( fails++ ))
+  fi
+
   # #314: two upsert_ssh_config writers read then replace the whole SSH file.
   # A reads, yields, then writes; B writes in the gap. Both Host blocks must remain.
   local ssh314_home ssh314_fn
