@@ -270,6 +270,28 @@ EOF
     fi
   fi
 
+  # #305: existing authorized_keys without a trailing newline must not
+  # glue the new pubkey onto that last line. Callers pass this string
+  # as the ssh command.
+  local existing_line
+  existing_line="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExistingKeyNoNewline existing@host"
+  pub_line="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForNewlineTest lanjump@newline"
+  print -r -- "$pub_line" >"$KEY.pub"
+  install_cmd=$(lan_pub_install_cmd)
+  remote_home=$tmpdir/newline-remote
+  mkdir -p "$remote_home/.ssh"
+  printf '%s' "$existing_line" >"$remote_home/.ssh/authorized_keys"
+  if ! HOME=$remote_home zsh -c -- "$install_cmd"; then
+    print -u2 "FAIL ssh/pub-install-newline/run install command failed"
+    (( fails++ ))
+  else
+    remote_keys=$(<"$remote_home/.ssh/authorized_keys")
+    if [[ $remote_keys != "$existing_line"$'\n'"$pub_line" ]]; then
+      print -u2 "FAIL ssh/pub-install-newline/key want=$(printf %q "$existing_line"$'\n'"$pub_line") got=$(printf %q "$remote_keys")"
+      (( fails++ ))
+    fi
+  fi
+
   # #190: Ghostty TERM stays; Apple Terminal 256-color rewrite is ssh-child only.
   local saved_path=$PATH
   local saved_term=${TERM-}
