@@ -633,6 +633,69 @@ EOF
     (( fails++ ))
   fi
 
+  # #413: Office/office collided on slug; leftover keeps a suffixed
+  # ssh_id. Forget the row that owns lanjump-office, then reconnect
+  # the leftover — it reallocates the natural id. hosts write failure
+  # must restore the old suffixed block; the new first-write is rolled
+  # back like #404. The leftover hosts row stays (load_hosts).
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host Office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  upsert_host office mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
+  load_hosts
+  local leftover_id=${h_ssh_id[2]:-}
+  if [[ -z $leftover_id || $leftover_id == lanjump-office ]]; then
+    print -u2 "FAIL ssh/swap-id-save-fail/setup leftover id should be suffixed got=$(printf %q "$leftover_id")"
+    (( fails++ ))
+  fi
+  forget_saved 1
+  load_hosts
+  leftover_id=${h_ssh_id[1]:-}
+  if [[ ${h_alias[1]:-} != office || -z $leftover_id || $leftover_id == lanjump-office ]]; then
+    print -u2 "FAIL ssh/swap-id-save-fail/leftover want=office+suffix alias=$(printf %q "${h_alias[1]:-}") id=$(printf %q "$leftover_id")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/swap-id-save-fail/pre-old-begin "# BEGIN LANJUMP ${leftover_id}" "$ssh_got"
+  expect_contains ssh/swap-id-save-fail/pre-old-hn 'HostName studio.local' "$ssh_got"
+  if grep -qFx '# BEGIN LANJUMP lanjump-office' "$SSH_CONFIG"; then
+    print -u2 "FAIL ssh/swap-id-save-fail/pre-natural still has natural id block"
+    (( fails++ ))
+  fi
+  functions -c save_hosts _ssh413_save
+  save_hosts() { return 1 }
+  if upsert_host office mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02'; then
+    print -u2 "FAIL ssh/swap-id-save-fail upsert_host returned 0 after save_hosts failure"
+    (( fails++ ))
+  fi
+  functions -c _ssh413_save save_hosts
+  unfunction _ssh413_save
+  load_hosts
+  if [[ ${h_alias[1]:-} != office ]]; then
+    print -u2 "FAIL ssh/swap-id-save-fail dropped hosts row aliases=$(printf %q "${h_alias[*]}")"
+    (( fails++ ))
+  fi
+  local ssh413_disk
+  ssh413_disk=$(<"$HOSTS_FILE")
+  if [[ $ssh413_disk != *studio.local* ]]; then
+    print -u2 "FAIL ssh/swap-id-save-fail hosts file lost studio.local got=$(printf %q "$ssh413_disk")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/swap-id-save-fail/keep-old-begin "# BEGIN LANJUMP ${leftover_id}" "$ssh_got"
+  expect_contains ssh/swap-id-save-fail/keep-old-host "Host ${leftover_id}" "$ssh_got"
+  expect_contains ssh/swap-id-save-fail/keep-old-hn 'HostName studio.local' "$ssh_got"
+  if grep -qFx '# BEGIN LANJUMP lanjump-office' "$SSH_CONFIG"; then
+    print -u2 "FAIL ssh/swap-id-save-fail/new-first-write left a first-write lanjump-office block"
+    (( fails++ ))
+  fi
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" "$leftover_id" 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  if [[ $resolved_hn != studio.local ]]; then
+    print -u2 "FAIL ssh/swap-id-save-fail/hostname-wins want=studio.local got=$(printf %q "$resolved_hn") id=$(printf %q "$leftover_id")"
+    (( fails++ ))
+  fi
+
   # #387: prompt_username abort must return to the list, not connect.
   rm -f "$tmpdir/ssh387_access" "$tmpdir/ssh387_out"
   local ssh387_notice=$notice
