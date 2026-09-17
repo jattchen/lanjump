@@ -212,7 +212,7 @@ snapshot_hook_shell() {
 
 tmux_install_snapshot_hooks() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  local inner pick sr iv hook tick quoted_pick app_pat
+  local inner pick sr iv hook tick quoted_pick app_pat line cmd
   pick=$(snapshot_pick_bin)
   quoted_pick=$(printf %q "$pick")
   inner=$(snapshot_hook_shell)
@@ -223,7 +223,13 @@ tmux_install_snapshot_hooks() {
     'after-select-window[91]' \
     'after-refresh-client[91]'
   do
-    tmuxx set-hook -gu "$hook" 2>/dev/null || true
+    # #277: only unset a slot 91 hook we wrote. Foreign plugins keep theirs.
+    line=$(tmuxx show-hooks -g "$hook" 2>/dev/null || true)
+    cmd=
+    [[ $line == "$hook "* ]] && cmd=${line#$hook }
+    if [[ -n $cmd && $cmd == *lanjump-pick* && $cmd == *--snapshot* ]]; then
+      tmuxx set-hook -gu "$hook" 2>/dev/null || true
+    fi
   done
   tmuxx set-hook -g 'client-detached[91]' "run-shell -b $(printf %q "$inner")" 2>/dev/null || true
   tick="#(/bin/zsh $quoted_pick --snapshot;)"
