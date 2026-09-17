@@ -533,7 +533,53 @@ if [[ ! -f $app334/pinned-sessions || $(<"$app334/pinned-sessions") != KEEP-PINS
   fail "#334 mkdir-during-switch dropped pins"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334"
+# #335: keepers are copied into APP.new once, then the live tree is renamed
+# away. A write that lands on $APP after that copy (hosts/settings change
+# while upgrade is in the copy-to-stage window) must still be on the
+# switched tree, not left behind on APP.old.
+home335=$(mktemp -d)
+mkdir -p "$home335/Desktop" "$home335/.ssh" "$home335/Library/Application Support"
+HOME=$home335 /bin/zsh "$ROOT/install.zsh" >/dev/null
+app335="$home335/Library/Application Support/lanjump"
+print -r -- 'OLD-HOSTS' >"$app335/hosts"
+print -r -- 'OLD-SETTINGS' >"$app335/settings"
+cpwrap335=$(mktemp -d)
+cat >"$cpwrap335/cp" <<'EOF'
+#!/bin/zsh
+src= dest=
+for a in "$@"; do
+  [[ $a == -* ]] && continue
+  src=$dest
+  dest=$a
+done
+# After each first-pass keeper copy into APP.new, change the live file so
+# the staged tree is stale unless install recopies immediately before switch.
+if [[ -n $src && -n $dest && ${src:h:t} == lanjump && ${dest:h:t} == lanjump.new ]]; then
+  /bin/cp "$@"
+  st=$?
+  live=${src:h}
+  case ${src:t} in
+    hosts)
+      print -r -- 'NEW-HOSTS' >"$live/hosts"
+      ;;
+    settings)
+      print -r -- 'NEW-SETTINGS' >"$live/settings"
+      ;;
+  esac
+  exit $st
+fi
+exec /bin/cp "$@"
+EOF
+chmod 755 "$cpwrap335/cp"
+HOME=$home335 PATH="$cpwrap335:$PATH" /bin/zsh "$ROOT/install.zsh" >/dev/null
+if [[ ! -f $app335/hosts || $(<"$app335/hosts") != NEW-HOSTS ]]; then
+  fail "#335 upgrade kept stale hosts after a mid-copy write: $(<"$app335/hosts" 2>/dev/null || print missing)"
+fi
+if [[ ! -f $app335/settings || $(<"$app335/settings") != NEW-SETTINGS ]]; then
+  fail "#335 upgrade kept stale settings after a mid-copy write: $(<"$app335/settings" 2>/dev/null || print missing)"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335"
 
 if (( fails )); then
   exit 1
