@@ -226,6 +226,14 @@ toggle_ime() {
 }
 
 mark_last() {
+  local st=0
+  if [[ -z ${_LANJUMP_LAST_TARGET_LOCKED:-} ]]; then
+    _LANJUMP_LAST_TARGET_LOCKED=1
+    with_data_file_lock "$LAST_FILE" mark_last "$1"
+    st=$?
+    unset _LANJUMP_LAST_TARGET_LOCKED
+    return $st
+  fi
   print -r -- "$1" | replace_file_atomic "$LAST_FILE"
 }
 
