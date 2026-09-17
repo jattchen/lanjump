@@ -1023,6 +1023,27 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #357: another picker may persist exclude while this one only changes include.
+  local filt357_home filt357_saved_home filt357_file
+  filt357_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-357-filter.XXXXXX") || return 1
+  filt357_saved_home=$HOME
+  HOME=$filt357_home
+  mkdir -p "$HOME/Library/Application Support/lanjump" \
+    "${XDG_STATE_HOME:-$HOME/.local/state}/lanjump"
+  session_filter_file
+  filt357_file=$REPLY
+  mkdir -p "${filt357_file:h}"
+  print -r -- $'include foo\nexclude old\n' >"$filt357_file"
+  load_session_filter
+  filter_include=bar
+  print -r -- $'include foo\nexclude other\n' >"$filt357_file"
+  save_session_filter
+  load_session_filter
+  expect filter/merge-underfoot-include bar "$filter_include"
+  expect filter/merge-underfoot-exclude other "$filter_exclude"
+  HOME=$filt357_saved_home
+  rm -rf "$filt357_home"
+
   filter_fixture
   filter_exclude=plain
   filter_on=1
@@ -4368,6 +4389,28 @@ pick_selftest() {
   expect settings/first-write-persists /opt/first-root "${project_roots[1]-}"
   HOME=$testhome
   rm -rf "$firsthome"
+
+  # #357: two pickers. This one changes terminal; the other added a root underfoot.
+  local set357_home set357_saved_home set357_file
+  set357_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-357-settings.XXXXXX") || return 1
+  set357_saved_home=$HOME
+  HOME=$set357_home
+  mkdir -p "$HOME/Library/Application Support/lanjump" \
+    "${XDG_STATE_HOME:-$HOME/.local/state}/lanjump"
+  settings_file
+  set357_file=$REPLY
+  mkdir -p "${set357_file:h}"
+  print -r -- $'open_target auto\nopen_placement window\nproject_root /opt/orig\n' >"$set357_file"
+  load_settings
+  open_target=terminal
+  print -r -- $'open_target auto\nopen_placement tab\nproject_root /opt/orig\nproject_root /opt/other\n' >"$set357_file"
+  save_settings
+  load_settings
+  expect settings/merge-underfoot-target terminal "$open_target"
+  expect settings/merge-underfoot-placement tab "$open_placement"
+  expect settings/merge-underfoot-roots '/opt/orig /opt/other' "${project_roots[*]}"
+  HOME=$set357_saved_home
+  rm -rf "$set357_home"
 
   # #96: settings overlay input must ignore CSI; only a true Esc cancels.
   expect_settings_input_key() {
