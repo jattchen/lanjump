@@ -329,6 +329,30 @@ EOF
   expect_absent ssh/forget-renamed/leftover-end '# END LANJUMP lanjump-work' "$ssh_got"
   expect_absent ssh/forget-renamed/leftover-host 'Host lanjump-work' "$ssh_got"
 
+  # #337: SSH write failure must not commit a hosts row / ssh_id as saved.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  functions -c upsert_ssh_config _ssh337_upsert
+  upsert_ssh_config() { return 1 }
+  if upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'; then
+    print -u2 "FAIL ssh/write-fail-hosts upsert_host returned 0 after SSH write failure"
+    (( fails++ ))
+  fi
+  functions -c _ssh337_upsert upsert_ssh_config
+  unfunction _ssh337_upsert
+  local ssh337_disk
+  ssh337_disk=$(<"$HOSTS_FILE")
+  if [[ $ssh337_disk == *office.local* || $ssh337_disk == *lanjump-office* ]]; then
+    print -u2 "FAIL ssh/write-fail-hosts persisted hosts row got=$(printf %q "$ssh337_disk")"
+    (( fails++ ))
+  fi
+  load_hosts
+  if (( ${#h_alias} )); then
+    print -u2 "FAIL ssh/write-fail-hosts leftover hosts aliases=$(printf %q "${h_alias[*]}") ssh_id=$(printf %q "${h_ssh_id[*]}")"
+    (( fails++ ))
+  fi
+
   # #314: two upsert_ssh_config writers read then replace the whole SSH file.
   # A reads, yields, then writes; B writes in the gap. Both Host blocks must remain.
   local ssh314_home ssh314_fn

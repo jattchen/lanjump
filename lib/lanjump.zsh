@@ -770,9 +770,15 @@ upsert_host() {
   fi
   if id=$(alloc_ssh_id "$alias" "$mac" "$ip" "$idx"); then
     if [[ -n $old_id && $old_id != "$id" ]]; then
-      remove_ssh_config "$old_id"
+      if ! remove_ssh_config "$old_id"; then
+        load_hosts
+        return 1
+      fi
     fi
-    upsert_ssh_config "$id" "$user" "${hostname:-$ip}" "$port"
+    if ! upsert_ssh_config "$id" "$user" "${hostname:-$ip}" "$port"; then
+      load_hosts
+      return 1
+    fi
     h_ssh_id[$idx]=$id
   fi
   save_hosts
