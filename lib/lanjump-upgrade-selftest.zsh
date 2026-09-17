@@ -264,7 +264,70 @@ if [[ $(<"$appdir/lanjump-pick.zsh") != OLD-PICK ]]; then
   fail "failed upgrade left mixed lanjump-pick.zsh: $(<"$appdir/lanjump-pick.zsh")"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log"
+# #278: staging into $APP.new is not enough if commit still mvs files one by
+# one. Simulate the second file-level stage→APP mv dying (main already new,
+# IME still old). Live $APP must stay all-old or become all-new, never mixed.
+print -r -- 'OLD-MAIN' >"$appdir/lanjump.zsh"
+print -r -- 'OLD-IME' >"$appdir/lanjump-ime.py"
+print -r -- 'KEEP-SETTINGS' >"$appdir/settings"
+cp -f "$ROOT/install.zsh" "$appdir/install.zsh"
+chmod 755 "$appdir/install.zsh"
+
+mixpkg=$(mktemp -d)
+mkdir -p "$mixpkg/lanjump-main"/{bin,lib,src}
+print -r -- 'NEW-MAIN' >"$mixpkg/lanjump-main/lib/lanjump.zsh"
+print -r -- 'NEW-IME' >"$mixpkg/lanjump-main/lib/lanjump-ime.py"
+cp "$ROOT/lib/lanjump-pick.zsh" "$mixpkg/lanjump-main/lib/"
+cp "$ROOT/lib/lanjump-keys.py" "$mixpkg/lanjump-main/lib/"
+cp "$ROOT/bin/lanjump.command" "$mixpkg/lanjump-main/bin/"
+cp "$ROOT/bin/lanjump-ghostty-attach" "$mixpkg/lanjump-main/bin/"
+cp "$ROOT/src/lanjump-keys.c" "$mixpkg/lanjump-main/src/"
+cp "$ROOT/install.zsh" "$mixpkg/lanjump-main/"
+mixtar=$(mktemp)
+tar -czf "$mixtar" -C "$mixpkg" lanjump-main
+
+mvcount=$(mktemp)
+print -r -- 0 >"$mvcount"
+mvwrap=$(mktemp -d)
+cat >"$mvwrap/mv" <<EOF
+#!/bin/zsh
+src= dest=
+for a in "\$@"; do
+  [[ \$a == -* ]] && continue
+  src=\$dest
+  dest=\$a
+done
+if [[ -n \$src && -n \$dest && -f \$src && \${src:h:t} == lanjump.new && \${dest:h:t} == lanjump ]]; then
+  n=\$(<$(printf %q "$mvcount"))
+  n=\$(( n + 1 ))
+  print -r -- \$n >$(printf %q "$mvcount")
+  if (( n >= 2 )); then
+    print -u2 'mv-stub: mid-commit failure'
+    exit 1
+  fi
+fi
+exec /bin/mv "\$@"
+EOF
+chmod 755 "$mvwrap/mv"
+
+mix_sha=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+out=$(HOME=$fakehome PATH="$mvwrap:$PATH" LANJUMP_REMOTE_SHA=$mix_sha LANJUMP_ARCHIVE_URL="file://${mixtar}" "$fakehome/.local/bin/lanjump" upgrade 2>&1) || true
+main=$(<"$appdir/lanjump.zsh")
+ime=$(<"$appdir/lanjump-ime.py")
+if [[ $main == NEW-MAIN && $ime == OLD-IME ]] || [[ $main == OLD-MAIN && $ime == NEW-IME ]]; then
+  fail "#278 mixed upgrade tree: lanjump.zsh=$main lanjump-ime.py=$ime"
+fi
+if [[ $main != NEW-MAIN && $main != OLD-MAIN ]]; then
+  fail "#278 unexpected lanjump.zsh after interrupted commit: $main"
+fi
+if [[ $ime != NEW-IME && $ime != OLD-IME ]]; then
+  fail "#278 unexpected lanjump-ime.py after interrupted commit: $ime"
+fi
+if [[ ! -f $appdir/settings || $(<"$appdir/settings") != KEEP-SETTINGS ]]; then
+  fail "#278 commit dropped user settings"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount"
 
 if (( fails )); then
   exit 1
