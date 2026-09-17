@@ -6380,6 +6380,124 @@ EOF
   HOME=$pin315_saved_home
   rm -rf "$pin315_home"
 
+  # #356: snapshot/pin persist failure must not look like 已删 / 已取消常驻.
+  local pin356_home pin356_saved_home pin356_tmux pin356_log pin356_out
+  local -i pin356_has_tmux=$HAS_TMUX pin356_forget_st=0
+  pin356_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-356.XXXXXX") || return 1
+  pin356_saved_home=$HOME
+  HOME=$pin356_home
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  pin356_tmux=$pin356_home/tmux.log
+  : >"$pin356_tmux"
+  functions -c tmuxx _pin356_tmuxx
+  functions -c remove_pin_record _pin356_remove
+  tmuxx() {
+    print -r -- "$*" >>"$pin356_tmux"
+    return 0
+  }
+  remove_pin_record() { return 1 }
+  HAS_TMUX=1
+  items_kind=(session)
+  items_id=(keep)
+  items_name=(keep)
+  items_pinned=(1)
+  all_id=(keep)
+  all_name=(keep)
+  all_pinned=(1)
+  cursor=1
+  toggle_session_pin
+  if [[ ${items_pinned[1]} != 1 ]]; then
+    print -u2 "FAIL delete/unpin-write-fail-ui marked unpinned"
+    (( fails++ ))
+  fi
+  if [[ ${all_pinned[1]} != 1 ]]; then
+    print -u2 "FAIL delete/unpin-write-fail-ui all_pinned cleared"
+    (( fails++ ))
+  fi
+  pin356_log=$(<"$pin356_tmux")
+  if [[ $pin356_log == *'@lanjump_pinned'* ]]; then
+    print -u2 "FAIL delete/unpin-write-fail-ui tmux unpinned got=$(printf %q "$pin356_log")"
+    (( fails++ ))
+  fi
+  functions -c _pin356_remove remove_pin_record
+
+  functions -c save_session_snapshot _pin356_save
+  snap_names=(gone)
+  snap_cwd=([gone]=/tmp/gone)
+  snap_occupied=([gone]=1)
+  snap_workspace=([gone]=1)
+  snap_cmd=([gone]=zsh)
+  snap_attached=([gone]=$EPOCHSECONDS)
+  save_session_snapshot
+  pinned_names=(gone)
+  pinned_cwd=([gone]=/tmp/gone)
+  pinned_grok=()
+  save_pinned_sessions
+  save_session_snapshot() { return 1 }
+  pin356_forget_st=0
+  forget_killed_session gone || pin356_forget_st=$?
+  if (( pin356_forget_st == 0 )); then
+    print -u2 "FAIL delete/snap-write-fail forget reported success"
+    (( fails++ ))
+  fi
+  if [[ ${snap_names[(Ie)gone]} -eq 0 ]]; then
+    print -u2 "FAIL delete/snap-write-fail cleared in-memory snap"
+    (( fails++ ))
+  fi
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)gone]} -eq 0 ]]; then
+    print -u2 "FAIL delete/snap-write-fail disk snap lost gone"
+    (( fails++ ))
+  fi
+  load_pinned_sessions
+  if ! pin_record_exists gone; then
+    print -u2 "FAIL delete/snap-write-fail removed pin after snap save fail"
+    (( fails++ ))
+  fi
+
+  functions -c restore_tty _pin356_restore_tty
+  functions -c setup_tty _pin356_setup_tty
+  functions -c draw _pin356_draw
+  functions -c load_items _pin356_load_items
+  restore_tty() { : }
+  setup_tty() { : }
+  draw() { : }
+  load_items() { : }
+  tmuxx() {
+    print -r -- "$*" >>"$pin356_tmux"
+    case $1 in
+      kill-session) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  items_kind=(session)
+  items_id=(gone)
+  items_name=(gone)
+  items_att=(0)
+  items_pinned=(1)
+  cursor=1
+  HAS_TMUX=1
+  pin356_out=$(prompt_delete <<'EOF'
+y
+
+EOF
+)
+  if [[ $pin356_out != *删除失败* ]]; then
+    print -u2 "FAIL delete/snap-write-fail-ui did not report 删除失败 got=$(printf %q "$pin356_out")"
+    (( fails++ ))
+  fi
+  functions -c _pin356_save save_session_snapshot
+  functions -c _pin356_tmuxx tmuxx
+  functions -c _pin356_restore_tty restore_tty
+  functions -c _pin356_setup_tty setup_tty
+  functions -c _pin356_draw draw
+  functions -c _pin356_load_items load_items
+  unset -f _pin356_save _pin356_tmuxx _pin356_remove _pin356_restore_tty \
+    _pin356_setup_tty _pin356_draw _pin356_load_items
+  HAS_TMUX=$pin356_has_tmux
+  HOME=$pin356_saved_home
+  rm -rf "$pin356_home"
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1
