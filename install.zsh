@@ -299,6 +299,11 @@ if cc -O2 -framework CoreGraphics -o "$stage/lanjump-keys" "$ROOT/src/lanjump-ke
   chmod 755 "$stage/lanjump-keys"
   keys_compiled=1
 else
+  if ! command python3 -c '' >/dev/null 2>&1; then
+    print -u2 '无法编译按键辅助，且本机 python3 不能运行，安装中止。'
+    rm -f "$keys_err"
+    exit 1
+  fi
   cp -f "$stage/lanjump-keys.py" "$stage/lanjump-keys"
   chmod 755 "$stage/lanjump-keys"
 fi
