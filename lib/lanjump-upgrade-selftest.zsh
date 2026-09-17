@@ -362,7 +362,38 @@ if ! grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$pathhome/.zshrc"; then
   fail "#282 commented PATH line counted as configured: $(<"$pathhome/.zshrc")"
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar" "$pathhome"
+# #283: cc failure must not install a python helper when python3 cannot run.
+home283=$(mktemp -d)
+mkdir -p "$home283/Desktop" "$home283/.ssh" "$home283/Library/Application Support"
+bin283=$(mktemp -d)
+cat >"$bin283/cc" <<'EOF'
+#!/bin/zsh
+print -u2 'cc stub: compile failed'
+exit 1
+EOF
+cat >"$bin283/python3" <<'EOF'
+#!/bin/zsh
+print -u2 'python3 stub: cannot run'
+exit 127
+EOF
+chmod 755 "$bin283/cc" "$bin283/python3"
+st283=0
+out283=$(HOME=$home283 PATH="$bin283:$PATH" /bin/zsh "$ROOT/install.zsh" 2>&1) || st283=$?
+if (( st283 == 0 )); then
+  fail "#283 install succeeded without a runnable python3 when cc failed: $out283"
+fi
+if [[ $out283 == *安装完成* ]]; then
+  fail "#283 install reported success without python3: $out283"
+fi
+if [[ $out283 != *python3* ]]; then
+  fail "#283 failure did not mention python3: $out283"
+fi
+app283="$home283/Library/Application Support/lanjump"
+if [[ -x $app283/lanjump-keys || -x $home283/.local/bin/lanjump-keys ]]; then
+  fail "#283 installed a fake helper without python3"
+fi
+
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$mixpkg" "$mixtar" "$mvwrap" "$mvcount" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283"
 
 if (( fails )); then
   exit 1
