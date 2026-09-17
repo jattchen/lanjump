@@ -51,6 +51,9 @@ sort_mode=time
 filter_include=
 filter_exclude=
 typeset -i filter_on=0 filter_match_count=0 filter_total_count=0
+typeset -i _filter_have_loaded=0
+_filter_loaded_include=
+_filter_loaded_exclude=
 typeset -a pinned_names snap_names restore_names ghostty_names open_window_names work_names
 typeset -a restore_pick_kind restore_pick_name restore_pick_checked restore_pick_row
 typeset -A pinned_cwd pinned_grok snap_cwd snap_occupied snap_workspace snap_cmd snap_attached restore_cwd
@@ -67,6 +70,10 @@ ghostty_close_others=0
 open_target=auto
 open_placement=window
 typeset -a project_roots
+typeset -i _settings_have_loaded=0
+_settings_loaded_open_target=
+_settings_loaded_open_placement=
+typeset -a _settings_loaded_project_roots
 settings_on=0
 settings_cursor=1
 settings_input_on=0
@@ -1090,18 +1097,44 @@ sanitize_filter_keyword() {
   REPLY=$s
 }
 
+_remember_loaded_filter() {
+  _filter_have_loaded=1
+  _filter_loaded_include=$filter_include
+  _filter_loaded_exclude=$filter_exclude
+}
+
 save_session_filter() {
-  local file
+  local file st=0 my_include my_exclude
+  local -i dirty_include=1 dirty_exclude=1
   session_filter_file
   file=$REPLY
+  if [[ -z ${_LANJUMP_FILTER_LOCKED:-} ]]; then
+    _LANJUMP_FILTER_LOCKED=1
+    with_data_file_lock "$file" save_session_filter
+    st=$?
+    unset _LANJUMP_FILTER_LOCKED
+    return $st
+  fi
   sanitize_filter_keyword "$filter_include"
   filter_include=$REPLY
   sanitize_filter_keyword "$filter_exclude"
   filter_exclude=$REPLY
+  my_include=$filter_include
+  my_exclude=$filter_exclude
+  if (( _filter_have_loaded )); then
+    dirty_include=0
+    dirty_exclude=0
+    [[ $my_include == "$_filter_loaded_include" ]] || dirty_include=1
+    [[ $my_exclude == "$_filter_loaded_exclude" ]] || dirty_exclude=1
+  fi
+  load_session_filter
+  (( dirty_include )) && filter_include=$my_include
+  (( dirty_exclude )) && filter_exclude=$my_exclude
   {
     print -r -- "include ${filter_include}"
     print -r -- "exclude ${filter_exclude}"
   } | replace_file_atomic "$file"
+  _remember_loaded_filter
 }
 
 load_session_filter() {
@@ -1110,22 +1143,24 @@ load_session_filter() {
   file=$REPLY
   filter_include=
   filter_exclude=
-  [[ -f $file ]] || return 0
-  while IFS= read -r line || [[ -n $line ]]; do
-    [[ -z $line ]] && continue
-    key=${line%% *}
-    if [[ $line == *' '* ]]; then
-      val=${line#* }
-    else
-      val=
-    fi
-    sanitize_filter_keyword "$val"
-    val=$REPLY
-    case $key in
-      include) filter_include=$val ;;
-      exclude) filter_exclude=$val ;;
-    esac
-  done <"$file"
+  if [[ -f $file ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ -z $line ]] && continue
+      key=${line%% *}
+      if [[ $line == *' '* ]]; then
+        val=${line#* }
+      else
+        val=
+      fi
+      sanitize_filter_keyword "$val"
+      val=$REPLY
+      case $key in
+        include) filter_include=$val ;;
+        exclude) filter_exclude=$val ;;
+      esac
+    done <"$file"
+  fi
+  _remember_loaded_filter
 }
 
 session_src_matches() {
@@ -2347,6 +2382,22 @@ default_project_roots() {
   [[ -d $HOME/Documents/projects ]] && project_roots=("$HOME/Documents/projects")
 }
 
+_remember_loaded_settings() {
+  _settings_have_loaded=1
+  _settings_loaded_open_target=$open_target
+  _settings_loaded_open_placement=$open_placement
+  _settings_loaded_project_roots=("${project_roots[@]}")
+}
+
+_settings_roots_match_loaded() {
+  local -i i
+  (( $# == ${#_settings_loaded_project_roots} )) || return 1
+  for (( i = 1; i <= $#; i++ )); do
+    [[ $argv[i] == "${_settings_loaded_project_roots[i]}" ]] || return 1
+  done
+  return 0
+}
+
 load_settings() {
   local file line key val
   local -i saw_project_root=0
@@ -2386,12 +2437,39 @@ load_settings() {
     done <"$file"
   fi
   (( saw_project_root )) || default_project_roots
+  _remember_loaded_settings
 }
 
 save_settings() {
-  local file root
+  local file root st=0 my_target my_placement
+  local -a my_roots
+  local -i dirty_target=1 dirty_placement=1 dirty_roots=1
   settings_file
   file=$REPLY
+  if [[ -z ${_LANJUMP_SETTINGS_LOCKED:-} ]]; then
+    _LANJUMP_SETTINGS_LOCKED=1
+    with_data_file_lock "$file" save_settings
+    st=$?
+    unset _LANJUMP_SETTINGS_LOCKED
+    return $st
+  fi
+  my_target=$open_target
+  my_placement=$open_placement
+  my_roots=("${project_roots[@]}")
+  if (( _settings_have_loaded )); then
+    dirty_target=0
+    dirty_placement=0
+    dirty_roots=0
+    [[ $my_target == "$_settings_loaded_open_target" ]] || dirty_target=1
+    [[ $my_placement == "$_settings_loaded_open_placement" ]] || dirty_placement=1
+    _settings_roots_match_loaded "${my_roots[@]}" || dirty_roots=1
+  fi
+  load_settings
+  (( dirty_target )) && open_target=$my_target
+  (( dirty_placement )) && open_placement=$my_placement
+  if (( dirty_roots )); then
+    project_roots=("${my_roots[@]}")
+  fi
   {
     print -r -- "open_target ${open_target}"
     print -r -- "open_placement ${open_placement}"
@@ -2403,6 +2481,7 @@ save_settings() {
       print -r -- "project_root"
     fi
   } | replace_file_atomic "$file"
+  _remember_loaded_settings
 }
 
 settings_value_label() {
