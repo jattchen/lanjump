@@ -783,7 +783,11 @@ upsert_host() {
     fi
     h_ssh_id[$idx]=$id
   fi
-  save_hosts
+  if ! save_hosts; then
+    [[ -n ${id:-} ]] && remove_ssh_config "$id"
+    load_hosts
+    return 1
+  fi
 }
 
 forget_saved() {
@@ -832,8 +836,14 @@ forget_saved() {
     h_ssh_id=("${ns[@]}")
     h_last=("${nl[@]}")
   fi
-  [[ -n $id ]] && remove_ssh_config "$id"
-  save_hosts
+  if [[ -n $id ]] && ! remove_ssh_config "$id"; then
+    load_hosts
+    return 1
+  fi
+  if ! save_hosts; then
+    load_hosts
+    return 1
+  fi
 }
 
 strip_ssh_block() {
@@ -1967,7 +1977,11 @@ connect_item() {
     return
   fi
   [[ -z $mac ]] && mac=$(get_mac "$ip")
-  upsert_host "$alias" "$user" "$hostname" "$ip" "$mac" "$port"
+  if ! upsert_host "$alias" "$user" "$hostname" "$ip" "$mac" "$port"; then
+    notice="没法记下这台机器。"
+    setup_tty
+    return
+  fi
   mark_last "$alias"
   if ! sync_picker "$target" "$user"; then
     print "无法把 tmux 选择界面同步到对方。"
@@ -2067,13 +2081,18 @@ forget_item() {
   cli_tty_read ans
   setup_tty
   if [[ $ans == y || $ans == Y ]]; then
-    forget_saved "${items_saved[$i]}"
-    load_hosts
-    build_items
-    if [[ $(read_last) == "$name" ]]; then
-      mark_last local
+    if forget_saved "${items_saved[$i]}"; then
+      load_hosts
+      build_items
+      if [[ $(read_last) == "$name" ]]; then
+        mark_last local
+      fi
+      notice="已忘掉 ${name}。"
+    else
+      load_hosts
+      build_items
+      notice="没法忘掉 ${name}。"
     fi
-    notice="已忘掉 ${name}。"
   fi
 }
 
