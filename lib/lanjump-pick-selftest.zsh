@@ -6785,6 +6785,70 @@ EOF
   HOME=$snap407_saved_home
   rm -rf "$snap407_home"
 
+  # #426: leftover 0/1 pin must roll tmux back if snapshot rename write fails.
+  # Callers (p / n / --pin-session) must not keep pinning the new name.
+  local snap426_home snap426_saved_home snap426_tmux snap426_log
+  local -i snap426_has_tmux=$HAS_TMUX snap426_st=0
+  snap426_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-426.XXXXXX") || return 1
+  snap426_saved_home=$HOME
+  HOME=$snap426_home
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  snap426_tmux=$snap426_home/tmux.log
+  : >"$snap426_tmux"
+  snap_names=(0)
+  snap_cwd=([0]=/tmp/zero)
+  snap_occupied=([0]=0)
+  snap_workspace=([0]=0)
+  snap_cmd=([0]=zsh)
+  snap_attached=([0]=0)
+  save_session_snapshot
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  functions -c save_session_snapshot _snap426_save
+  functions -c tmuxx _snap426_tmuxx
+  functions -c unique_non_numeric_session_name _snap426_unique
+  save_session_snapshot() { return 1 }
+  unique_non_numeric_session_name() { REPLY=s-426-leftover }
+  tmuxx() {
+    print -r -- "$*" >>"$snap426_tmux"
+    case $1 in
+      has-session) return 1 ;;
+      rename-session) return 0 ;;
+      *) return 0 ;;
+    esac
+  }
+  HAS_TMUX=1
+  snap426_st=0
+  pin_named_session 0 >/dev/null || snap426_st=$?
+  if (( snap426_st == 0 )); then
+    print -u2 "FAIL pin/leftover-snap-write-fail reported success"
+    (( fails++ ))
+  fi
+  snap426_log=$(<"$snap426_tmux")
+  if [[ $snap426_log == *'rename-session -t =0 s-426-leftover'* && $snap426_log != *'rename-session -t =s-426-leftover 0'* ]]; then
+    print -u2 "FAIL pin/leftover-snap-write-fail tmux left as new got=$(printf %q "$snap426_log")"
+    (( fails++ ))
+  fi
+  functions -c _snap426_save save_session_snapshot
+  load_pinned_sessions
+  if (( ${#pinned_names} )); then
+    print -u2 "FAIL pin/leftover-snap-write-fail still pinned got=${pinned_names[*]}"
+    (( fails++ ))
+  fi
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)0]} -eq 0 || ${snap_names[(Ie)s-426-leftover]} -ne 0 ]]; then
+    print -u2 "FAIL pin/leftover-snap-write-fail disk snap drifted got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  functions -c _snap426_tmuxx tmuxx
+  functions -c _snap426_unique unique_non_numeric_session_name
+  unset -f _snap426_save _snap426_tmuxx _snap426_unique
+  HAS_TMUX=$snap426_has_tmux
+  HOME=$snap426_saved_home
+  rm -rf "$snap426_home"
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1
