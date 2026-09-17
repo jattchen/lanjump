@@ -1723,7 +1723,10 @@ rename_snap_record() {
       unset "snap_occupied[$old]"
       unset "snap_workspace[$old]"
       unset "snap_attached[$old]"
-      save_session_snapshot
+      if ! save_session_snapshot; then
+        load_session_snapshot
+        return 1
+      fi
       return 0
     fi
   done
@@ -4565,7 +4568,14 @@ prompt_rename() {
     draw
     return
   fi
-  rename_snap_record "$old" "$name"
+  if ! rename_snap_record "$old" "$name"; then
+    rename_pin_record "$name" "$old" || true
+    tmuxx rename-session -t "=$name" "$old" 2>/dev/null || true
+    setup_tty
+    load_items "$old"
+    draw
+    return
+  fi
   setup_tty
   load_items "$name"
   draw
