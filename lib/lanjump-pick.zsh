@@ -1300,6 +1300,34 @@ replace_file_atomic() {
   }
 }
 
+# Sidecar lock: dest is renamed by replace_file_atomic, so flock(dest) would
+# not serialize writers. Same-file load+replace must hold this (#276).
+with_data_file_lock() {
+  local dest=$1
+  shift
+  local lock dir
+  local -i fd=-1 st=0 n=0
+  dir=${dest:h}
+  lock=${dest}.lock
+  mkdir -p "$dir"
+  [[ -e $lock ]] || : >"$lock"
+  if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
+    zsystem flock -f fd "$lock" || return 1
+    "$@"
+    st=$?
+    zsystem flock -u fd
+    return $st
+  fi
+  while ! mkdir "${lock}.d" 2>/dev/null; do
+    sleep 0.05
+    (( ++n > 200 )) && return 1
+  done
+  "$@"
+  st=$?
+  rmdir "${lock}.d" 2>/dev/null
+  return $st
+}
+
 save_pinned_sessions() {
   local file n
   pinned_sessions_file
@@ -1316,7 +1344,15 @@ save_pinned_sessions() {
 }
 
 add_pin_record() {
-  local name=$1 cwd=${2:-} grok=${3:-}
+  local name=$1 cwd=${2:-} grok=${3:-} st=0
+  if [[ -z ${_LANJUMP_PIN_LOCKED:-} ]]; then
+    pinned_sessions_file
+    _LANJUMP_PIN_LOCKED=1
+    with_data_file_lock "$REPLY" add_pin_record "$name" "$cwd" "$grok"
+    st=$?
+    unset _LANJUMP_PIN_LOCKED
+    return $st
+  fi
   sanitize_pin_field "$name"
   name=$REPLY
   [[ -n $name ]] || return 1
@@ -1338,8 +1374,16 @@ add_pin_record() {
 }
 
 remove_pin_record() {
-  local name=$1
+  local name=$1 st=0
   local -i i
+  if [[ -z ${_LANJUMP_PIN_LOCKED:-} ]]; then
+    pinned_sessions_file
+    _LANJUMP_PIN_LOCKED=1
+    with_data_file_lock "$REPLY" remove_pin_record "$name"
+    st=$?
+    unset _LANJUMP_PIN_LOCKED
+    return $st
+  fi
   sanitize_pin_field "$name"
   name=$REPLY
   [[ -n $name ]] || return 0
@@ -1357,8 +1401,16 @@ remove_pin_record() {
 }
 
 rename_pin_record() {
-  local old=$1 new=$2
+  local old=$1 new=$2 st=0
   local -i i
+  if [[ -z ${_LANJUMP_PIN_LOCKED:-} ]]; then
+    pinned_sessions_file
+    _LANJUMP_PIN_LOCKED=1
+    with_data_file_lock "$REPLY" rename_pin_record "$old" "$new"
+    st=$?
+    unset _LANJUMP_PIN_LOCKED
+    return $st
+  fi
   sanitize_pin_field "$old"
   old=$REPLY
   sanitize_pin_field "$new"
@@ -1588,8 +1640,16 @@ drop_snap_record() {
 }
 
 rename_snap_record() {
-  local old=$1 new=$2
+  local old=$1 new=$2 st=0
   local -i i
+  if [[ -z ${_LANJUMP_SNAP_LOCKED:-} ]]; then
+    session_snapshot_file
+    _LANJUMP_SNAP_LOCKED=1
+    with_data_file_lock "$REPLY" rename_snap_record "$old" "$new"
+    st=$?
+    unset _LANJUMP_SNAP_LOCKED
+    return $st
+  fi
   sanitize_pin_field "$old"
   old=$REPLY
   sanitize_pin_field "$new"
@@ -1616,7 +1676,15 @@ rename_snap_record() {
 }
 
 forget_killed_session() {
-  local name=$1
+  local name=$1 st=0
+  if [[ -z ${_LANJUMP_SNAP_LOCKED:-} ]]; then
+    session_snapshot_file
+    _LANJUMP_SNAP_LOCKED=1
+    with_data_file_lock "$REPLY" forget_killed_session "$name"
+    st=$?
+    unset _LANJUMP_SNAP_LOCKED
+    return $st
+  fi
   sanitize_pin_field "$name"
   name=$REPLY
   [[ -n $name ]] || return 0
@@ -1652,6 +1720,15 @@ session_in_workspace() {
 snapshot_live_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   tmux_server_running || return 0
+  local st=0
+  if [[ -z ${_LANJUMP_SNAP_LOCKED:-} ]]; then
+    session_snapshot_file
+    _LANJUMP_SNAP_LOCKED=1
+    with_data_file_lock "$REPLY" snapshot_live_sessions
+    st=$?
+    unset _LANJUMP_SNAP_LOCKED
+    return $st
+  fi
   local line name cwd att cmd
   local -a raw f names prev_names
   typeset -A prev_ws prev_cmd prev_cwd prev_att prev_seen live_seen
@@ -1738,8 +1815,16 @@ snapshot_live_sessions() {
 }
 
 mark_snapshot_occupied() {
-  local name=$1 cwd cmd target
+  local name=$1 cwd cmd target st=0
   [[ -n $name ]] || return 0
+  if [[ -z ${_LANJUMP_SNAP_LOCKED:-} ]]; then
+    session_snapshot_file
+    _LANJUMP_SNAP_LOCKED=1
+    with_data_file_lock "$REPLY" mark_snapshot_occupied "$name"
+    st=$?
+    unset _LANJUMP_SNAP_LOCKED
+    return $st
+  fi
   load_session_snapshot
   target=$(session_pane_target "$name")
   cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
