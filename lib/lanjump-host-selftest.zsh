@@ -400,6 +400,63 @@ host_selftest() {
   HOSTS_FILE=$saved_hosts_file
   rm -f "$hosts_tmp"
 
+  # #264: } >"$HOSTS_FILE" truncates dest before the new rows exist.
+  # Mirror pick-selftest filter/atomic-write + snap/atomic-write.
+  if [[ ${functions[save_hosts]} != *replace_file_atomic* ]]; then
+    print -u2 "FAIL hosts/atomic-write missing replace_file_atomic"
+    (( fails++ ))
+  fi
+  local hosts264 hosts264_old hosts264_mid
+  local -i hosts264_torn=0 hosts264_rows
+  hosts264=$(mktemp) || return 1
+  saved_hosts_file=$HOSTS_FILE
+  HOSTS_FILE=$hosts264
+  print -r -- $'# alias|user|hostname|ip|mac|last\nold|mac|old.local|10.0.0.9||1' >"$HOSTS_FILE"
+  hosts264_old=$(<"$HOSTS_FILE")
+  h_alias=(office studio nas)
+  h_user=(mac mac mac)
+  h_hostname=(office.local studio.local nas.local)
+  h_ip=(10.0.0.1 10.0.0.2 10.0.0.3)
+  h_mac=('aa:bb:cc:dd:ee:01' 'aa:bb:cc:dd:ee:02' 'aa:bb:cc:dd:ee:03')
+  h_last=(100 200 300)
+  print() {
+    builtin print "$@"
+    hosts264_mid=$(<"$HOSTS_FILE")
+    if [[ $hosts264_mid == "$hosts264_old" ]]; then
+      return 0
+    fi
+    if [[ -z $hosts264_mid ]]; then
+      hosts264_torn=1
+      return 0
+    fi
+    hosts264_rows=0
+    local line
+    local -a f
+    for line in "${(@f)hosts264_mid}"; do
+      [[ $line == \#* || -z $line ]] && continue
+      f=("${(@s:|:)line}")
+      if (( ${#f} >= 6 )); then
+        (( hosts264_rows++ ))
+      else
+        hosts264_torn=1
+      fi
+    done
+    if (( hosts264_rows != 3 )); then
+      hosts264_torn=1
+    fi
+  }
+  save_hosts
+  unfunction print
+  if (( hosts264_torn )); then
+    print -u2 "FAIL hosts/atomic-write dest was torn mid-save"
+    (( fails++ ))
+  fi
+  load_hosts
+  expect hosts/atomic-write-count 3 "${#h_alias}"
+  expect hosts/atomic-write-alias office "${h_alias[1]}"
+  HOSTS_FILE=$saved_hosts_file
+  rm -f "$hosts264"
+
   if (( fails )); then
     print -u2 "host-selftest: $fails failed"
     return 1

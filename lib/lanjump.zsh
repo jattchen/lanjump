@@ -519,6 +519,22 @@ load_hosts() {
   done <"$HOSTS_FILE"
 }
 
+# Same-dir temp + rename so concurrent readers never see a torn dest (#213/#264).
+replace_file_atomic() {
+  local dest=$1 dir tmp
+  dir=${dest:h}
+  mkdir -p "$dir"
+  tmp=$(mktemp "${dir}/.${dest:t}.XXXXXX") || return 1
+  cat >"$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  mv -f "$tmp" "$dest" || {
+    rm -f "$tmp"
+    return 1
+  }
+}
+
 save_hosts() {
   local i n=${#h_alias}
   {
@@ -526,7 +542,7 @@ save_hosts() {
     for (( i = 1; i <= n; i++ )); do
       print -r -- "${h_alias[$i]}|${h_user[$i]//|/-}|${h_hostname[$i]//|/-}|${h_ip[$i]}|${h_mac[$i]}|${h_last[$i]}"
     done
-  } >"$HOSTS_FILE"
+  } | replace_file_atomic "$HOSTS_FILE"
 }
 
 find_saved() {
