@@ -450,6 +450,73 @@ host_selftest() {
     (( fails++ ))
   fi
 
+  # #312: a saved custom port must become 22 when Bonjour announces 22.
+  local item_port
+  _lj_save_run_timed=$functions[run_timed]
+  _lj_save_get_mac=$functions[get_mac]
+  _lj_save_is_self=$functions[is_self_ip]
+  run_timed() {
+    local out=$2
+    shift 2
+    case "$*" in
+      *'dns-sd -B'*)
+        print -r -- $'Timestamp     A/R    Flags  if Domain               Service Type         Instance Name\n 9:00:00.000  Add        3  1 local.               _ssh._tcp.           pi' >"$out"
+        ;;
+      *'dns-sd -L'*)
+        print -r -- ' pi._ssh._tcp.local. can be reached at pi.local.:22' >"$out"
+        ;;
+      *'dns-sd -G'*)
+        print -r -- $'Timestamp     A/R  if Hostname      Address         TTL\n 9:00:01.000  Add   1 pi.local.     192.168.1.50    120' >"$out"
+        ;;
+      *)
+        : >"$out"
+        ;;
+    esac
+  }
+  get_mac() { print -r -- 'aa:bb:cc:dd:ee:50'; }
+  is_self_ip() { return 1; }
+  bonjour_line=$(scan_bonjour)
+  functions[run_timed]=$_lj_save_run_timed
+  functions[get_mac]=$_lj_save_get_mac
+  functions[is_self_ip]=$_lj_save_is_self
+  bf=("${(@s:	:)bonjour_line}")
+  expect host/bonjour-port-to-22/scan 22 "${bf[5]:-}"
+
+  h_alias=(pi)
+  h_user=(mac)
+  h_hostname=(pi.local)
+  h_ip=(192.168.1.50)
+  h_mac=('aa:bb:cc:dd:ee:50')
+  h_port=(2222)
+  h_last=(100)
+  items_kind=(host local scan quit)
+  items_alias=(pi 进入本机 '扫描局域网…' 退出)
+  items_user=(mac '' '' '')
+  items_hostname=(pi.local '' '' '')
+  items_ip=(192.168.1.50 '' '' '')
+  items_mac=('aa:bb:cc:dd:ee:50' '' '' '')
+  items_port=(2222 '' '' '')
+  items_status=('已保存' '' '' '')
+  items_saved=(1 '' '' '')
+  s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  MYIPS=(127.0.0.1)
+  MYIP=""
+  while IFS=$'\t' read -r alias hostname ip mac port; do
+    [[ -n $alias || -n $ip ]] || continue
+    record_seen "$alias" "$hostname" "$ip" "$mac" "$port"
+    add_discovered "$alias" "$hostname" "$ip" "$mac" "$port"
+  done <<< "$bonjour_line"
+  expect host/bonjour-port-to-22/saved 22 "${h_port[1]:-}"
+  build_items
+  item_port=
+  for (( i = 1; i <= ${#items_kind}; i++ )); do
+    if [[ ${items_kind[$i]} == host && ${items_alias[$i]} == pi ]]; then
+      item_port=${items_port[$i]:-}
+      break
+    fi
+  done
+  expect host/bonjour-port-to-22/item 22 "$item_port"
+
   # #186: 「已保存 · 上次」 follows LAST_FILE (read_last), not max h_last.
   local saved_last_file=$LAST_FILE
   local last_tmp office_status studio_status
