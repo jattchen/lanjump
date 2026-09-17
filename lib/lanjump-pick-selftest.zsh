@@ -1337,6 +1337,55 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #406: bulk X must not treat a forget write failure as a clean delete.
+  # Remaining picker rows used to wipe the failed status, so X looked
+  # successful while disk still had the names for restore / work.
+  setup_last_snap gone gone keep-idle
+  items_kind=(session session new shell hosts quit)
+  items_id=(gone keep-idle new shell hosts quit)
+  items_name=("${items_id[@]}")
+  items_att=(0 0 '' '' '' '')
+  items_pinned=(0 0 '' '' '' '')
+  items_time=('01-01 00:00' '01-01 00:00' '' '' '' '')
+  items_activity=(1 2 '' '' '' '')
+  items_path=('~/gone' '~/keep' '' '' '' '')
+  items_summary=(sa sb '' '' '' '')
+  items_cmd=(zsh zsh '' '' '' '')
+  : >"$tmux_log"
+  tmuxx() {
+    print -r -- "$*" >>"$tmux_log"
+    case $1 in
+      kill-session) return 0 ;;
+      list-sessions) return 1 ;;
+      has-session) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  functions -c save_session_snapshot _save406
+  save_session_snapshot() { return 1 }
+  local -i del406_st=0
+  delete_idle_unpinned_sessions || del406_st=$?
+  functions -c _save406 save_session_snapshot
+  unset -f _save406
+  if (( del406_st == 0 )); then
+    print -u2 "FAIL delete/bulk-forget-write-fail reported success"
+    (( fails++ ))
+  fi
+  killed=$(grep -E 'kill-session' "$tmux_log" | tr '\n' ' ')
+  if [[ $killed != *'kill-session -t =gone'* || $killed != *'kill-session -t =keep-idle'* ]]; then
+    print -u2 "FAIL delete/bulk-forget-write-fail stopped early got=$(printf %q "$killed")"
+    (( fails++ ))
+  fi
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)gone]} -eq 0 || ${snap_names[(Ie)keep-idle]} -eq 0 ]]; then
+    print -u2 "FAIL delete/bulk-forget-write-fail dropped snap names got=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  if ! should_restore_sessions; then
+    print -u2 "FAIL delete/bulk-forget-write-fail should still restore"
+    (( fails++ ))
+  fi
+
   if [[ ${functions[prompt_delete]} != *forget_killed_session* ]]; then
     print -u2 "FAIL delete/prompt missing forget_killed_session"
     (( fails++ ))
