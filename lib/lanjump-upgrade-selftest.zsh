@@ -818,6 +818,88 @@ if [[ ! -f $app419/last-session || $(<"$app419/last-session") != NEW-LAST-SESSIO
   fail "#419 switch discarded a last-session write after last recopy: $(<"$app419/last-session" 2>/dev/null || print missing)"
 fi
 
+# #430: #419 holds last_target/last-session locks on the upgrade side, but
+# mark_last / remember_last_session only replace_file_atomic. lock_write in
+# #419 already takes the sidecar, so it misses these writers. A connect or
+# session enter in the APP→APP.old window writes into the tree about to be
+# deleted unless the writers take the same locks.
+extract_zsh_func() {
+  local file=$1 name=$2 line
+  local -i depth=0 start=0
+  while IFS= read -r line; do
+    if (( !start )) && [[ $line == "$name() {" ]]; then
+      start=1
+    fi
+    if (( start )); then
+      print -r -- "$line"
+      depth+=${#line//[^\{]/}
+      depth+=-${#line//[^\}]/}
+      (( depth == 0 )) && return 0
+    fi
+  done <"$file"
+  return 1
+}
+writer430=$(mktemp)
+{
+  print -r -- 'emulate -L zsh'
+  print -r -- 'setopt no_unset'
+  extract_zsh_func "$ROOT/lib/lanjump.zsh" replace_file_atomic
+  extract_zsh_func "$ROOT/lib/lanjump.zsh" with_data_file_lock
+  extract_zsh_func "$ROOT/lib/lanjump.zsh" mark_last
+  extract_zsh_func "$ROOT/lib/lanjump-pick.zsh" lanjump_data_dir
+  extract_zsh_func "$ROOT/lib/lanjump-pick.zsh" last_session_file
+  extract_zsh_func "$ROOT/lib/lanjump-pick.zsh" remember_last_session
+  print -r -- 'APP=$1'
+  print -r -- 'LAST_FILE=$APP/last_target'
+  print -r -- 'mark_last NEW-LAST-TARGET'
+  print -r -- 'remember_last_session NEW-LAST-SESSION'
+} >"$writer430"
+home430=$(mktemp -d)
+mkdir -p "$home430/Desktop" "$home430/.ssh" "$home430/Library/Application Support"
+HOME=$home430 /bin/zsh "$ROOT/install.zsh" >/dev/null
+app430="$home430/Library/Application Support/lanjump"
+print -r -- 'OLD-LAST-TARGET' >"$app430/last_target"
+print -r -- 'OLD-LAST-SESSION' >"$app430/last-session"
+mark430=$(mktemp -d)
+mvwrap430=$(mktemp -d)
+cat >"$mvwrap430/mv" <<EOF
+#!/bin/zsh
+src= dest=
+for a in "\$@"; do
+  [[ \$a == -* ]] && continue
+  src=\$dest
+  dest=\$a
+done
+mark=$(printf %q "$mark430")
+writer=$(printf %q "$writer430")
+if [[ -n \$src && -n \$dest && -d \$src && \${src:t} == lanjump && \${dest:t} == lanjump.old ]]; then
+  live=\$src
+  (
+    /bin/zsh "\$writer" "\$live"
+    : >"\$mark/wrote"
+  ) &!
+  for _ in {1..80}; do
+    [[ -f \$mark/wrote ]] && break
+    sleep 0.01
+  done
+  /bin/mv "\$@"
+  exit \$?
+fi
+exec /bin/mv "\$@"
+EOF
+chmod 755 "$mvwrap430/mv"
+HOME=$home430 PATH="$mvwrap430:$PATH" /bin/zsh "$ROOT/install.zsh" >/dev/null
+for _ in {1..200}; do
+  [[ -f $mark430/wrote ]] && break
+  sleep 0.05
+done
+if [[ ! -f $app430/last_target || $(<"$app430/last_target") != NEW-LAST-TARGET ]]; then
+  fail "#430 mark_last wrote last_target into the tree about to be deleted: $(<"$app430/last_target" 2>/dev/null || print missing)"
+fi
+if [[ ! -f $app430/last-session || $(<"$app430/last-session") != NEW-LAST-SESSION ]]; then
+  fail "#430 remember_last_session wrote last-session into the tree about to be deleted: $(<"$app430/last-session" 2>/dev/null || print missing)"
+fi
+
 # #338: piped/file:// tarball install has no git history in ROOT.
 # fetch_remote_ver must surface the commit epoch to the parent so the
 # picker gets `# lanjump-pick-version <epoch> <sha>`. Today that assignment
@@ -909,7 +991,7 @@ if (( st339 == 0 )); then
   fi
 fi
 
-rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$repairpkg" "$repairtar" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home358" "$mvwrap358" "$mark358" "$home386" "$mvwrap386" "$mark386" "$home419" "$mvwrap419" "$mark419" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
+rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$repairpkg" "$repairtar" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home358" "$mvwrap358" "$mark358" "$home386" "$mvwrap386" "$mark386" "$home419" "$mvwrap419" "$mark419" "$writer430" "$home430" "$mvwrap430" "$mark430" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
 
 if (( fails )); then
   exit 1

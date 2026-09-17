@@ -2298,11 +2298,18 @@ last_session_file() {
 }
 
 remember_last_session() {
-  local name=$1 file
+  local name=$1 file st=0
   [[ -n $name ]] || return 0
   last_session_file
   file=$REPLY
   mkdir -p "${file:h}"
+  if [[ -z ${_LANJUMP_LAST_SESSION_LOCKED:-} ]]; then
+    _LANJUMP_LAST_SESSION_LOCKED=1
+    with_data_file_lock "$file" remember_last_session "$name"
+    st=$?
+    unset _LANJUMP_LAST_SESSION_LOCKED
+    return $st
+  fi
   print -r -- "$name" | replace_file_atomic "$file"
 }
 
