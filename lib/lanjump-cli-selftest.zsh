@@ -29,7 +29,10 @@ if ! (( ${+functions[cli_dispatch]} )); then
   expect_contains help/title '用法：lanjump' "$out"
   expect_contains help/list 'list [机器]' "$out"
   expect_contains help/last 'last [机器]' "$out"
-  expect_contains help/go 'go [机器:]名字' "$out"
+  expect_contains help/go 'go [机器 名字 | 机器:名字]' "$out"
+  expect_contains help/omit-local '机器省略时用本机' "$out"
+  expect_contains help/alias-enter '机器别名' "$out"
+  expect_absent help/no-last-omit '机器省略时用上次进入的那台' "$out"
   expect_contains help/grok '--grok' "$out"
   expect_contains help/last-menu '最近 5 个' "$out"
   expect_absent help/no-new '  new ' "$out"
@@ -384,10 +387,10 @@ fi
 cli_open_tabs local lanjump
 assert_local_open local/open-tabs "$(read_log)" lanjump
 
-# #90: forgetting the last remote must not leave that alias as CLI default.
+# #440: omitted CLI host is this Mac even when last_target is a remote.
 LAST_FILE=$tmpdir/last_target
 print -r -- studio >"$LAST_FILE"
-expect_eq default-host/present studio "$(default_cli_host)"
+expect_eq default-host/present local "$(default_cli_host)"
 
 h_alias=()
 h_user=()
@@ -523,12 +526,12 @@ functions[sync_picker]=$_lj_save_sync
 unset _lj_save_access _lj_save_sync
 
 : >"$log"
-cli_dispatch work
+cli_dispatch work studio
 assert_remote_open remote/work "$(read_log)" lanjump
 expect_contains remote/work-other other "$(read_log)"
 
 : >"$log"
-cli_dispatch pins
+cli_dispatch pins studio
 assert_remote_open remote/pins "$(read_log)" lanjump
 
 # #166: zsh prefix-assignment on a function is not exported to /bin/zsh
@@ -549,14 +552,14 @@ cli_open_tabs studio a b
 assert_remote_local_tabs remote-ghostty/open-tabs "$(read_log)" a b
 
 : >"$log"
-cli_dispatch work
+cli_dispatch work studio
 hay=$(read_log)
 assert_remote_local_tabs remote-ghostty/work "$hay" lanjump other
 expect_contains remote-ghostty/work-print SSH "$hay"
 expect_contains remote-ghostty/work-print-ws --print-workspace "$hay"
 
 : >"$log"
-cli_dispatch pins
+cli_dispatch pins studio
 hay=$(read_log)
 assert_remote_local_tabs remote-ghostty/pins "$hay" lanjump
 expect_contains remote-ghostty/pins-print SSH "$hay"
@@ -598,7 +601,7 @@ h_mac=('')
 h_last=('0')
 
 default_cli_host() {
-  print -r -- "${TEST_LAST_HOST:-local}"
+  print -r -- local
 }
 
 mark_last() {
@@ -912,7 +915,7 @@ expect_contains work-last-local/last 'LAST host=local' "$hay"
 TEST_LAST_HOST=office
 : >"$log"
 st=0
-cli_dispatch work >/dev/null || st=$?
+cli_dispatch work office >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL work-last-office/status got $st want 0"
@@ -921,6 +924,19 @@ fi
 expect_contains work-last-office/list 'LIST host=office flag=--print-workspace' "$hay"
 expect_contains work-last-office/open 'OPEN host=office names=office-work' "$hay"
 expect_contains work-last-office/last 'LAST host=office' "$hay"
+
+# #440: omitting the host no longer follows last_target.
+: >"$log"
+st=0
+cli_dispatch work >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL work-omit-local/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains work-omit-local/list 'LIST host=local flag=--print-workspace' "$hay"
+expect_contains work-omit-local/open 'OPEN host=local names=local-work' "$hay"
+expect_absent work-omit-local/not-office 'LIST host=office' "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
@@ -940,6 +956,43 @@ expect_contains go-host-session/last-before-attach $'LAST host=office\nREMOTE_PI
 expect_absent go-host-session/no-shell '--shell' "$hay"
 expect_absent go-host-session/no-tabs --open-tabs "$hay"
 expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
+
+# #440: two-word `go 别名 session` is the new remote form.
+TEST_LAST_HOST=local
+: >"$log"
+st=0
+cli_dispatch go office lanjump >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-two-word/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-two-word/has 'HAS host=office session=lanjump' "$hay"
+expect_contains go-two-word/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains go-two-word/session lanjump "$hay"
+expect_contains go-two-word/last 'LAST host=office' "$hay"
+expect_absent go-two-word/not-local 'PICK_EXEC' "$hay"
+
+LANJUMP_GROK_BIN=grok
+: >"$log"
+st=0
+cli_dispatch go office demo --grok >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-two-word-grok/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-two-word-grok/has 'HAS host=office session=demo' "$hay"
+expect_contains go-two-word-grok/remote 'REMOTE_PRINT host=office argv=--start-grok demo' "$hay"
+expect_contains go-two-word-grok/attach 'REMOTE_PICK host=office' "$hay"
+
+st=0
+err=$(cli_dispatch go office demo extra 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-three-word/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-three-word/usage '用法：lanjump go' "$err"
 
 # #70: --grok on host:session must start grok on that host, not local tmux.
 LANJUMP_GROK_BIN=grok
@@ -1531,7 +1584,7 @@ TEST_PANE_CMD=zsh
 TEST_PANE_LIST=
 
 # #85: unprefixed attach is always local (Ghostty / `lanjump attach name`).
-# go <name> still follows last host. Prefixed attach host:name still honors host.
+# #440: unprefixed go <name> is also local. Prefixed attach host:name still honors host.
 CLI_HAS_SESSION=1
 TEST_LAST_HOST=office
 : >"$log"
@@ -1601,11 +1654,11 @@ if (( st != 0 )); then
   print -u2 "FAIL go-unprefixed-from-remote/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains go-unprefixed-from-remote/has 'HAS host=office session=lj85-local' "$hay"
-expect_contains go-unprefixed-from-remote/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains go-unprefixed-from-remote/has 'HAS host=local session=lj85-local' "$hay"
+expect_contains go-unprefixed-from-remote/attach 'PICK_EXEC --attach lj85-local' "$hay"
 expect_contains go-unprefixed-from-remote/session lj85-local "$hay"
-expect_contains go-unprefixed-from-remote/last 'LAST host=office' "$hay"
-expect_absent go-unprefixed-from-remote/no-local 'PICK_EXEC' "$hay"
+expect_contains go-unprefixed-from-remote/last 'LAST host=local' "$hay"
+expect_absent go-unprefixed-from-remote/no-remote 'REMOTE_PICK' "$hay"
 TEST_LAST_HOST=local
 
 # #168: remote go/attach/last must write last_target before attach blocks.
@@ -1760,6 +1813,15 @@ functions[cli_attach_one]=$_lj_save_cli_attach_one
 functions[cli_open_tabs]=$_lj_save_cli_open_tabs
 unset _lj_save_mark_last _lj_save_cli_attach_one _lj_save_cli_open_tabs
 TEST_LAST_HOST=local
+
+if ! cli_is_command go || ! cli_is_command work || ! cli_is_command list; then
+  print -u2 "FAIL cli-is-command/known go/work/list not recognized"
+  (( fails++ ))
+fi
+if cli_is_command office || cli_is_command o; then
+  print -u2 "FAIL cli-is-command/alias treated as command"
+  (( fails++ ))
+fi
 
 st=0
 err=$(/bin/zsh "${0:A:h}/lanjump.zsh" new 2>&1) || st=$?

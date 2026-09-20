@@ -109,6 +109,8 @@ host_selftest() {
   expect_key host/key/alt-enter-s-enter other $'\e\r'
   expect_key host/key/alt-enter-lf other $'\e\n'
   expect_key host/key/q q q
+  expect_key host/key/e rename e
+  expect_key host/key/E rename E
   expect_key host/key/esc esc $'\e'
 
   k1=EOF
@@ -1000,6 +1002,67 @@ host_selftest() {
   expect host/hash-alias/lookup 1 "$hash_idx"
   HOSTS_FILE=$saved_hosts_file
   rm -f "$hosts354"
+
+  # #440: user-chosen aliases reject spaces, colons, reserved command names.
+  if ! (( ${+functions[host_alias_invalid]} )); then
+    print -u2 "FAIL host/alias-invalid missing host_alias_invalid"
+    (( fails++ ))
+  else
+    host_alias_invalid o
+    expect host/alias-ok/o 0 "$?"
+    host_alias_invalid '书房'
+    expect host/alias-ok/cjk 0 "$?"
+    host_alias_invalid 'a b'
+    expect host/alias-space/st 1 "$?"
+    host_alias_invalid 'o:2'
+    expect host/alias-colon/st 1 "$?"
+    host_alias_invalid 'go'
+    expect host/alias-reserved-go/st 1 "$?"
+    host_alias_invalid local
+    expect host/alias-reserved-local/st 1 "$?"
+    host_alias_invalid 'x|y'
+    expect host/alias-pipe/st 1 "$?"
+  fi
+
+  items_kind=(host)
+  items_alias=(box)
+  items_user=(mac)
+  items_hostname=(box.local)
+  items_ip=(10.0.0.2)
+  items_mac=('')
+  items_port=(22)
+  items_status=('已保存')
+  items_saved=(1)
+  LINES=14
+  COLUMNS=120
+  cursor=1
+  notice=""
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'e 改名'* ]]; then
+    print -u2 "FAIL host/draw missing e 改名"
+    (( fails++ ))
+  fi
+
+  _lj_save_restore=$functions[restore_tty]
+  _lj_save_setup=$functions[setup_tty]
+  restore_tty() { : }
+  setup_tty() { : }
+  items_kind=(local)
+  items_alias=(进入本机)
+  items_saved=('')
+  notice=""
+  prompt_rename_host 1
+  expect host/rename-local/notice '只能给已保存的机器改名。' "$notice"
+  items_kind=(host)
+  items_alias=(pi)
+  items_saved=('')
+  notice=""
+  prompt_rename_host 1
+  expect host/rename-unsaved/notice '这台还没保存，先连上再改名。' "$notice"
+  functions[restore_tty]=$_lj_save_restore
+  functions[setup_tty]=$_lj_save_setup
+  unset _lj_save_restore _lj_save_setup
 
   if (( fails )); then
     print -u2 "host-selftest: $fails failed"

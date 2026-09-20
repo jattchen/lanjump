@@ -1701,7 +1701,7 @@ draw() {
   ime_key='i 英文'
   ime_enabled || ime_key='i 英文关'
   draw_emit "${c_bold}  局域网 SSH${c_reset}" || return
-  draw_emit "${c_dim}  ↑↓/jk 选择   Enter 进入   r 扫描   d 忘掉   ${ime_key}   q 退出${c_reset}" || return
+  draw_emit "${c_dim}  ↑↓/jk 选择   Enter 进入   r 扫描   d 忘掉   e 改名   ${ime_key}   q 退出${c_reset}" || return
   if [[ -n $notice ]]; then
     draw_emit "  ${c_cyan}${notice}${c_reset}" || return
   else
@@ -1902,6 +1902,7 @@ read_key() {
     q|Q) REPLY=q ;;
     r|R) REPLY=r ;;
     d|D) REPLY=d ;;
+    e|E) REPLY=rename ;;
     i|I) REPLY=ime ;;
     g) REPLY=top ;;
     G) REPLY=bottom ;;
@@ -2310,6 +2311,115 @@ forget_item() {
   fi
 }
 
+# REPLY is the reason when invalid. First-save Bonjour names are not checked.
+host_alias_invalid() {
+  local name=$1
+  if [[ -z $name ]]; then
+    REPLY="名字不能为空。"
+    return 1
+  fi
+  if [[ $name == *[[:space:]]* ]]; then
+    REPLY="名字不能包含空格。"
+    return 1
+  fi
+  if [[ $name == *:* ]]; then
+    REPLY="名字不能包含冒号。"
+    return 1
+  fi
+  if [[ $name == *'|'* ]]; then
+    REPLY="名字不能包含 |。"
+    return 1
+  fi
+  case ${name:l} in
+    local|host|go|work|pins|list|ls|last|attach|help|upgrade|update)
+      REPLY="不能叫「${name}」。"
+      return 1
+      ;;
+  esac
+  REPLY=""
+  return 0
+}
+
+# Saved-hosts index. Rewrites the SSH Host to follow the new alias (#440).
+rename_saved_host() {
+  local idx=$1 new=$2
+  local old user hostname ip mac port last
+  local n=${#h_alias} i
+  (( idx >= 1 && idx <= n )) || return 1
+  new=${new##[[:space:]]#}
+  new=${new%%[[:space:]]#}
+  old=${h_alias[$idx]}
+  [[ $new == "$old" ]] && return 0
+  host_alias_invalid "$new" || return 1
+  for (( i = 1; i <= n; i++ )); do
+    if (( i != idx )) && [[ ${h_alias[$i]} == "$new" ]]; then
+      REPLY="已经有机器叫「${new}」。"
+      return 1
+    fi
+  done
+  user=${h_user[$idx]}
+  hostname=${h_hostname[$idx]}
+  ip=${h_ip[$idx]}
+  mac=${h_mac[$idx]}
+  port=${h_port[$idx]:-22}
+  if ! upsert_host "$new" "$user" "$hostname" "$ip" "$mac" "$port"; then
+    REPLY="没法改名。"
+    return 1
+  fi
+  last=$(read_last) || last=
+  if [[ $last == "$old" ]]; then
+    mark_last "$new"
+  fi
+  REPLY=""
+  return 0
+}
+
+prompt_rename_host() {
+  local i=$1
+  local old name idx j n
+  if [[ ${items_kind[$i]} != host ]]; then
+    notice="只能给已保存的机器改名。"
+    return
+  fi
+  [[ -n ${items_saved[$i]} ]] || {
+    notice="这台还没保存，先连上再改名。"
+    return
+  }
+  old=${items_alias[$i]}
+  idx=${items_saved[$i]}
+  restore_tty
+  print
+  print -n "将「${old}」改名为（回车取消）: "
+  cli_tty_read name
+  name=${name##[[:space:]]#}
+  name=${name%%[[:space:]]#}
+  if [[ -z $name || $name == "$old" ]]; then
+    setup_tty
+    return
+  fi
+  if ! rename_saved_host "$idx" "$name"; then
+    print "${REPLY:-没法改名。}"
+    print -n "按回车继续…"
+    cli_tty_read name
+    load_hosts
+    build_items
+    setup_tty
+    return
+  fi
+  load_hosts
+  build_items
+  n=${#items_kind}
+  cursor=1
+  for (( j = 1; j <= n; j++ )); do
+    if [[ ${items_kind[$j]} == host && ${items_alias[$j]} == "$name" ]]; then
+      cursor=$j
+      break
+    fi
+  done
+  notice="已改名为 ${name}。"
+  setup_tty
+}
+
 activate() {
   local i=$1
   case ${items_kind[$i]} in
@@ -2367,18 +2477,18 @@ find_host_index() {
   return 1
 }
 
+# #440: omitted CLI host is this Mac. last_target is only the host-list cursor.
 default_cli_host() {
-  local last
-  last=$(read_last) || last=local
-  if [[ -z $last || $last == host ]]; then
-    print -r -- local
-    return
-  fi
-  if [[ $last != local ]] && ! find_host_index "$last" >/dev/null; then
-    print -r -- local
-    return
-  fi
-  print -r -- "$last"
+  print -r -- local
+}
+
+cli_is_command() {
+  case ${1:-} in
+    attach|go|work|pins|list|ls|last|help|upgrade|update|-h|--help)
+      return 0
+      ;;
+  esac
+  return 1
 }
 
 cli_remote_pick() {
@@ -2730,18 +2840,19 @@ cli_usage() {
   print -r -- '用法：lanjump [命令]'
   print
   print -r -- '  （无命令）        打开主机列表，再选 tmux session'
+  print -r -- '  机器别名          进那台的 tmux 列表'
   print -r -- '  help              显示本说明'
   print -r -- '  list [机器]       列出 session'
   print -r -- '  last [机器]       最近 5 个 session，选一个进入'
-  print -r -- '  go [机器:]名字 [--grok]  打开；不写名字则本机自动新建；--grok 再开 grok'
+  print -r -- '  go [机器 名字 | 机器:名字] [--grok]  打开；不写名字则本机自动新建；--grok 再开 grok'
   print -r -- '  work [机器]       打开近 24 小时占用过的 session（不含常驻）'
   print -r -- '  pins [机器]       打开常驻'
   print -r -- '  upgrade           升级到最新版本'
   print -r -- '  update            同 upgrade'
   print
-  print -r -- '机器省略时用上次进入的那台。'
+  print -r -- '机器省略时用本机。远程要写出别名。'
   print -r -- '列表 Enter 当前窗口进入，t 新窗口。新窗口用 Ghostty 还是系统终端可在列表按 , 设置。'
-  print -r -- '主机列表按 i 开关打开时切英文输入法（默认开；手机 SSH 进来时不切）。'
+  print -r -- '主机列表按 e 给已保存的机器改名；按 i 开关打开时切英文输入法（默认开；手机 SSH 进来时不切）。'
 }
 
 # Empty / y / Y / 是 = create in current window. t/T = create in a new window.
@@ -2780,13 +2891,14 @@ cli_dispatch() {
   done
   host=$(default_cli_host)
   session=
+  spec=
   case $cmd in
     list|ls|last|work|pins)
       if (( ${#extra} )); then
         host=${extra[1]}
       fi
       ;;
-    *)
+    attach)
       if (( ${#extra} )); then
         spec=${extra[1]}
         if [[ $spec == *:* ]]; then
@@ -2795,11 +2907,29 @@ cli_dispatch() {
           session=${spec##*:}
         else
           session=$spec
-          # #85: unprefixed attach is local; go still follows last host.
-          if [[ $cmd == attach ]]; then
-            host=local
-          fi
+          # #85: unprefixed attach is local.
+          host=local
         fi
+      fi
+      ;;
+    go)
+      # #440: one word is always a local session. Remote is two words
+      # `go 别名 session`, or the old `go 别名:session`.
+      if (( ${#extra} == 1 )); then
+        spec=${extra[1]}
+        if [[ $spec == *:* ]]; then
+          host=${spec%:*}
+          session=${spec##*:}
+        else
+          session=$spec
+          host=local
+        fi
+      elif (( ${#extra} == 2 )); then
+        host=${extra[1]}
+        session=${extra[2]}
+      elif (( ${#extra} > 2 )); then
+        print -u2 "用法：lanjump go [机器 名字 | 机器:名字]"
+        return 1
       fi
       ;;
   esac
@@ -2815,8 +2945,8 @@ cli_dispatch() {
       mark_last "$host"
       ;;
     go)
-      if [[ $spec == *:* && -z $session ]]; then
-        print -u2 "用法：lanjump go [机器:]名字"
+      if [[ -n ${spec:-} && $spec == *:* && -z $session ]]; then
+        print -u2 "用法：lanjump go [机器 名字 | 机器:名字]"
         return 1
       fi
       if [[ -z $session ]]; then
@@ -2921,17 +3051,35 @@ if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins || ${
   exit $?
 fi
 
+START_HOST_ALIAS=""
 if [[ -n ${1:-} ]]; then
-  print -u2 "未知命令：${1}"
-  cli_usage >&2
-  exit 1
+  ensure_setup
+  load_hosts
+  if (( $# == 1 )) && find_host_index "$1" >/dev/null; then
+    START_HOST_ALIAS=$1
+  else
+    print -u2 "未知命令：${1}"
+    cli_usage >&2
+    exit 1
+  fi
 fi
 
 ensure_setup
 detect_lan
 load_hosts
 build_items
-apply_last_cursor
+if [[ -n $START_HOST_ALIAS ]]; then
+  apply_last_cursor
+  n=${#items_kind}
+  for (( j = 1; j <= n; j++ )); do
+    if [[ ${items_kind[$j]} == host && ${items_alias[$j]} == "$START_HOST_ALIAS" ]]; then
+      cursor=$j
+      break
+    fi
+  done
+else
+  apply_last_cursor
+fi
 
 if [[ ! -t 0 || ! -t 1 ]]; then
   print "需要交互式终端。请运行 lanjump，或双击桌面上的 启动 lanjump。"
@@ -2941,11 +3089,14 @@ fi
 setup_tty
 maybe_switch_ime
 # No saved remotes: auto-scan unless last used this Mac.
-if (( ${#h_alias} == 0 )) && [[ $(read_last) != local ]]; then
+if [[ -z $START_HOST_ALIAS ]] && (( ${#h_alias} == 0 )) && [[ $(read_last) != local ]]; then
   do_scan
   apply_last_cursor
 fi
 trap draw_on_winch WINCH
+if [[ -n $START_HOST_ALIAS ]]; then
+  activate $cursor
+fi
 draw
 
 while true; do
@@ -2979,6 +3130,10 @@ while true; do
       ;;
     d)
       forget_item $cursor
+      draw
+      ;;
+    rename)
+      prompt_rename_host $cursor
       draw
       ;;
     ime)

@@ -1715,6 +1715,69 @@ PY
     rm -rf "$eof_dir"
   fi
 
+  # #440: rename follows SSH Host id; last_target tracks the new alias.
+  local saved_last_file=$LAST_FILE
+  LAST_FILE="$tmpdir/last_target"
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  if ! upsert_host studio mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02' 22; then
+    print -u2 "FAIL ssh/rename-host upsert studio returned 1"
+    (( fails++ ))
+  fi
+  load_hosts
+  mark_last studio
+  if ! rename_saved_host 1 o; then
+    print -u2 "FAIL ssh/rename-host rename to o failed ${REPLY:-}"
+    (( fails++ ))
+  fi
+  load_hosts
+  if [[ ${h_alias[1]:-} != o ]]; then
+    print -u2 "FAIL ssh/rename-host/alias want=o got=$(printf %q "${h_alias[1]:-}")"
+    (( fails++ ))
+  fi
+  if [[ ${h_ssh_id[1]:-} != lanjump-o ]]; then
+    print -u2 "FAIL ssh/rename-host/id want=lanjump-o got=$(printf %q "${h_ssh_id[1]:-}")"
+    (( fails++ ))
+  fi
+  if [[ $(read_last) != o ]]; then
+    print -u2 "FAIL ssh/rename-host/last want=o got=$(printf %q "$(read_last)")"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_contains ssh/rename-host/new-host $'Host lanjump-o\n' "$ssh_got"
+  expect_contains ssh/rename-host/new-hn 'HostName 10.0.0.9' "$ssh_got"
+  expect_absent ssh/rename-host/no-old 'Host lanjump-studio' "$ssh_got"
+  if ! forget_saved 1; then
+    print -u2 "FAIL ssh/rename-host forget after rename returned 1"
+    (( fails++ ))
+  fi
+  read_ssh
+  expect_absent ssh/rename-host/forget-id 'Host lanjump-o' "$ssh_got"
+
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01' 22
+  upsert_host studio mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02' 22
+  load_hosts
+  if rename_saved_host 2 office; then
+    print -u2 "FAIL ssh/rename-host/collide accepted duplicate office"
+    (( fails++ ))
+  else
+    expect_contains ssh/rename-host/collide-msg '已经有机器叫「office」' "$REPLY"
+  fi
+  load_hosts
+  if [[ ${h_alias[2]:-} != studio ]]; then
+    print -u2 "FAIL ssh/rename-host/collide-kept want=studio got=$(printf %q "${h_alias[2]:-}")"
+    (( fails++ ))
+  fi
+  if rename_saved_host 1 go; then
+    print -u2 "FAIL ssh/rename-host/reserved accepted go"
+    (( fails++ ))
+  fi
+  LAST_FILE=$saved_last_file
+
   if (( fails )); then
     print -u2 "ssh-selftest: $fails failed"
     return 1
