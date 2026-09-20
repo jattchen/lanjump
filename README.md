@@ -26,7 +26,7 @@ lanjump upgrade
 
 ## 快捷键
 
-主机列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 连接（或进入本机），`r` 扫描，`d` 忘掉，`i` 开关打开时切英文输入法，`q` 退出。
+主机列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 连接（或进入本机），`r` 扫描，`d` 忘掉，`e` 给已保存的机器改名，`i` 开关打开时切英文输入法，`q` 退出。
 
 tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 当前窗口进入，`t` 新窗口进入，`n` 新建，`e` 重命名，`d` 删除，`p` 常驻，`X` 删空闲，`h` 换机器，`o` 时间/占用/常驻，`v` 开关预览，`/` 包含，`!` 排除，`f` 开关上次筛选，`,` 设置，`s` 普通 shell（`exit` 返回），`q` 退出。一次打开多个 session 时，Enter 和 `t` 都开新窗口。开不了外部窗口时（SSH / 没有本机键盘）两种键都在当前窗口进入，不提示。Shift+Enter 仍是 Grok 换行，不开新窗口。
 
@@ -34,9 +34,9 @@ tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 当前窗口进入�
 
 从列表 Enter 进入：窗格保持原样，不把已退出的 Grok 再拉起来。窗格里 Grok 还在跑则跳到那一格。`,` 打开设置：新窗口用 Ghostty 还是系统终端，新开窗口还是在已有窗口加标签，以及多个项目根（顺序即优先级；Enter 添加，d 删除）。
 
-命令：`lanjump help` 查看说明；`lanjump list [机器]` 列出 session；`lanjump last [机器]` 最近 5 个 session 里选一个进入；`lanjump update` 同 `upgrade`；`lanjump go [机器:]名字 [--grok]` 打开指定 session，不写名字则本机自动新建，`--grok` 再开 grok（当前窗口进入；已打开则跳到那个窗口）；`lanjump work [机器]` 打开近 24 小时占用过的 session（不含常驻）；`lanjump pins [机器]` 打开常驻。默认机器是上次进的那台。名字不存在会问要不要新建（回车或 y=是，再问常驻）。
+命令：`lanjump help` 查看说明；`lanjump list [机器]` 列出 session；`lanjump last [机器]` 最近 5 个 session 里选一个进入；`lanjump update` 同 `upgrade`；`lanjump go [机器 名字 | 机器:名字] [--grok]` 打开指定 session，不写名字则本机自动新建，`--grok` 再开 grok（当前窗口进入；已打开则跳到那个窗口）；`lanjump work [机器]` 打开近 24 小时占用过的 session（不含常驻）；`lanjump pins [机器]` 打开常驻。机器省略时用本机；远程要写出别名。`lanjump 别名` 进那台的 tmux 列表。名字不存在会问要不要新建（回车或 y=是，再问常驻）。
 
-上次连的是本机还是远程，下次打开会记住并跳过扫描。
+上次连的是本机还是远程，下次打开主机会记住并跳过扫描（只影响列表，不影响省略机器名的命令）。
 
 ## 要求
 
