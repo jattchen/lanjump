@@ -6026,6 +6026,20 @@ pick_selftest() {
     print -u2 "FAIL color/apple-no-unset-features got=$(printf %q "$color_got")"
     (( fails++ ))
   fi
+  # #447: inner Grok must emit 256-color. 24-bit backgrounds are ignored
+  # by Terminal.app, so the Basic (white) profile shows through.
+  if [[ $color_got != *'-gu COLORTERM'* ]]; then
+    print -u2 "FAIL color/apple-unset-colorterm missing -gu COLORTERM got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got != *tmux-256color:RGB@* ]]; then
+    print -u2 "FAIL color/apple-inner-no-rgb missing tmux-256color:RGB@ got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got != *window-style*colour234* ]]; then
+    print -u2 "FAIL color/apple-window-style missing colour234 got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
 
   : >"$color_log"
   prepared_color=0
@@ -6075,7 +6089,7 @@ pick_selftest() {
     local osc
     LANJUMP_GROK_APPEARANCE=dark
     osc=$(host_grok_appearance_osc)
-    if [[ $osc != *$'\e]11;#1c1c1c\a'* ]]; then
+    if [[ $osc != *$'\e]11;#1a1a1a\a'* ]]; then
       print -u2 "FAIL color/host-osc-dark missing OSC 11 dark bg got=$(printf %q "$osc")"
       (( fails++ ))
     fi

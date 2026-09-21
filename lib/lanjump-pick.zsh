@@ -334,9 +334,11 @@ host_grok_appearance() {
 }
 
 host_grok_appearance_osc() {
+  # #1a1a1a is GrokNight's bg. rgb:1a1a/1a1a/1a1a is the form Apple Terminal
+  # documents for OSC 11; #rrggbb is what Ghostty accepts.
   case $(host_grok_appearance) in
-    light) print -n $'\e]11;#f4f4f4\a\e]10;#1c1c1c\a' ;;
-    *) print -n $'\e]11;#1c1c1c\a\e]10;#e6e6e6\a' ;;
+    light) print -n $'\e]11;#f4f4f4\a\e]11;rgb:f4f4/f4f4/f4f4\a\e]10;#1c1c1c\a' ;;
+    *) print -n $'\e]11;#1a1a1a\a\e]11;rgb:1a1a/1a1a/1a1a\a\e]10;#e6e6e6\a' ;;
   esac
 }
 
@@ -363,9 +365,18 @@ reset_host_grok_appearance_osc() {
   _grok_appearance_osc_set=0
 }
 
+tmux_disable_truecolor_for() {
+  local t=$1
+  [[ -n $t ]] || return 0
+  tmuxx set-option -as terminal-features ",${t}:RGB@" 2>/dev/null || true
+  tmuxx set-option -ag terminal-overrides ",${t}:RGB@,${t}:Tc@" 2>/dev/null || true
+}
+
 # Apple Terminal (macOS 12) is 256-color. Advertising RGB makes Grok emit
-# 24-bit backgrounds that Terminal.app ignores, so the TUI sits on white.
-# Overrides are TERM-specific so a Ghostty client keeps RGB (#173).
+# 24-bit backgrounds that Terminal.app ignores, so the TUI sits on white
+# (Basic profile). Disable truecolor for both the client TERM and the
+# inner default-terminal so Grok paints 256-color cells like a local
+# session (#447). Ghostty keeps RGB (#173).
 tmux_prepare_color() {
   (( prepared_color )) && return 0
   apply_host_grok_appearance
@@ -376,18 +387,23 @@ tmux_prepare_color() {
   dt=$(tmuxx show-options -gv default-terminal 2>/dev/null || true)
   if (( apple )); then
     unset COLORTERM
+    tmuxx set-environment -gu COLORTERM 2>/dev/null || true
+    tmuxx set-environment -u COLORTERM 2>/dev/null || true
     if [[ $dt != *256color* && $dt != *direct* ]]; then
       if infocmp screen-256color >/dev/null 2>&1; then
-        tmuxx set-option -g default-terminal screen-256color 2>/dev/null || true
+        dt=screen-256color
       else
-        tmuxx set-option -g default-terminal xterm-256color 2>/dev/null || true
+        dt=xterm-256color
       fi
+      tmuxx set-option -g default-terminal "$dt" 2>/dev/null || true
     fi
-    if [[ -n $term ]]; then
-      tmuxx set-option -as terminal-features ",${term}:RGB@" 2>/dev/null || true
-      tmuxx set-option -ag terminal-overrides ",${term}:RGB@,${term}:Tc@" 2>/dev/null || true
-    fi
+    tmux_disable_truecolor_for "$term"
+    tmux_disable_truecolor_for "$dt"
+    # Empty cells / ignored 24-bit show this, not Terminal.app Basic white.
+    tmuxx set-option -g window-style 'bg=colour234,fg=colour252' 2>/dev/null || true
+    tmuxx set-option -g window-active-style 'bg=colour234,fg=colour252' 2>/dev/null || true
   else
+    tmuxx set-environment -g COLORTERM truecolor 2>/dev/null || true
     if [[ -z $dt || $dt == screen || $dt == xterm || $dt == dumb ]]; then
       if infocmp tmux-256color >/dev/null 2>&1; then
         dt=tmux-256color
