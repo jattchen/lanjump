@@ -100,6 +100,8 @@ view_below=0
 host_short=""
 prepared_keys=0
 prepared_color=0
+typeset -i pick_interactive=0
+typeset -i _grok_appearance_osc_set=0
 
 tmuxx() {
   [[ -n $TMUX_BIN ]] || return 1
@@ -296,6 +298,7 @@ tmux_tty() {
   client_term=$(tmux_client_term)
   tmux_prepare_color
   tmux_prepare_keys
+  emit_host_grok_appearance_osc
   tmux_apply_client_term "$client_term"
   saved_term=${TERM:-}
   TERM=$client_term
@@ -309,12 +312,64 @@ tmux_tty() {
   return $st
 }
 
+# wrap stamps LC_GROK_APPEARANCE from the client OS for theme=auto over
+# SSH. Unset is not enough: Grok then OSC 11-queries Ghostty's canvas,
+# which follows the Mac light/dark mode, so the TUI goes gray-white or
+# washed gray-black (#445). Pin the *host* appearance instead.
+host_grok_appearance() {
+  case ${LANJUMP_GROK_APPEARANCE:-} in
+    dark|light) print -r -- "$LANJUMP_GROK_APPEARANCE"; return ;;
+  esac
+  local style
+  if [[ $(uname -s) == Darwin ]]; then
+    style=$(defaults read -g AppleInterfaceStyle 2>/dev/null) || style=
+    if [[ $style == Dark ]]; then
+      print -r -- dark
+    else
+      print -r -- light
+    fi
+    return
+  fi
+  print -r -- dark
+}
+
+host_grok_appearance_osc() {
+  case $(host_grok_appearance) in
+    light) print -n $'\e]11;#f4f4f4\a\e]10;#1c1c1c\a' ;;
+    *) print -n $'\e]11;#1c1c1c\a\e]10;#e6e6e6\a' ;;
+  esac
+}
+
+apply_host_grok_appearance() {
+  local app
+  app=$(host_grok_appearance)
+  export LC_GROK_APPEARANCE=$app GROK_APPEARANCE=$app
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  tmuxx set-environment -g LC_GROK_APPEARANCE "$app" 2>/dev/null || true
+  tmuxx set-environment -g GROK_APPEARANCE "$app" 2>/dev/null || true
+  tmuxx set-environment LC_GROK_APPEARANCE "$app" 2>/dev/null || true
+  tmuxx set-environment GROK_APPEARANCE "$app" 2>/dev/null || true
+}
+
+emit_host_grok_appearance_osc() {
+  (( pick_interactive )) || return 0
+  print -n "$(host_grok_appearance_osc)" >/dev/tty 2>/dev/null || true
+  _grok_appearance_osc_set=1
+}
+
+reset_host_grok_appearance_osc() {
+  (( _grok_appearance_osc_set )) || return 0
+  print -n $'\e]110\a\e]111\a' >/dev/tty 2>/dev/null || true
+  _grok_appearance_osc_set=0
+}
+
 # Apple Terminal (macOS 12) is 256-color. Advertising RGB makes Grok emit
 # 24-bit backgrounds that Terminal.app ignores, so the TUI sits on white.
 # Overrides are TERM-specific so a Ghostty client keeps RGB (#173).
 tmux_prepare_color() {
-  [[ $HAS_TMUX -eq 1 ]] || return 0
   (( prepared_color )) && return 0
+  apply_host_grok_appearance
+  [[ $HAS_TMUX -eq 1 ]] || { prepared_color=1; return 0 }
   local dt apple=0 term=${TERM:-}
   [[ ${TERM_PROGRAM:-} == Apple_Terminal ]] && apple=1
 
@@ -348,11 +403,6 @@ tmux_prepare_color() {
       tmuxx set-option -ag terminal-overrides ",${term}:Tc" 2>/dev/null || true
     fi
   fi
-
-  # wrap stamps LC_GROK_APPEARANCE from the local OS. That is for theme=auto
-  # over SSH; it must not override a configured/default GrokNight session.
-  tmuxx set-environment -gu LC_GROK_APPEARANCE 2>/dev/null || true
-  tmuxx set-environment -gu GROK_APPEARANCE 2>/dev/null || true
   prepared_color=1
 }
 
@@ -367,10 +417,12 @@ setup_tty() {
   stty -echo -icanon min 1 time 0
   print -n '\e[?25l'
   list_active=1
+  emit_host_grok_appearance_osc
 }
 
 on_exit() {
   restore_tty
+  reset_host_grok_appearance_osc
 }
 
 # WINCH: session list draw only while the list is on screen.
@@ -380,7 +432,10 @@ draw_on_winch() {
   draw
 }
 
-if pick_needs_tty "${1:-}" && [[ ${1:-} != --attach ]]; then
+if pick_needs_tty "${1:-}"; then
+  pick_interactive=1
+fi
+if (( pick_interactive )) && [[ ${1:-} != --attach ]]; then
   trap on_exit EXIT
   trap 'restore_tty; exit 130' INT
   trap draw_on_winch WINCH
@@ -4826,6 +4881,7 @@ if [[ ${1:-} == --attach ]]; then
   maybe_resume_last_command "$name"
   tmux_prepare_color
   tmux_prepare_keys
+  emit_host_grok_appearance_osc
   keys=
   if local_keyboard && keys=$(keys_bin); then
     exec "$keys" "$TMUX_BIN" attach-session -t "=$name"

@@ -309,22 +309,42 @@ assert_remote_open remote/open-tabs "$(read_log)" lanjump
 src_connect=${functions[connect_item]}
 src_remote=${functions[cli_remote_pick]}
 expect_contains sync/connect-term TERM_PROGRAM "$src_connect"
-expect_contains sync/connect-color COLORTERM "$src_connect"
+expect_contains sync/connect-color remote_pick_color_cmd "$src_connect"
 expect_contains sync/connect-pick-bin LANJUMP_PICK_BIN "$src_connect"
 expect_contains sync/remote-term TERM_PROGRAM "$src_remote"
-expect_contains sync/remote-color COLORTERM "$src_remote"
+expect_contains sync/remote-color remote_pick_color_cmd "$src_remote"
 expect_contains sync/remote-pick-bin LANJUMP_PICK_BIN "$src_remote"
+
+# #445: wrap's client LC_GROK_APPEARANCE must be dropped. COLORTERM is only
+# harmful on Apple Terminal; Ghostty needs it so Grok paints a truecolor
+# background instead of sitting on the window canvas.
+apple_color=$(TERM_PROGRAM=Apple_Terminal remote_pick_color_cmd)
+expect_contains color/apple-drop-wrap 'unset GROK_APPEARANCE LC_GROK_APPEARANCE' "$apple_color"
+expect_contains color/apple-no-truecolor 'unset COLORTERM' "$apple_color"
+ghostty_color=$(TERM_PROGRAM=ghostty remote_pick_color_cmd)
+expect_contains color/ghostty-drop-wrap 'unset GROK_APPEARANCE LC_GROK_APPEARANCE' "$ghostty_color"
+expect_absent color/ghostty-keep-truecolor 'unset COLORTERM' "$ghostty_color"
 
 : >"$log"
 TERM_PROGRAM=Apple_Terminal TERM_PROGRAM_VERSION=440 \
   cli_remote_pick studio --attach demo
 hay=$(read_log)
 assert_remote_open remote/cli-term "$hay" demo
-expect_contains remote/cli-term/unset 'unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM' "$hay"
+expect_contains remote/cli-term/unset 'unset GROK_APPEARANCE LC_GROK_APPEARANCE' "$hay"
+expect_contains remote/cli-term/no-truecolor 'unset COLORTERM' "$hay"
 expect_contains remote/cli-term/program 'TERM_PROGRAM=Apple_Terminal' "$hay"
 expect_contains remote/cli-term/version 'TERM_PROGRAM_VERSION=440' "$hay"
 expect_contains remote/cli-term/attach --attach "$hay"
 expect_contains remote/cli-term/pick-bin 'LANJUMP_PICK_BIN=$HOME/.local/bin/lanjump-pick' "$hay"
+
+: >"$log"
+TERM_PROGRAM=ghostty TERM_PROGRAM_VERSION=1 \
+  cli_remote_pick studio --attach demo
+hay=$(read_log)
+assert_remote_open remote/cli-ghostty "$hay" demo
+expect_contains remote/cli-ghostty/unset 'unset GROK_APPEARANCE LC_GROK_APPEARANCE' "$hay"
+expect_absent remote/cli-ghostty/keep-truecolor 'unset COLORTERM' "$hay"
+expect_contains remote/cli-ghostty/program 'TERM_PROGRAM=ghostty' "$hay"
 
 # #341: NixOS has zsh on PATH but no /bin/zsh. After the key works,
 # remote pick must resolve zsh from PATH or the login dies with 127.
