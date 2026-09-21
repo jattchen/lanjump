@@ -369,7 +369,46 @@ tmux_disable_truecolor_for() {
   local t=$1
   [[ -n $t ]] || return 0
   tmuxx set-option -as terminal-features ",${t}:RGB@" 2>/dev/null || true
+  tmuxx set-option -as terminal-features ",${t}:256" 2>/dev/null || true
   tmuxx set-option -ag terminal-overrides ",${t}:RGB@,${t}:Tc@" 2>/dev/null || true
+}
+
+# Existing tmux panes keep COLORTERM=truecolor even after set-environment -u.
+# ~/.local/bin/grok is already on PATH (often a symlink); replace it with a
+# shim so the next `grok` in that pane drops COLORTERM when the attached
+# client is Apple Terminal (#449).
+install_grok_colorterm_shim() {
+  (( pick_interactive )) || [[ -n ${LANJUMP_GROK_SHIM_DIR:-} ]] || return 0
+  local dir dest real tmp
+  dir=${LANJUMP_GROK_SHIM_DIR:-$HOME/.local/bin}
+  dest=$dir/grok
+  mkdir -p "$dir" 2>/dev/null || return 0
+  real=${LANJUMP_GROK_BIN:-}
+  if [[ -z $real ]]; then
+    if [[ -L $HOME/.local/bin/grok ]]; then
+      real=$(readlink "$HOME/.local/bin/grok")
+      [[ $real == /* ]] || real=$HOME/.local/bin/$real
+    elif [[ -x $HOME/.grok/bin/grok ]]; then
+      real=$HOME/.grok/bin/grok
+    fi
+  fi
+  [[ -n $real && $real != "$dest" ]] || return 0
+  if [[ -e $dest && ! -L $dest ]]; then
+    grep -q lanjump-grok-colorterm-shim "$dest" 2>/dev/null || return 0
+  fi
+  tmp=$(mktemp "$dir/.grok.XXXXXX") || return 0
+  print -r -- '#!/bin/zsh' >"$tmp"
+  print -r -- '# lanjump-grok-colorterm-shim' >>"$tmp"
+  print -r -- "real=$(printf %q "$real")" >>"$tmp"
+  print -r -- 'if [[ -n ${TMUX:-} ]]; then' >>"$tmp"
+  print -r -- '  client=$(command tmux show-environment -g LANJUMP_CLIENT 2>/dev/null) || client=' >>"$tmp"
+  print -r -- '  if [[ $client == LANJUMP_CLIENT=Apple_Terminal ]]; then' >>"$tmp"
+  print -r -- '    exec env -u COLORTERM "$real" "$@"' >>"$tmp"
+  print -r -- '  fi' >>"$tmp"
+  print -r -- 'fi' >>"$tmp"
+  print -r -- 'exec "$real" "$@"' >>"$tmp"
+  chmod 755 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0 }
+  mv -f "$tmp" "$dest" 2>/dev/null || rm -f "$tmp"
 }
 
 # Apple Terminal (macOS 12) is 256-color. Advertising RGB makes Grok emit
@@ -385,8 +424,10 @@ tmux_prepare_color() {
   [[ ${TERM_PROGRAM:-} == Apple_Terminal ]] && apple=1
 
   dt=$(tmuxx show-options -gv default-terminal 2>/dev/null || true)
+  install_grok_colorterm_shim
   if (( apple )); then
     unset COLORTERM
+    tmuxx set-environment -g LANJUMP_CLIENT Apple_Terminal 2>/dev/null || true
     tmuxx set-environment -gu COLORTERM 2>/dev/null || true
     tmuxx set-environment -u COLORTERM 2>/dev/null || true
     if [[ $dt != *256color* && $dt != *direct* ]]; then
@@ -403,6 +444,7 @@ tmux_prepare_color() {
     tmuxx set-option -g window-style 'bg=colour234,fg=colour252' 2>/dev/null || true
     tmuxx set-option -g window-active-style 'bg=colour234,fg=colour252' 2>/dev/null || true
   else
+    tmuxx set-environment -g LANJUMP_CLIENT "${TERM_PROGRAM:-other}" 2>/dev/null || true
     tmuxx set-environment -g COLORTERM truecolor 2>/dev/null || true
     if [[ -z $dt || $dt == screen || $dt == xterm || $dt == dumb ]]; then
       if infocmp tmux-256color >/dev/null 2>&1; then

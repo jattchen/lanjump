@@ -6040,6 +6040,48 @@ pick_selftest() {
     print -u2 "FAIL color/apple-window-style missing colour234 got=$(printf %q "$color_got")"
     (( fails++ ))
   fi
+  if [[ $color_got != *'-g LANJUMP_CLIENT Apple_Terminal'* ]]; then
+    print -u2 "FAIL color/apple-client missing LANJUMP_CLIENT Apple_Terminal got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got != *xterm-256color:256* ]]; then
+    print -u2 "FAIL color/apple-256-feature missing xterm-256color:256 got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+
+  local shim_dir shim_bin saved_shim_dir saved_grok_bin
+  saved_shim_dir=${LANJUMP_GROK_SHIM_DIR-}
+  saved_grok_bin=${LANJUMP_GROK_BIN-}
+  shim_dir=$color_dir/shim
+  mkdir -p "$shim_dir"
+  LANJUMP_GROK_SHIM_DIR=$shim_dir
+  LANJUMP_GROK_BIN=/usr/bin/true
+  : >"$color_log"
+  prepared_color=0
+  TERM_PROGRAM=Apple_Terminal
+  TERM=xterm-256color
+  tmux_prepare_color
+  shim_bin=$shim_dir/grok
+  if [[ ! -x $shim_bin ]]; then
+    print -u2 "FAIL color/apple-shim missing executable $shim_bin"
+    (( fails++ ))
+  elif ! grep -q lanjump-grok-colorterm-shim "$shim_bin"; then
+    print -u2 "FAIL color/apple-shim missing marker got=$(printf %q "$(<$shim_bin)")"
+    (( fails++ ))
+  elif ! grep -q 'env -u COLORTERM' "$shim_bin"; then
+    print -u2 "FAIL color/apple-shim missing COLORTERM strip got=$(printf %q "$(<$shim_bin)")"
+    (( fails++ ))
+  fi
+  if [[ -n $saved_shim_dir ]]; then
+    LANJUMP_GROK_SHIM_DIR=$saved_shim_dir
+  else
+    unset LANJUMP_GROK_SHIM_DIR
+  fi
+  if [[ -n $saved_grok_bin ]]; then
+    LANJUMP_GROK_BIN=$saved_grok_bin
+  else
+    unset LANJUMP_GROK_BIN
+  fi
 
   : >"$color_log"
   prepared_color=0
@@ -6058,6 +6100,10 @@ pick_selftest() {
   fi
   if [[ $color_got == *'*:RGB'* ]]; then
     print -u2 "FAIL color/ghostty-no-star-rgb got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got != *'-g LANJUMP_CLIENT ghostty'* ]]; then
+    print -u2 "FAIL color/ghostty-client missing LANJUMP_CLIENT ghostty got=$(printf %q "$color_got")"
     (( fails++ ))
   fi
 
