@@ -6049,12 +6049,15 @@ pick_selftest() {
     (( fails++ ))
   fi
 
-  local shim_dir shim_bin saved_shim_dir saved_grok_bin
+  local shim_dir front_dir shim_bin saved_shim_dir saved_front_dir saved_grok_bin
   saved_shim_dir=${LANJUMP_GROK_SHIM_DIR-}
+  saved_front_dir=${LANJUMP_GROK_FRONT_DIR-}
   saved_grok_bin=${LANJUMP_GROK_BIN-}
   shim_dir=$color_dir/shim
-  mkdir -p "$shim_dir"
+  front_dir=$color_dir/front
+  mkdir -p "$shim_dir" "$front_dir"
   LANJUMP_GROK_SHIM_DIR=$shim_dir
+  LANJUMP_GROK_FRONT_DIR=$front_dir
   LANJUMP_GROK_BIN=/usr/bin/true
   : >"$color_log"
   prepared_color=0
@@ -6072,10 +6075,19 @@ pick_selftest() {
     print -u2 "FAIL color/apple-shim missing COLORTERM strip got=$(printf %q "$(<$shim_bin)")"
     (( fails++ ))
   fi
+  if [[ ! -x $front_dir/grok ]] || ! grep -q lanjump-grok-colorterm-shim "$front_dir/grok"; then
+    print -u2 "FAIL color/apple-front-shim missing ~/.grok/bin shim"
+    (( fails++ ))
+  fi
   if [[ -n $saved_shim_dir ]]; then
     LANJUMP_GROK_SHIM_DIR=$saved_shim_dir
   else
     unset LANJUMP_GROK_SHIM_DIR
+  fi
+  if [[ -n $saved_front_dir ]]; then
+    LANJUMP_GROK_FRONT_DIR=$saved_front_dir
+  else
+    unset LANJUMP_GROK_FRONT_DIR
   fi
   if [[ -n $saved_grok_bin ]]; then
     LANJUMP_GROK_BIN=$saved_grok_bin
