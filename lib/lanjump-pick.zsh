@@ -373,26 +373,40 @@ tmux_disable_truecolor_for() {
   tmuxx set-option -ag terminal-overrides ",${t}:RGB@,${t}:Tc@" 2>/dev/null || true
 }
 
-# Existing tmux panes keep COLORTERM=truecolor even after set-environment -u.
-# ~/.local/bin/grok is already on PATH (often a symlink); replace it with a
-# shim so the next `grok` in that pane drops COLORTERM when the attached
-# client is Apple Terminal (#449).
-install_grok_colorterm_shim() {
-  (( pick_interactive )) || [[ -n ${LANJUMP_GROK_SHIM_DIR:-} ]] || return 0
-  local dir dest real tmp
-  dir=${LANJUMP_GROK_SHIM_DIR:-$HOME/.local/bin}
-  dest=$dir/grok
-  mkdir -p "$dir" 2>/dev/null || return 0
-  real=${LANJUMP_GROK_BIN:-}
-  if [[ -z $real ]]; then
-    if [[ -L $HOME/.local/bin/grok ]]; then
-      real=$(readlink "$HOME/.local/bin/grok")
-      [[ $real == /* ]] || real=$HOME/.local/bin/$real
-    elif [[ -x $HOME/.grok/bin/grok ]]; then
-      real=$HOME/.grok/bin/grok
-    fi
+# PATH on this Mac puts ~/.grok/bin before ~/.local/bin, so a shim only at
+# ~/.local/bin/grok is never executed (#451). ~/.grok/bin/grok is a symlink
+# to the real binary; replace that symlink (and the local one) with a shim.
+grok_colorterm_resolve_real() {
+  local link real line
+  if [[ -n ${LANJUMP_GROK_BIN:-} ]]; then
+    print -r -- "$LANJUMP_GROK_BIN"
+    return
   fi
-  [[ -n $real && $real != "$dest" ]] || return 0
+  link=$HOME/.grok/bin/grok
+  if [[ -L $link ]]; then
+    real=$(readlink "$link")
+    [[ $real == /* ]] || real=${link:h}/$real
+    print -r -- "$real"
+    return
+  fi
+  if [[ -f $link ]] && grep -q lanjump-grok-colorterm-shim "$link"; then
+    line=$(grep -m1 '^real=' "$link")
+    eval "$line"
+    print -r -- "$real"
+    return
+  fi
+  if [[ -L $HOME/.local/bin/grok ]]; then
+    real=$(readlink "$HOME/.local/bin/grok")
+    [[ $real == /* ]] || real=$HOME/.local/bin/$real
+    print -r -- "$real"
+  fi
+}
+
+write_grok_colorterm_shim() {
+  local dest=$1 real=$2 dir tmp
+  [[ -n $dest && -n $real && $real != "$dest" ]] || return 0
+  dir=${dest:h}
+  mkdir -p "$dir" 2>/dev/null || return 0
   if [[ -e $dest && ! -L $dest ]]; then
     grep -q lanjump-grok-colorterm-shim "$dest" 2>/dev/null || return 0
   fi
@@ -409,6 +423,21 @@ install_grok_colorterm_shim() {
   print -r -- 'exec "$real" "$@"' >>"$tmp"
   chmod 755 "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0 }
   mv -f "$tmp" "$dest" 2>/dev/null || rm -f "$tmp"
+}
+
+install_grok_colorterm_shim() {
+  (( pick_interactive )) || [[ -n ${LANJUMP_GROK_SHIM_DIR:-} ]] || return 0
+  local real front localbin
+  real=$(grok_colorterm_resolve_real) || return 0
+  [[ -n $real ]] || return 0
+  front=${LANJUMP_GROK_FRONT_DIR:-}
+  localbin=${LANJUMP_GROK_SHIM_DIR:-}
+  if (( pick_interactive )); then
+    [[ -n $front ]] || front=$HOME/.grok/bin
+    [[ -n $localbin ]] || localbin=$HOME/.local/bin
+  fi
+  [[ -n $front ]] && write_grok_colorterm_shim "$front/grok" "$real"
+  [[ -n $localbin ]] && write_grok_colorterm_shim "$localbin/grok" "$real"
 }
 
 # Apple Terminal (macOS 12) is 256-color. Advertising RGB makes Grok emit
