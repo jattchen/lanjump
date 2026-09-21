@@ -6052,6 +6052,100 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #445: unset wrap's client appearance lets OSC 11 read Ghostty's
+  # macOS-following canvas, so theme=auto becomes GrokDay (灰白) or a
+  # washed GrokNight (灰黑). Pin host appearance in process + tmux env.
+  local color_app_saved=${LANJUMP_GROK_APPEARANCE-}
+  local color_lc_saved=${LC_GROK_APPEARANCE-}
+  local color_g_saved=${GROK_APPEARANCE-}
+
+  if ! (( ${+functions[host_grok_appearance]} )); then
+    print -u2 "FAIL color/host-appearance missing host_grok_appearance"
+    (( fails++ ))
+  else
+    LANJUMP_GROK_APPEARANCE=dark
+    expect color/host-appearance-dark dark "$(host_grok_appearance)"
+    LANJUMP_GROK_APPEARANCE=light
+    expect color/host-appearance-light light "$(host_grok_appearance)"
+  fi
+  if ! (( ${+functions[host_grok_appearance_osc]} )); then
+    print -u2 "FAIL color/host-osc missing host_grok_appearance_osc"
+    (( fails++ ))
+  else
+    local osc
+    LANJUMP_GROK_APPEARANCE=dark
+    osc=$(host_grok_appearance_osc)
+    if [[ $osc != *$'\e]11;#1c1c1c\a'* ]]; then
+      print -u2 "FAIL color/host-osc-dark missing OSC 11 dark bg got=$(printf %q "$osc")"
+      (( fails++ ))
+    fi
+    LANJUMP_GROK_APPEARANCE=light
+    osc=$(host_grok_appearance_osc)
+    if [[ $osc != *$'\e]11;#f4f4f4\a'* ]]; then
+      print -u2 "FAIL color/host-osc-light missing OSC 11 light bg got=$(printf %q "$osc")"
+      (( fails++ ))
+    fi
+  fi
+
+  : >"$color_log"
+  prepared_color=0
+  LANJUMP_GROK_APPEARANCE=dark
+  unset LC_GROK_APPEARANCE GROK_APPEARANCE
+  tmux_prepare_color
+  color_got=$(<"$color_log")
+  if [[ $color_got == *'-gu LC_GROK_APPEARANCE'* || $color_got == *'-gu GROK_APPEARANCE'* ]]; then
+    print -u2 "FAIL color/appearance-no-unset got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got != *'-g LC_GROK_APPEARANCE dark'* ]]; then
+    print -u2 "FAIL color/appearance-global missing -g LC_GROK_APPEARANCE dark got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  if [[ $color_got != *$'\nset-environment LC_GROK_APPEARANCE dark'* && $color_got != 'set-environment LC_GROK_APPEARANCE dark'* ]]; then
+    print -u2 "FAIL color/appearance-session missing session LC_GROK_APPEARANCE dark got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  expect color/appearance-export-lc dark "${LC_GROK_APPEARANCE:-}"
+  expect color/appearance-export-g dark "${GROK_APPEARANCE:-}"
+
+  : >"$color_log"
+  prepared_color=0
+  LANJUMP_GROK_APPEARANCE=light
+  LC_GROK_APPEARANCE=dark
+  GROK_APPEARANCE=dark
+  tmux_prepare_color
+  color_got=$(<"$color_log")
+  if [[ $color_got != *'-g LC_GROK_APPEARANCE light'* ]]; then
+    print -u2 "FAIL color/appearance-overwrite missing -g LC_GROK_APPEARANCE light got=$(printf %q "$color_got")"
+    (( fails++ ))
+  fi
+  expect color/appearance-overwrite-export light "${LC_GROK_APPEARANCE:-}"
+
+  if [[ ${functions[setup_tty]} != *emit_host_grok_appearance_osc* ]]; then
+    print -u2 "FAIL color/setup-tty-osc setup_tty does not emit host appearance OSC"
+    (( fails++ ))
+  fi
+  if [[ ${functions[on_exit]} != *reset_host_grok_appearance_osc* ]]; then
+    print -u2 "FAIL color/on-exit-osc on_exit does not reset host appearance OSC"
+    (( fails++ ))
+  fi
+
+  if [[ -n $color_app_saved ]]; then
+    LANJUMP_GROK_APPEARANCE=$color_app_saved
+  else
+    unset LANJUMP_GROK_APPEARANCE
+  fi
+  if [[ -n $color_lc_saved ]]; then
+    LC_GROK_APPEARANCE=$color_lc_saved
+  else
+    unset LC_GROK_APPEARANCE
+  fi
+  if [[ -n $color_g_saved ]]; then
+    GROK_APPEARANCE=$color_g_saved
+  else
+    unset GROK_APPEARANCE
+  fi
+
   if [[ -n $color_term_program ]]; then
     TERM_PROGRAM=$color_term_program
   else

@@ -2149,6 +2149,17 @@ remote_pick_exec() {
   print -r -- 'zsh=$(command -v zsh) || { echo "lanjump: 远端找不到 zsh。" >&2; exit 127; }; exec "$zsh" "$HOME/.local/bin/lanjump-pick"'"$args"
 }
 
+# Drop wrap's client OS appearance so theme=auto does not follow the Mac
+# that opened SSH (#445). COLORTERM is only a problem on Apple Terminal
+# (#110); Ghostty must keep it so Grok paints a truecolor background.
+remote_pick_color_cmd() {
+  local cmd='unset GROK_APPEARANCE LC_GROK_APPEARANCE'
+  if [[ ${TERM_PROGRAM:-} == Apple_Terminal ]]; then
+    cmd+='; unset COLORTERM'
+  fi
+  print -r -- "$cmd"
+}
+
 connect_item() {
   local i=$1
   local alias=${items_alias[$i]}
@@ -2207,7 +2218,7 @@ connect_item() {
   fi
   local remote_cmd
   remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
-  remote_cmd+="; unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM"
+  remote_cmd+="; $(remote_pick_color_cmd)"
   remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
   remote_cmd+="; export LANJUMP_PICK_BIN=\$HOME/.local/bin/lanjump-pick"
   remote_cmd+="; $(remote_pick_exec)"
@@ -2514,7 +2525,7 @@ cli_remote_pick() {
   fi
   local remote_cmd
   remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
-  remote_cmd+="; unset GROK_APPEARANCE LC_GROK_APPEARANCE COLORTERM"
+  remote_cmd+="; $(remote_pick_color_cmd)"
   remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
   remote_cmd+="; export LANJUMP_PICK_BIN=\$HOME/.local/bin/lanjump-pick"
   remote_cmd+="; $(remote_pick_exec "$@")"
