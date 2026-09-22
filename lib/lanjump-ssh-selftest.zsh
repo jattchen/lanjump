@@ -1616,8 +1616,9 @@ EOF
   fi
   unset _lj341_hook
   _lj341_tick=$(awk '
-    /^tmux_install_snapshot_hooks\(\)/ {p=1}
-    p && /tick=/ {print; exit}
+    /^pin_cwd_hook_shell\(\)/ {p=1}
+    p {print}
+    p && /^}/ {exit}
   ' "${${(%):-%x}:A:h}/lanjump-pick.zsh")
   if [[ $_lj341_tick == *'/bin/zsh'* ]]; then
     print -u2 "FAIL ssh/remote-zsh/tick-hard-bin-zsh got=$(printf %q "$_lj341_tick")"

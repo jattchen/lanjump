@@ -15,7 +15,7 @@ fi
 
 pick_needs_tty() {
   case ${1:-} in
-    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-recent|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--start-grok|--snapshot|--install-hooks) return 1 ;;
+    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-recent|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--start-grok|--snapshot|--refresh-pin-cwd|--install-hooks) return 1 ;;
   esac
   return 0
 }
@@ -223,12 +223,36 @@ snapshot_hook_shell() {
   print -r -- "zsh=\$(command -v zsh) || { echo \"lanjump: 找不到 zsh。\" >&2; exit 127; }; \"\$zsh\" $(printf %q "$pick") --snapshot >/dev/null 2>&1"
 }
 
+pin_cwd_hook_shell() {
+  local pick
+  pick=$(snapshot_pick_bin)
+  print -r -- "zsh=\$(command -v zsh) || { echo \"lanjump: 找不到 zsh。\" >&2; exit 127; }; \"\$zsh\" $(printf %q "$pick") --refresh-pin-cwd >/dev/null 2>&1"
+}
+
+# Drop a status-bar command that runs lanjump --snapshot. Leave the rest.
+strip_snapshot_status_tick() {
+  local sr=$1 pat
+  pat='(#b)(*)\#\(/bin/zsh*lanjump-pick*--snapshot;\)(*)'
+  while [[ $sr == $~pat ]]; do
+    sr="${match[1]}${match[2]}"
+  done
+  pat='(#b)(*)\#\(zsh=*lanjump-pick*--snapshot;\)(*)'
+  while [[ $sr == $~pat ]]; do
+    sr="${match[1]}${match[2]}"
+  done
+  pat='(#b)(*)\#\(*lanjump-pick*--snapshot*\)(*)'
+  while [[ $sr == $~pat ]]; do
+    sr="${match[1]}${match[2]}"
+  done
+  print -r -- "$sr"
+}
+
 tmux_install_snapshot_hooks() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   local inner pick sr iv hook tick quoted_pick app_pat line cmd
   pick=$(snapshot_pick_bin)
   quoted_pick=$(printf %q "$pick")
-  inner=$(snapshot_hook_shell)
+  inner=$(pin_cwd_hook_shell)
   for hook in \
     'client-attached[91]' \
     'session-created[91]' \
@@ -249,24 +273,17 @@ tmux_install_snapshot_hooks() {
   line=$(tmuxx show-hooks -g "$hook" 2>/dev/null || true)
   cmd=
   [[ $line == "$hook "* ]] && cmd=${line#$hook }
-  if [[ -z $cmd || ( $cmd == *lanjump-pick* && $cmd == *--snapshot* ) ]]; then
+  if [[ -z $cmd || ( $cmd == *lanjump-pick* && ( $cmd == *--snapshot* || $cmd == *--refresh-pin-cwd* ) ) ]]; then
     tmuxx set-hook -g "$hook" "run-shell -b $(printf %q "$inner")" 2>/dev/null || true
   fi
-  tick="#(zsh=\$(command -v zsh) || exit 127; \"\$zsh\" $quoted_pick --snapshot;)"
   sr=$(tmuxx show-options -gv status-right 2>/dev/null || true)
-  # Replace leftover /bin/zsh ticks (Application Support or remote pick).
-  app_pat='(#b)(*)\#\(/bin/zsh*lanjump-pick*--snapshot;\)(*)'
-  if [[ $sr == *"$tick"* ]]; then
-    :
-  elif [[ $sr == $~app_pat ]]; then
-    sr="${match[1]}$tick${match[2]}"
-    tmuxx set-option -g status-right "$sr" 2>/dev/null || true
-  elif [[ $sr != *lanjump-pick.zsh* && $sr != *"$quoted_pick"* ]]; then
-    tmuxx set-option -ag status-right "$tick" 2>/dev/null || true
-  fi
-  iv=$(tmuxx show-options -gv status-interval 2>/dev/null || true)
-  if [[ $iv != [0-9]## ]] || (( iv == 0 || iv > 5 )); then
-    tmuxx set-option -g status-interval 5 2>/dev/null || true
+  if [[ $sr == *lanjump-pick* && $sr == *--snapshot* ]]; then
+    tick=$(strip_snapshot_status_tick "$sr")
+    tmuxx set-option -g status-right "$tick" 2>/dev/null || true
+    iv=$(tmuxx show-options -gv status-interval 2>/dev/null || true)
+    if [[ $iv == 5 ]]; then
+      tmuxx set-option -g status-interval 15 2>/dev/null || true
+    fi
   fi
 }
 
@@ -816,14 +833,15 @@ resolve_session_cwd() {
   local snap=${snap_cwd[$name]:-}
   local proj c
   proj=$(session_project_dir "$name") || proj=
-  for c in "$live" "$snap" "$pin"; do
+  # Pin record wins over a leftover snapshot. Snapshot only fills a gap.
+  for c in "$live" "$pin" "$snap"; do
     [[ -n $c ]] || continue
     cwd_is_home "$c" && continue
     print -r -- "$c"
     return 0
   done
   [[ -n $proj ]] && { print -r -- "$proj"; return 0 }
-  for c in "$live" "$snap" "$pin"; do
+  for c in "$live" "$pin" "$snap"; do
     [[ -n $c ]] && { print -r -- "$c"; return 0 }
   done
 }
@@ -1668,6 +1686,36 @@ if sid:
   print -r -- "$sid"
 }
 
+# Write a pin's directory only when the live path changed.
+refresh_pin_cwds() {
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  tmux_server_running || return 0
+  local st=0
+  if [[ -z ${_LANJUMP_PIN_LOCKED:-} ]]; then
+    pinned_sessions_file
+    _LANJUMP_PIN_LOCKED=1
+    with_data_file_lock "$REPLY" refresh_pin_cwds
+    st=$?
+    unset _LANJUMP_PIN_LOCKED
+    return $st
+  fi
+  load_pinned_sessions
+  local name live
+  local -i changed=0
+  for name in "${pinned_names[@]}"; do
+    [[ -n $name ]] || continue
+    tmuxx has-session -t "=$name" 2>/dev/null || continue
+    live=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_path}' 2>/dev/null || true)
+    [[ -n $live ]] || continue
+    # A pane sitting in $HOME is the default, not a move off the project.
+    cwd_is_home "$live" && [[ -n ${pinned_cwd[$name]:-} ]] && continue
+    [[ $live == ${pinned_cwd[$name]:-} ]] && continue
+    pinned_cwd[$name]=$live
+    changed=1
+  done
+  (( changed )) && save_pinned_sessions
+}
+
 restore_pinned_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   load_pinned_sessions
@@ -2054,6 +2102,7 @@ mark_snapshot_occupied() {
   snap_workspace[$name]=1
   snap_attached[$name]=$EPOCHSECONDS
   save_session_snapshot
+  pin_record_exists "$name" && refresh_pin_cwds
 }
 
 collect_restore_names() {
@@ -2065,16 +2114,6 @@ collect_restore_names() {
     [[ -n $n ]] || continue
     numeric_session_name "$n" && continue
     lanjump_foreign_session "$n" && continue
-    (( ${seen[$n]:-0} )) && continue
-    seen[$n]=1
-    restore_names+=("$n")
-    restore_cwd[$n]=$(resolve_session_cwd "$n")
-  done
-  for n in "${snap_names[@]}"; do
-    [[ -n $n ]] || continue
-    numeric_session_name "$n" && continue
-    lanjump_foreign_session "$n" && continue
-    session_in_workspace "$n" || continue
     (( ${seen[$n]:-0} )) && continue
     seen[$n]=1
     restore_names+=("$n")
@@ -2950,7 +2989,7 @@ ghostty_cfg_lines() {
   # quotes. Helper lives in ~/.local/bin; spec is surface env (#136).
   helper=$(ghostty_attach_helper)
   spec=$(attach_spec_for "$name")
-  cwd=${snap_cwd[$name]:-}
+  cwd=$(resolve_session_cwd "$name")
   print -r -- '  set cfg to new surface configuration'
   print -r -- "  set command of cfg to $(ghostty_applescript_string "$helper")"
   env_list=$(ghostty_applescript_string "LANJUMP_ATTACH_SPEC=${spec}")
@@ -3248,42 +3287,7 @@ maybe_restore_sessions() {
   fi
   if tmux_server_running; then
     tmux_install_snapshot_hooks
-    snapshot_live_sessions
-  fi
-  (( did_restore )) || return 0
-  collect_restore_names
-  if { ghostty_restore_available || terminal_restore_available }; then
-    local n
-    prompt_restore_windows
-    case ${restore_pick_action:-skip} in
-      resume)
-        attach_shell_only=0
-        for n in "${ghostty_names[@]}"; do
-          maybe_resume_last_command "$n"
-        done
-        if [[ $(effective_open_target ${#ghostty_names} 1) == current ]]; then
-          attach_named_session "${ghostty_names[1]}" 0 0
-        elif ! open_workspace_tabs "${ghostty_names[@]}"; then
-          attach_named_session "${ghostty_names[1]}" 0 0
-        fi
-        ;;
-      attach)
-        attach_shell_only=0
-        attach_named_session "${ghostty_names[1]}" 0 0
-        ;;
-      shell)
-        attach_shell_only=1
-        for n in "${ghostty_names[@]}"; do
-          ensure_session_cwd "$n"
-        done
-        if [[ $(effective_open_target ${#ghostty_names} 1) == current ]]; then
-          attach_named_session "${ghostty_names[1]}" 0 0
-        elif ! open_workspace_tabs "${ghostty_names[@]}"; then
-          attach_named_session "${ghostty_names[1]}" 0 0
-        fi
-        attach_shell_only=0
-        ;;
-    esac
+    refresh_pin_cwds
   fi
 }
 
@@ -3441,6 +3445,7 @@ load_items() {
       items_activity+=("${f[1]}")
       items_pinned+=("$pin")    done
     snapshot_live_sessions
+    refresh_pin_cwds
   fi
 
   if [[ $HAS_TMUX -eq 1 ]]; then
@@ -4860,6 +4865,10 @@ fi
 
 if [[ ${1:-} == --snapshot ]]; then
   run_session_snapshot
+  exit 0
+fi
+if [[ ${1:-} == --refresh-pin-cwd ]]; then
+  refresh_pin_cwds
   exit 0
 fi
 if [[ ${1:-} == --install-hooks ]]; then

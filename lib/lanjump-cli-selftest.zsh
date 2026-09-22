@@ -36,8 +36,9 @@ if ! (( ${+functions[cli_dispatch]} )); then
   expect_contains help/grok '--grok' "$out"
   expect_contains help/last-menu '最近 5 个' "$out"
   expect_absent help/no-new '  new ' "$out"
-  expect_contains help/work 'work [机器]' "$out"
-  expect_contains help/pins 'pins [机器]' "$out"
+  expect_contains help/pin 'pin [机器]' "$out"
+  expect_absent help/no-work 'work [机器]' "$out"
+  expect_absent help/no-pins 'pins [机器]' "$out"
   expect_contains help/settings ', 设置' "$out"
   expect_contains help/enter-current 'Enter 当前窗口' "$out"
   expect_contains help/t-window 't 新窗口' "$out"
@@ -49,7 +50,7 @@ if ! (( ${+functions[cli_dispatch]} )); then
   out=$(/bin/zsh "$MAIN" -h)
   expect_contains help/short-opt '用法：lanjump' "$out"
 
-  for cmd in go list work pins last; do
+  for cmd in go list pin last; do
     st=0
     out=$(/bin/zsh "$MAIN" "$cmd" --help) || st=$?
     if (( st != 0 )); then
@@ -57,8 +58,9 @@ if ! (( ${+functions[cli_dispatch]} )); then
       (( fails++ ))
     fi
     expect_contains $cmd-help/title '用法：lanjump' "$out"
-    expect_contains $cmd-help/work 'work [机器]' "$out"
-    expect_contains $cmd-help/pins 'pins [机器]' "$out"
+    expect_contains $cmd-help/pin 'pin [机器]' "$out"
+    expect_absent $cmd-help/no-work 'work [机器]' "$out"
+    expect_absent $cmd-help/no-pins 'pins [机器]' "$out"
     expect_absent $cmd-help/session "没有 session「--help」" "$out"
     expect_absent $cmd-help/host "没有保存的机器「--help」" "$out"
   done
@@ -546,13 +548,18 @@ functions[sync_picker]=$_lj_save_sync
 unset _lj_save_access _lj_save_sync
 
 : >"$log"
-cli_dispatch work studio
-assert_remote_open remote/work "$(read_log)" lanjump
-expect_contains remote/work-other other "$(read_log)"
-
-: >"$log"
-cli_dispatch pins studio
-assert_remote_open remote/pins "$(read_log)" lanjump
+_lj_save_recent=$functions[cli_recent_select]
+cli_recent_select() { print -r -- "$1"; }
+cli_dispatch pin studio
+functions[cli_recent_select]=$_lj_save_recent
+unset _lj_save_recent
+hay=$(read_log)
+expect_contains remote/pin-print --print-pinned "$hay"
+expect_contains remote/pin-session lanjump "$hay"
+if [[ $hay == *--open-tabs* ]]; then
+  print -u2 "FAIL remote/pin opened every pin got=$(printf %q "$hay")"
+  (( fails++ ))
+fi
 
 # #166: zsh prefix-assignment on a function is not exported to /bin/zsh
 # inside cli_pick. The child picker must see LANJUMP_ATTACH_HOST.
@@ -572,18 +579,18 @@ cli_open_tabs studio a b
 assert_remote_local_tabs remote-ghostty/open-tabs "$(read_log)" a b
 
 : >"$log"
-cli_dispatch work studio
+_lj_save_recent=$functions[cli_recent_select]
+cli_recent_select() { print -r -- "$1"; }
+cli_dispatch pin studio
+functions[cli_recent_select]=$_lj_save_recent
+unset _lj_save_recent
 hay=$(read_log)
-assert_remote_local_tabs remote-ghostty/work "$hay" lanjump other
-expect_contains remote-ghostty/work-print SSH "$hay"
-expect_contains remote-ghostty/work-print-ws --print-workspace "$hay"
-
-: >"$log"
-cli_dispatch pins studio
-hay=$(read_log)
-assert_remote_local_tabs remote-ghostty/pins "$hay" lanjump
-expect_contains remote-ghostty/pins-print SSH "$hay"
-expect_contains remote-ghostty/pins-print-pin --print-pinned "$hay"
+expect_contains remote-ghostty/pin-print --print-pinned "$hay"
+expect_contains remote-ghostty/pin-session lanjump "$hay"
+if [[ $hay == *--open-tabs* ]]; then
+  print -u2 "FAIL remote-ghostty/pin opened every pin got=$(printf %q "$hay")"
+  (( fails++ ))
+fi
 
 ghostty_restore_available() { return 1 }
 terminal_restore_available() { return 0 }
@@ -603,9 +610,15 @@ cli_dispatch go lanjump
 assert_local_attach local/go "$(read_log)" lanjump
 
 : >"$log"
-cli_dispatch work
-assert_local_open local/work "$(read_log)" lanjump
-expect_contains local/work-other other "$(read_log)"
+_lj_save_recent=$functions[cli_recent_select]
+cli_recent_select() { print -r -- "$1"; }
+cli_dispatch pin
+functions[cli_recent_select]=$_lj_save_recent
+unset _lj_save_recent
+hay=$(read_log)
+assert_local_attach local/pin "$hay" lanjump
+expect_contains local/pin-print --print-pinned "$hay"
+expect_absent local/pin-no-tabs --open-tabs "$hay"
 
 # Host routing for work/pins (issue 44): stub list/open so the chosen
 # machine is visible without going through SSH.
@@ -869,94 +882,52 @@ done
 
 : >"$log"
 st=0
-cli_dispatch work office >/dev/null || st=$?
+cli_dispatch pin office >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
-  print -u2 "FAIL work-office/status got $st want 0"
+  print -u2 "FAIL pin-office/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains work-office/list 'LIST host=office flag=--print-workspace' "$hay"
-expect_contains work-office/open 'OPEN host=office names=office-work' "$hay"
-expect_contains work-office/last 'LAST host=office' "$hay"
-expect_absent work-office/not-local-list 'LIST host=local' "$hay"
-expect_absent work-office/not-local-open 'OPEN host=local' "$hay"
+expect_contains pin-office/list 'LIST host=office flag=--print-pinned' "$hay"
+expect_contains pin-office/select 'SELECT office-pin' "$hay"
+expect_contains pin-office/last 'LAST host=office' "$hay"
+expect_absent pin-office/not-open 'OPEN host=office' "$hay"
+expect_absent pin-office/not-local-list 'LIST host=local' "$hay"
 
 : >"$log"
 st=0
-cli_dispatch pins office >/dev/null || st=$?
-hay=$(read_log)
-if (( st != 0 )); then
-  print -u2 "FAIL pins-office/status got $st want 0"
-  (( fails++ ))
-fi
-expect_contains pins-office/list 'LIST host=office flag=--print-pinned' "$hay"
-expect_contains pins-office/open 'OPEN host=office names=office-pin' "$hay"
-expect_contains pins-office/last 'LAST host=office' "$hay"
-expect_absent pins-office/not-local-list 'LIST host=local' "$hay"
-expect_absent pins-office/not-local-open 'OPEN host=local' "$hay"
-
-: >"$log"
-st=0
-err=$(cli_dispatch work nosuch 2>&1) || st=$?
+err=$(cli_dispatch pin nosuch 2>&1) || st=$?
 if (( st == 0 )); then
-  print -u2 "FAIL work-unknown/status got 0 want nonzero"
+  print -u2 "FAIL pin-unknown/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains work-unknown/msg '没有保存的机器「nosuch」。' "$err"
+expect_contains pin-unknown/msg '没有保存的机器「nosuch」。' "$err"
 hay=$(read_log)
-expect_absent work-unknown/no-local-open 'OPEN host=local' "$hay"
-expect_absent work-unknown/no-last 'LAST ' "$hay"
+expect_absent pin-unknown/no-last 'LAST ' "$hay"
 
 : >"$log"
 st=0
-err=$(cli_dispatch pins nosuch 2>&1) || st=$?
-if (( st == 0 )); then
-  print -u2 "FAIL pins-unknown/status got 0 want nonzero"
+if [[ ${functions[cli_dispatch]} == *$'\n    work)'* || ${functions[cli_is_command]} == *'|work|'* ]]; then
+  print -u2 "FAIL work-gone still dispatches work"
   (( fails++ ))
 fi
-expect_contains pins-unknown/msg '没有保存的机器「nosuch」。' "$err"
-hay=$(read_log)
-expect_absent pins-unknown/no-local-open 'OPEN host=local' "$hay"
-expect_absent pins-unknown/no-last 'LAST ' "$hay"
-
-TEST_LAST_HOST=local
-: >"$log"
-st=0
-cli_dispatch work >/dev/null || st=$?
-hay=$(read_log)
-if (( st != 0 )); then
-  print -u2 "FAIL work-last-local/status got $st want 0"
+if [[ ${functions[cli_dispatch]} != *'pin)'* ]]; then
+  print -u2 "FAIL pin-dispatch missing pin branch"
   (( fails++ ))
 fi
-expect_contains work-last-local/list 'LIST host=local flag=--print-workspace' "$hay"
-expect_contains work-last-local/open 'OPEN host=local names=local-work' "$hay"
-expect_contains work-last-local/last 'LAST host=local' "$hay"
 
 TEST_LAST_HOST=office
 : >"$log"
 st=0
-cli_dispatch work office >/dev/null || st=$?
+cli_dispatch pin >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
-  print -u2 "FAIL work-last-office/status got $st want 0"
+  print -u2 "FAIL pin-omit-local/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains work-last-office/list 'LIST host=office flag=--print-workspace' "$hay"
-expect_contains work-last-office/open 'OPEN host=office names=office-work' "$hay"
-expect_contains work-last-office/last 'LAST host=office' "$hay"
-
-# #440: omitting the host no longer follows last_target.
-: >"$log"
-st=0
-cli_dispatch work >/dev/null || st=$?
-hay=$(read_log)
-if (( st != 0 )); then
-  print -u2 "FAIL work-omit-local/status got $st want 0"
-  (( fails++ ))
-fi
-expect_contains work-omit-local/list 'LIST host=local flag=--print-workspace' "$hay"
-expect_contains work-omit-local/open 'OPEN host=local names=local-work' "$hay"
-expect_absent work-omit-local/not-office 'LIST host=office' "$hay"
+expect_contains pin-omit-local/list 'LIST host=local flag=--print-pinned' "$hay"
+expect_contains pin-omit-local/select 'SELECT local-pin' "$hay"
+expect_absent pin-omit-local/not-office 'LIST host=office' "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
@@ -1744,36 +1715,18 @@ fi
 expect_contains last-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=studio-recent1' "$hay"
 expect_eq last-remote-mark-before-attach/last-file studio "$(read_last)"
 
-# #188: work/pins exec-attach in the current window (no Ghostty over SSH)
-# and never return to a later mark_last. Same as go/attach/last (#168).
-_lj_save_cli_open_tabs=$functions[cli_open_tabs]
-cli_open_tabs() {
-  print -r -- "OPEN_DURING last=$(read_last) host=$1" >>"$log"
-}
-
+# pin attaches the chosen session and marks the host first, same as last.
 print -r -- office >"$LAST_FILE"
 : >"$log"
 st=0
-cli_dispatch work local >/dev/null || st=$?
+cli_dispatch pin local >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
-  print -u2 "FAIL work-local-mark-before-open/status got $st want 0"
+  print -u2 "FAIL pin-local-mark-before-attach/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains work-local-mark-before-open/during 'OPEN_DURING last=local host=local' "$hay"
-expect_eq work-local-mark-before-open/last-file local "$(read_last)"
-
-print -r -- office >"$LAST_FILE"
-: >"$log"
-st=0
-cli_dispatch pins local >/dev/null || st=$?
-hay=$(read_log)
-if (( st != 0 )); then
-  print -u2 "FAIL pins-local-mark-before-open/status got $st want 0"
-  (( fails++ ))
-fi
-expect_contains pins-local-mark-before-open/during 'OPEN_DURING last=local host=local' "$hay"
-expect_eq pins-local-mark-before-open/last-file local "$(read_last)"
+expect_contains pin-local-mark-before-attach/during 'ATTACH_DURING last=local host=local session=local-pin' "$hay"
+expect_eq pin-local-mark-before-attach/last-file local "$(read_last)"
 
 # #192: list/ls is not entering. LAST_FILE stays the previously entered host.
 print -r -- office >"$LAST_FILE"
@@ -1830,12 +1783,11 @@ expect_eq list-unknown-no-mark/last office "$(read_last)"
 
 functions[mark_last]=$_lj_save_mark_last
 functions[cli_attach_one]=$_lj_save_cli_attach_one
-functions[cli_open_tabs]=$_lj_save_cli_open_tabs
-unset _lj_save_mark_last _lj_save_cli_attach_one _lj_save_cli_open_tabs
+unset _lj_save_mark_last _lj_save_cli_attach_one
 TEST_LAST_HOST=local
 
-if ! cli_is_command go || ! cli_is_command work || ! cli_is_command list; then
-  print -u2 "FAIL cli-is-command/known go/work/list not recognized"
+if ! cli_is_command go || ! cli_is_command pin || ! cli_is_command list; then
+  print -u2 "FAIL cli-is-command/known go/pin/list not recognized"
   (( fails++ ))
 fi
 if cli_is_command office || cli_is_command o; then
@@ -1888,7 +1840,7 @@ fi
 # #226: go/list/last do not need the LAN prefix. CLI entry must not probe
 # interfaces; is_self_ip lazy-loads collect_self_ips when MYIPS is empty.
 _lj_cli=$(awk '
-  index($0, "if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then") {
+  index($0, "if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == pin || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then") {
     p=1
   }
   p { print }
