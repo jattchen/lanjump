@@ -1716,8 +1716,18 @@ refresh_pin_cwds() {
   (( changed )) && save_pinned_sessions
 }
 
+# Settings, live cwd, and the detach hook before any restore decision.
+prepare_pin_state() {
+  load_settings
+  load_pinned_sessions
+  tmux_server_running || return 0
+  tmux_install_snapshot_hooks
+  refresh_pin_cwds
+}
+
 restore_pinned_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
+  prepare_pin_state
   load_pinned_sessions
   local name cwd
   for name in "${pinned_names[@]}"; do
@@ -1737,6 +1747,7 @@ restore_pinned_sessions() {
     fi
     tmux_set_pinned "$name" 1
   done
+  tmux_server_running && tmux_install_snapshot_hooks
 }
 
 numeric_session_name() {
@@ -2530,6 +2541,7 @@ attach_named_session() {
 
 restore_saved_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
+  prepare_pin_state
   collect_restore_names
   local name cwd
   for name in "${restore_names[@]}"; do
@@ -2546,6 +2558,7 @@ restore_saved_sessions() {
     fi
     pin_record_exists "$name" && tmux_set_pinned "$name" 1
   done
+  tmux_server_running && tmux_install_snapshot_hooks
 }
 
 tmux_server_running() {
