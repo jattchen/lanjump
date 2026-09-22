@@ -1381,8 +1381,8 @@ pick_selftest() {
     print -u2 "FAIL delete/bulk-forget-write-fail dropped snap names got=${snap_names[*]}"
     (( fails++ ))
   fi
-  if ! should_restore_sessions; then
-    print -u2 "FAIL delete/bulk-forget-write-fail should still restore"
+  if should_restore_sessions; then
+    print -u2 "FAIL delete/bulk-forget-write-fail restored unpinned names"
     (( fails++ ))
   fi
 
@@ -1625,9 +1625,12 @@ pick_selftest() {
   snap_occupied[sysmtn]=1
   snap_occupied[idle-named]=0
   collect_restore_names
-  expect restore/collect-names 'missing still-live lanjump sysmtn' "${restore_names[*]}"
-  expect restore/collect-cwd-occupied /proj/lanjump "${restore_cwd[lanjump]}"
+  expect restore/collect-names 'missing still-live' "${restore_names[*]}"
   expect restore/collect-cwd-pinned /tmp/missing-cwd "${restore_cwd[missing]}"
+  if [[ -n ${restore_cwd[lanjump]:-} || ${restore_names[(Ie)lanjump]} -ne 0 ]]; then
+    print -u2 "FAIL restore/collect-names included unpinned lanjump got=${restore_names[*]}"
+    (( fails++ ))
+  fi
   snap_attached=()
   snap_attached[lanjump]=$EPOCHSECONDS
   snap_attached[sysmtn]=$((EPOCHSECONDS - 200000))
@@ -1656,12 +1659,12 @@ pick_selftest() {
   }
   restore_saved_sessions
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s lanjump -c /proj/lanjump'* ]]; then
-    print -u2 "FAIL restore/occupied missing lanjump got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s lanjump'* || $restore_log == *'new-session -d -s sysmtn'* ]]; then
+    print -u2 "FAIL restore/occupied restored unpinned names got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
-  if [[ $restore_log != *'new-session -d -s sysmtn -c /proj/sysmtn'* ]]; then
-    print -u2 "FAIL restore/occupied missing sysmtn got=$(printf %q "$restore_log")"
+  if [[ $restore_log != *'new-session -d -s missing'* ]]; then
+    print -u2 "FAIL restore/occupied missing pin got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
   if [[ $restore_log == *'new-session -d -s 5'* || $restore_log == *'new-session -d -s 6'* ]]; then
@@ -1880,18 +1883,16 @@ pick_selftest() {
   setup_leftover_live
   load_pinned_sessions
   load_session_snapshot
-  if ! should_restore_sessions; then
-    print -u2 "FAIL snap/leftover-gate should restore demo"
+  if should_restore_sessions; then
+    print -u2 "FAIL snap/leftover-gate restored unpinned demo"
     (( fails++ ))
   fi
   snapshot_live_sessions
   load_session_snapshot
-  if [[ ${snap_names[(Ie)demo]} -eq 0 ]]; then
-    print -u2 "FAIL snap/leftover-keep dropped demo got=${snap_names[*]}"
+  if [[ ${snap_names[(Ie)demo]} -ne 0 ]]; then
+    print -u2 "FAIL snap/leftover-keep kept unpinned demo got=${snap_names[*]}"
     (( fails++ ))
   fi
-  expect snap/leftover-keep-cwd /tmp/demo "${snap_cwd[demo]:-}"
-  expect snap/leftover-keep-cmd zsh "${snap_cmd[demo]:-}"
   if [[ ${snap_names[(Ie)leftover]} -eq 0 ]]; then
     print -u2 "FAIL snap/leftover-keep missing leftover got=${snap_names[*]}"
     (( fails++ ))
@@ -1899,16 +1900,16 @@ pick_selftest() {
   : >"$tmux_log"
   restore_saved_sessions
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
-    print -u2 "FAIL snap/leftover-restore missing demo got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s demo'* ]]; then
+    print -u2 "FAIL snap/leftover-restore created unpinned demo got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
   setup_leftover_live
   load_items
   load_session_snapshot
-  if [[ ${snap_names[(Ie)demo]} -eq 0 ]]; then
-    print -u2 "FAIL load/leftover-keep dropped demo got=${snap_names[*]}"
+  if [[ ${snap_names[(Ie)demo]} -ne 0 ]]; then
+    print -u2 "FAIL load/leftover-keep kept unpinned demo got=${snap_names[*]}"
     (( fails++ ))
   fi
   if [[ ${items_id[(Ie)leftover]} -eq 0 ]]; then
@@ -1918,8 +1919,8 @@ pick_selftest() {
   : >"$tmux_log"
   restore_saved_sessions
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
-    print -u2 "FAIL load/leftover-restore missing demo got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s demo'* ]]; then
+    print -u2 "FAIL load/leftover-restore created unpinned demo got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
@@ -2007,8 +2008,8 @@ pick_selftest() {
     print -u2 "FAIL pin/print-empty missing keep new-session got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
-  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
-    print -u2 "FAIL pin/print-empty missing demo new-session got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s demo'* ]]; then
+    print -u2 "FAIL pin/print-empty restored unpinned demo got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
   if [[ $got != *keep* ]]; then
@@ -2146,13 +2147,16 @@ pick_selftest() {
   }
   got=$(print_workspace_names)
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s ws-empty -c /tmp/ws-empty'* ]]; then
-    print -u2 "FAIL work/print-empty missing ws-empty new-session got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s ws-empty'* ]]; then
+    print -u2 "FAIL work/print-empty restored unpinned ws-empty got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
-  expect work/print-empty-names ws-empty "$got"
+  if [[ -n $got ]]; then
+    print -u2 "FAIL work/print-empty-names got=$(printf %q "$got") want empty"
+    (( fails++ ))
+  fi
 
-  # work: last 24h unpinned only. pins stay on `lanjump pins`.
+  # Unpinned names are not restored. Only pins come back.
   # Restore-window list stays 48h and still includes pins.
   : >"$tmux_log"
   mock_live=()
@@ -2247,8 +2251,8 @@ pick_selftest() {
   }
   got=$(print_workspace_names)
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s ws-30h -c /tmp/ws-30h'* ]]; then
-    print -u2 "FAIL work/print-30h-restore missing ws-30h new-session got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s ws-30h'* ]]; then
+    print -u2 "FAIL work/print-30h restored unpinned ws-30h got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
   expect work/print-30h-names '' "$got"
@@ -2302,16 +2306,12 @@ pick_selftest() {
   st=0
   has_named_session demo || st=$?
   restore_log=$(<"$tmux_log")
-  if (( st != 0 )); then
-    print -u2 "FAIL has-session/empty-demo status got=$st want 0"
+  if (( st == 0 )); then
+    print -u2 "FAIL has-session/empty-demo status got=0 want nonzero"
     (( fails++ ))
   fi
-  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
-    print -u2 "FAIL has-session/empty-demo missing demo new-session got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log != *'new-session -d -s other -c /tmp/other'* ]]; then
-    print -u2 "FAIL has-session/empty-demo skipped other new-session got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s demo'* || $restore_log == *'new-session -d -s other'* ]]; then
+    print -u2 "FAIL has-session/empty-demo restored unpinned got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
@@ -2390,16 +2390,12 @@ pick_selftest() {
   st=0
   err=$(ensure_named_session_for_attach demo 2>&1) || st=$?
   restore_log=$(<"$tmux_log")
-  if (( st != 0 )); then
-    print -u2 "FAIL attach/empty-demo status got=$st want 0 err=$(printf %q "$err")"
+  if (( st == 0 )); then
+    print -u2 "FAIL attach/empty-demo status got=0 want nonzero err=$(printf %q "$err")"
     (( fails++ ))
   fi
-  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
-    print -u2 "FAIL attach/empty-demo missing demo new-session got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log != *'new-session -d -s other -c /tmp/other'* ]]; then
-    print -u2 "FAIL attach/empty-demo skipped other new-session got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s demo'* || $restore_log == *'new-session -d -s other'* ]]; then
+    print -u2 "FAIL attach/empty-demo restored unpinned got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
 
@@ -2488,15 +2484,14 @@ pick_selftest() {
   tmuxx() { recent_list_tmuxx "$@" }
   got=$(print_recent_names 5)
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
-    print -u2 "FAIL recent/print-empty missing demo new-session got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s demo'* || $restore_log == *'new-session -d -s other'* ]]; then
+    print -u2 "FAIL recent/print-empty restored unpinned got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
-  if [[ $restore_log != *'new-session -d -s other -c /tmp/other'* ]]; then
-    print -u2 "FAIL recent/print-empty missing other new-session got=$(printf %q "$restore_log")"
+  if [[ -n $got ]]; then
+    print -u2 "FAIL recent/print-empty-names got=$(printf %q "$got") want empty"
     (( fails++ ))
   fi
-  expect recent/print-empty-names $'demo\nother' "$got"
 
   # Newest-activity first, up to 5, after restore.
   : >"$tmux_log"
@@ -2527,11 +2522,14 @@ pick_selftest() {
   tmuxx() { recent_list_tmuxx "$@" }
   got=$(print_recent_names 5)
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s r6 -c /tmp/r6'* ]]; then
-    print -u2 "FAIL recent/print-limit missing r6 new-session got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s r6'* ]]; then
+    print -u2 "FAIL recent/print-limit restored unpinned r6 got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
-  expect recent/print-limit-names $'r6\nr5\nr4\nr3\nr2' "$got"
+  if [[ -n $got ]]; then
+    print -u2 "FAIL recent/print-limit-names got=$(printf %q "$got") want empty"
+    (( fails++ ))
+  fi
 
   # #80/#122: anything restoreable already live skips full restore.
   : >"$tmux_log"
@@ -2661,12 +2659,12 @@ pick_selftest() {
     (( fails++ ))
   fi
   restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s demo -c /tmp/demo'* ]]; then
-    print -u2 "FAIL list/print-empty missing demo new-session got=$(printf %q "$restore_log")"
+  if [[ $restore_log == *'new-session -d -s demo'* ]]; then
+    print -u2 "FAIL list/print-empty restored unpinned demo got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
-  if [[ $got != *demo* ]]; then
-    print -u2 "FAIL list/print-empty missing demo got=$(printf %q "$got")"
+  if [[ $got == *demo* ]]; then
+    print -u2 "FAIL list/print-empty listed unpinned demo got=$(printf %q "$got")"
     (( fails++ ))
   fi
 
@@ -3296,12 +3294,12 @@ pick_selftest() {
     print -u2 "FAIL snap/hook should not install client-attached got=$(printf %q "$hook_log")"
     (( fails++ ))
   fi
-  if [[ $hook_log != *'--snapshot'* ]]; then
-    print -u2 "FAIL snap/hook missing --snapshot got=$(printf %q "$hook_log")"
+  if [[ $hook_log != *'--refresh-pin-cwd'* ]]; then
+    print -u2 "FAIL snap/hook missing --refresh-pin-cwd got=$(printf %q "$hook_log")"
     (( fails++ ))
   fi
-  if [[ $hook_log != *'status-right'* ]]; then
-    print -u2 "FAIL snap/hook missing status-right tick got=$(printf %q "$hook_log")"
+  if [[ $hook_log == *'set-option -ag status-right'* || $hook_log == *'--snapshot'* ]]; then
+    print -u2 "FAIL snap/hook still installs snapshot tick got=$(printf %q "$hook_log")"
     (( fails++ ))
   fi
   if pick_needs_tty --snapshot; then
@@ -3469,8 +3467,8 @@ pick_selftest() {
     (( fails++ ))
   fi
   collect_restore_names
-  if [[ ${restore_names[(Ie)test]} -eq 0 ]]; then
-    print -u2 "FAIL snap/new-named should be restored got=${restore_names[*]}"
+  if [[ ${restore_names[(Ie)test]} -ne 0 ]]; then
+    print -u2 "FAIL snap/new-named restored unpinned test got=${restore_names[*]}"
     (( fails++ ))
   fi
   collect_open_window_names
@@ -3508,7 +3506,10 @@ pick_selftest() {
   snapshot_live_sessions
   expect snap/home-cd-keeps-cwd /proj/keep "${snap_cwd[home-cd]:-}"
   collect_restore_names
-  expect snap/home-cd-restore-cwd /proj/keep "${restore_cwd[home-cd]:-}"
+  if [[ -n ${restore_cwd[home-cd]:-} || ${restore_names[(Ie)home-cd]} -ne 0 ]]; then
+    print -u2 "FAIL snap/home-cd-restore restored unpinned home-cd got=${restore_names[*]}"
+    (( fails++ ))
+  fi
   tmuxx() {
     case $1 in
       list-sessions)
@@ -4417,8 +4418,9 @@ pick_selftest() {
   expect resolve/earlier-root "$r1/dup" "$(resolve_session_cwd dup)"
   expect resolve/later-if-missing "$r2/onlysecond" "$(resolve_session_cwd onlysecond)"
 
-  snap_cwd[dup]=/opt/recorded
-  expect resolve/snap-over-root /opt/recorded "$(resolve_session_cwd dup)"
+  pinned_cwd[dup]=/opt/recorded
+  expect resolve/pin-over-root /opt/recorded "$(resolve_session_cwd dup)"
+  unset 'pinned_cwd[dup]'
   unset 'snap_cwd[dup]'
   expect resolve/live-over-root /opt/live "$(resolve_session_cwd dup /opt/live)"
   expect resolve/live-home-uses-root "$r1/dup" "$(resolve_session_cwd dup "$HOME")"

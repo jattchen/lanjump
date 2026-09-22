@@ -28,13 +28,13 @@ lanjump upgrade
 
 主机列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 连接（或进入本机），`r` 扫描，`d` 忘掉，`e` 给已保存的机器改名，`i` 开关打开时切英文输入法，`q` 退出。
 
-tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 当前窗口进入，`t` 新窗口进入，`n` 新建，`e` 重命名，`d` 删除，`p` 常驻，`X` 删空闲，`h` 换机器，`o` 时间/占用/常驻，`v` 开关预览，`/` 包含，`!` 排除，`f` 开关上次筛选，`,` 设置，`s` 普通 shell（`exit` 返回），`q` 退出。一次打开多个 session 时，Enter 和 `t` 都开新窗口。开不了外部窗口时（SSH / 没有本机键盘）两种键都在当前窗口进入，不提示。Shift+Enter 仍是 Grok 换行，不开新窗口。
+tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 当前窗口进入，`t` 新窗口进入，`n` 新建，`e` 重命名，`d` 删除，`p` 常驻，`X` 删空闲，`h` 换机器，`o` 时间/占用/常驻，`v` 开关预览，`/` 包含，`!` 排除，`f` 开关上次筛选，`,` 设置，`s` 普通 shell（`exit` 返回），`q` 退出。开不了外部窗口时（SSH / 没有本机键盘）Enter 和 `t` 都在当前窗口进入，不提示。Shift+Enter 仍是 Grok 换行，不开新窗口。
 
-重启电脑或 `tmux kill-server` 之后再打开 tmux 列表：会重建常驻、以及改过名/进过的命名 session（回到当时目录；纯数字名不重建）。然后弹出勾选列表：默认打开「常驻」和「最近 48 小时占用过」的窗口（空格或鼠标勾选，Enter 进入，`t` 新窗口，`2` 只要空 shell，`q` 不打开）。超过 48 小时且非常驻的命名 session 只建在 tmux 里，不自动开窗。没有 Ghostty 时用「终端」标签。
+重启电脑或 `tmux kill-server` 之后再打开 tmux 列表：只把 pin 建回 tmux，回到记下的目录。不开窗口，也不询问。没标 pin 的 session 不重建。纯数字名只有按 `p` 时先改成 `s-` 加时间戳并写成 pin 才会回来。
 
 从列表 Enter 进入：窗格保持原样，不把已退出的 Grok 再拉起来。窗格里 Grok 还在跑则跳到那一格。`,` 打开设置：新窗口用 Ghostty 还是系统终端，新开窗口还是在已有窗口加标签，以及多个项目根（顺序即优先级；Enter 添加，d 删除）。
 
-命令：`lanjump help` 查看说明；`lanjump list [机器]` 列出 session；`lanjump last [机器]` 最近 5 个 session 里选一个进入；`lanjump update` 同 `upgrade`；`lanjump go [机器 名字 | 机器:名字] [--grok]` 打开指定 session，不写名字则本机自动新建，`--grok` 再开 grok（当前窗口进入；已打开则跳到那个窗口）；`lanjump work [机器]` 打开近 24 小时占用过的 session（不含常驻）；`lanjump pins [机器]` 打开常驻。机器省略时用本机；远程要写出别名。`lanjump 别名` 进那台的 tmux 列表。名字不存在会问要不要新建（回车或 y=当前窗口，t=新窗口）。常驻在列表里按 p。
+命令：`lanjump help` 查看说明；`lanjump list [机器]` 列出 session；`lanjump last [机器]` 最近 5 个 session 里选一个进入；`lanjump update` 同 `upgrade`；`lanjump go [机器 名字 | 机器:名字] [--grok]` 打开指定 session，不写名字则本机自动新建，`--grok` 再开 grok（当前窗口进入；已打开则跳到那个窗口）；`lanjump pin [机器]` 列出全部 pin，选一个进入。机器省略时用本机；远程要写出别名。`lanjump 别名` 进那台的 tmux 列表。名字不存在会问要不要新建（回车或 y=当前窗口，t=新窗口）。常驻在列表里按 p。
 
 上次连的是本机还是远程，下次打开主机会记住并跳过扫描（只影响列表，不影响省略机器名的命令）。
 

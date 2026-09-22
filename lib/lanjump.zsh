@@ -2495,7 +2495,7 @@ default_cli_host() {
 
 cli_is_command() {
   case ${1:-} in
-    attach|go|work|pins|list|ls|last|help|upgrade|update|-h|--help)
+    attach|go|pin|list|ls|last|help|upgrade|update|-h|--help)
       return 0
       ;;
   esac
@@ -2735,7 +2735,7 @@ cli_pin_session() {
 cli_recent_draw() {
   local -i i n=${#cli_recent_names}
   print -n $'\e[H\e[J'
-  print -r -- "最近 session"
+  print -r -- "${cli_recent_title:-最近 session}"
   print
   for (( i = 1; i <= n; i++ )); do
     if (( i == cli_recent_cur )); then
@@ -2856,8 +2856,7 @@ cli_usage() {
   print -r -- '  list [机器]       列出 session'
   print -r -- '  last [机器]       最近 5 个 session，选一个进入'
   print -r -- '  go [机器 名字 | 机器:名字] [--grok]  打开；不写名字则本机自动新建；--grok 再开 grok'
-  print -r -- '  work [机器]       打开近 24 小时占用过的 session（不含常驻）'
-  print -r -- '  pins [机器]       打开常驻'
+  print -r -- '  pin [机器]        列出全部 pin，选一个进入'
   print -r -- '  upgrade           升级到最新版本'
   print -r -- '  update            同 upgrade'
   print
@@ -2904,7 +2903,7 @@ cli_dispatch() {
   session=
   spec=
   case $cmd in
-    list|ls|last|work|pins)
+    list|ls|last|pin)
       if (( ${#extra} )); then
         host=${extra[1]}
       fi
@@ -3000,18 +2999,19 @@ cli_dispatch() {
       cli_attach_one "$host" "$session" $(( want_grok || shell )) ${CREATE_WANT_NEW:-0} || return 1
       mark_last "$host"
       ;;
-    work)
-      names=("${(@f)$(cli_list_names "$host" --print-workspace)}") || return 1
-      # Mark before open: current-window exec-attach never returns.
+    pin)
+      has_st=0
+      names=("${(@f)$(cli_list_names "$host" --print-pinned)}") || has_st=$?
+      (( has_st && has_st != 1 )) && return $has_st
+      names=("${(@)names:#}")
+      if (( ! ${#names} )); then
+        print -u2 "没有 pin。"
+        return 1
+      fi
+      cli_recent_title=pin
+      session=$(cli_recent_select "${names[@]}") || return 1
       mark_last "$host"
-      cli_open_tabs "$host" "${names[@]}" || return 1
-      mark_last "$host"
-      ;;
-    pins)
-      names=("${(@f)$(cli_list_names "$host" --print-pinned)}") || return 1
-      # Mark before open: current-window exec-attach never returns.
-      mark_last "$host"
-      cli_open_tabs "$host" "${names[@]}" || return 1
+      cli_attach_one "$host" "$session" $shell || return 1
       mark_last "$host"
       ;;
     list|ls)
@@ -3050,7 +3050,7 @@ if [[ ${1:-} == help || ${1:-} == -h || ${1:-} == --help ]]; then
   exit 0
 fi
 
-if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == work || ${1:-} == pins || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then
+if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == pin || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then
   if [[ ${2:-} == --help || ${2:-} == -h ]]; then
     cli_usage
     exit 0
