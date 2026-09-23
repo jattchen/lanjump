@@ -111,9 +111,191 @@ prepared_color=0
 typeset -i pick_interactive=0
 typeset -i _grok_appearance_osc_set=0
 
+# #463 process-local tmux census. Not written to disk.
+# #467 calls tmux_state_load before taking a data-file lock, then reads
+# tm_names / tm_live / tm_path / tm_cmd / tm_att / tm_activity / tm_windows /
+# tm_wname / tm_title. tm_state_gen bumps on each load; tm_state_dirty is 1
+# after new-session, kill-session, or rename-session until the next load.
+# #464 queues terminal-features / terminal-overrides on tm_term_queue and
+# flushes them with tmux_terminal_option_flush (one tmux command, not one
+# fork per entry).
+typeset -i tm_state_gen=0 tm_state_dirty=1 tm_server_up=0 tm_list_rows=0
+typeset -i pin_cwd_refreshed_gen=-1 hooks_installed=0 tm_features_loaded=0
+tm_state_src=
+hooks_tmuxx_src=
+tm_features=
+typeset -a tm_names tm_term_queue
+typeset -A tm_live tm_path tm_cmd tm_att tm_activity tm_windows tm_wname tm_title tm_hook_cmd
+
+# Same fields load_items already asks for. #{pane_current_path} is the
+# current window's current pane, matching session_pane_target (=$name:.).
+TMUX_LIST_SESSIONS_FMT=$'#{session_activity}\x1f#{session_name}\x1f#{session_windows}\x1f#{?session_attached,1,0}\x1f#{pane_current_path}\x1f#{window_name}\x1f#{pane_title}\x1f#{pane_current_command}'
+
 tmuxx() {
   [[ -n $TMUX_BIN ]] || return 1
   command "$TMUX_BIN" "$@" </dev/null
+}
+
+tmux_state_invalidate() {
+  tm_state_dirty=1
+}
+
+tmux_state_clear() {
+  tm_names=()
+  tm_live=()
+  tm_path=()
+  tm_cmd=()
+  tm_att=()
+  tm_activity=()
+  tm_windows=()
+  tm_wname=()
+  tm_title=()
+  tm_server_up=0
+  tm_list_rows=0
+}
+
+tmux_state_note() {
+  local name=$1
+  [[ -n $name ]] || return 0
+  if (( ! ${tm_live[$name]:-0} )); then
+    tm_names+=("$name")
+  fi
+  tm_live[$name]=1
+  tm_activity[$name]=${2:-}
+  tm_windows[$name]=${3:-}
+  tm_att[$name]=${4:-0}
+  tm_path[$name]=${5:-}
+  tm_wname[$name]=${6:-}
+  tm_title[$name]=${7:-}
+  tm_cmd[$name]=${8:-}
+}
+
+# Accept the load_items census, the shorter snapshot census, and the
+# tab-separated list / recent shapes selftests already return.
+tmux_state_ingest_line() {
+  local line=$1
+  local -a f
+  local att
+  [[ -n $line ]] || return 0
+  if [[ $line == *$'\x1f'* ]]; then
+    f=("${(@ps:\x1f:)line}")
+    if (( ${#f} >= 8 )); then
+      tmux_state_note "${f[2]}" "${f[1]}" "${f[3]}" "${f[4]}" "${f[5]}" "${f[6]}" "${f[7]}" "${f[8]}"
+    elif (( ${#f} >= 4 )); then
+      tmux_state_note "${f[1]}" "" "" "${f[3]}" "${f[2]}" "" "" "${f[4]}"
+    fi
+    return 0
+  fi
+  [[ $line == *$'\t'* ]] || return 0
+  f=("${(@ps:\t:)line}")
+  if (( ${#f} >= 4 )); then
+    att=0
+    [[ ${f[2]} == 占用中 || ${f[2]} == 1 ]] && att=1
+    tmux_state_note "${f[1]}" "" "" "$att" "${f[4]}" "" "" "${f[3]}"
+  elif (( ${#f} >= 2 )); then
+    tmux_state_note "${f[2]}" "${f[1]}" "" "0" "" "" "" ""
+  fi
+}
+
+tmux_state_load() {
+  local src out line
+  local -a raw
+  local -i st
+  src=${functions[tmuxx]:-}
+  if (( ! tm_state_dirty && tm_state_gen > 0 )) && [[ $src == "$tm_state_src" ]]; then
+    return 0
+  fi
+  tmux_state_clear
+  tm_state_src=$src
+  tm_state_dirty=0
+  (( ++tm_state_gen ))
+  [[ $HAS_TMUX -eq 1 ]] || return 0
+  out=$(tmuxx list-sessions -F "$TMUX_LIST_SESSIONS_FMT" 2>/dev/null)
+  st=$?
+  if (( st == 0 )); then
+    tm_server_up=1
+  fi
+  if (( tm_server_up )) && [[ -n $out ]]; then
+    raw=("${(@f)out}")
+    for line in "${raw[@]}"; do
+      tmux_state_ingest_line "$line"
+    done
+  fi
+  tm_list_rows=${#tm_names}
+  return 0
+}
+
+tmux_server_running() {
+  tmux_state_load || return 1
+  (( tm_server_up ))
+}
+
+# Existence from the census. A list that named sessions is authoritative.
+# The real binary exiting non-zero means there is no session to find.
+# A selftest stub may still answer has-session without printing rows.
+tmux_session_live() {
+  local name=$1
+  [[ -n $name ]] || return 1
+  tmux_state_load || return 1
+  if (( ${tm_live[$name]:-0} )); then
+    return 0
+  fi
+  if (( tm_list_rows > 0 )); then
+    return 1
+  fi
+  [[ ${functions[tmuxx]} == *'command "$TMUX_BIN"'* ]] && return 1
+  tmuxx has-session -t "=$name" 2>/dev/null
+}
+
+tmux_session_path() {
+  tmux_state_load || return 1
+  REPLY=${tm_path[${1}]:-}
+  [[ -n $REPLY ]]
+}
+
+tmux_session_cmd() {
+  tmux_state_load || return 1
+  REPLY=${tm_cmd[${1}]:-}
+  [[ -n $REPLY ]]
+}
+
+# #464: record one entry. tmux_terminal_option_flush sends the batch.
+# Do not fold these into the safe set-option chain; a later exact-match
+# read has to stay in front of the writes.
+tmux_array_add_once() {
+  local opt=$1 entry=$2
+  [[ -n $opt && -n $entry ]] || return 0
+  case $opt in
+    terminal-features|terminal-overrides) ;;
+    *) return 1 ;;
+  esac
+  tm_term_queue+=("${opt}"$'\x1f'"${entry}")
+}
+
+tmux_terminal_option_flush() {
+  (( ${#tm_term_queue} )) || return 0
+  local item opt entry flag
+  local -a args
+  local -i first=1
+  for item in "${tm_term_queue[@]}"; do
+    opt=${item%%$'\x1f'*}
+    entry=${item#*$'\x1f'}
+    case $opt in
+      terminal-features) flag=-as ;;
+      terminal-overrides) flag=-ag ;;
+      *) continue ;;
+    esac
+    if (( first )); then
+      args=(set-option "$flag" "$opt" ",${entry}")
+      first=0
+    else
+      args+=(\; set-option "$flag" "$opt" ",${entry}")
+    fi
+  done
+  tm_term_queue=()
+  (( ${#args} )) || return 0
+  tmuxx "${args[@]}" 2>/dev/null || true
+  tm_features_loaded=0
 }
 
 keys_bin() {
@@ -176,38 +358,59 @@ tmux_apply_client_term() {
   [[ -n $client_term ]] || return 0
   [[ $client_term == ${TERM:-} ]] && return 0
   [[ ${TERM_PROGRAM:-} == Apple_Terminal ]] && return 0
-  tmuxx set-option -as terminal-features ",${client_term}:RGB" 2>/dev/null || true
-  tmuxx set-option -ag terminal-overrides ",${client_term}:Tc" 2>/dev/null || true
+  tmux_array_add_once terminal-features "${client_term}:RGB"
+  tmux_array_add_once terminal-overrides "${client_term}:Tc"
+  tmux_terminal_option_flush
+}
+
+# Sets REPLY. Call it directly: capturing it with $() runs in a subshell
+# and drops tm_features_loaded. #464 can replace the read with an exact
+# entry split of the same cached string.
+tmux_terminal_features() {
+  if (( ! tm_features_loaded )); then
+    tm_features=$(tmuxx show-options -g terminal-features 2>/dev/null || true)
+    tm_features_loaded=1
+  fi
+  REPLY=$tm_features
 }
 
 tmux_has_feature() {
-  local all
-  all=$(tmuxx show-options -g terminal-features 2>/dev/null || true)
-  [[ $all == *$1* ]]
+  tmux_terminal_features
+  [[ $REPLY == *$1* ]]
 }
 
 tmux_prepare_keys() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   tmux_install_snapshot_hooks
   (( prepared_keys )) && return 0
+  # `always` falls back to `on`. A failed command aborts the rest of a \;
+  # chain, so this stays its own call. extended-keys-format and
+  # allow-passthrough are newer and can fail on older tmux; same reason.
   tmuxx set-option -g extended-keys always 2>/dev/null || \
     tmuxx set-option -g extended-keys on 2>/dev/null || true
   tmuxx set-option -s extended-keys-format csi-u 2>/dev/null || true
   tmuxx set-option -gw allow-passthrough on 2>/dev/null || true
-  tmuxx set-option -g set-clipboard on 2>/dev/null || true
-  tmux_has_feature extkeys || tmuxx set-option -as terminal-features ',xterm*:extkeys' 2>/dev/null || true
-  if [[ ${TERM_PROGRAM:-} != Apple_Terminal && -n ${TERM:-} ]]; then
-    tmux_has_feature RGB || tmuxx set-option -as terminal-features ",${TERM}:RGB" 2>/dev/null || true
-  fi
   local len
   len=$(tmuxx show-options -gv status-left-length 2>/dev/null || true)
   [[ $len == [0-9]## ]] || len=0
+  # Long-standing options. bind-key is last so a miss cannot skip the sets.
   if (( len < 40 )); then
-    tmuxx set-option -g status-left-length 40 2>/dev/null || true
+    tmuxx set-option -g set-clipboard on \; \
+      set-option -g set-titles on \; \
+      set-option -g set-titles-string '#S' \; \
+      set-option -g status-left-length 40 \; \
+      bind-key -n S-Enter send-keys Escape Enter 2>/dev/null || true
+  else
+    tmuxx set-option -g set-clipboard on \; \
+      set-option -g set-titles on \; \
+      set-option -g set-titles-string '#S' \; \
+      bind-key -n S-Enter send-keys Escape Enter 2>/dev/null || true
   fi
-  tmuxx bind-key -n S-Enter send-keys Escape Enter 2>/dev/null || true
-  tmuxx set-option -g set-titles on 2>/dev/null || true
-  tmuxx set-option -g set-titles-string '#S' 2>/dev/null || true
+  tmux_has_feature extkeys || tmux_array_add_once terminal-features 'xterm*:extkeys'
+  if [[ ${TERM_PROGRAM:-} != Apple_Terminal && -n ${TERM:-} ]]; then
+    tmux_has_feature RGB || tmux_array_add_once terminal-features "${TERM}:RGB"
+  fi
+  tmux_terminal_option_flush
   prepared_keys=1
 }
 
@@ -255,12 +458,34 @@ strip_snapshot_status_tick() {
   print -r -- "$sr"
 }
 
+tmux_hook_cmd_from_show() {
+  local raw line name
+  local -a lines
+  tm_hook_cmd=()
+  raw=$(tmuxx show-hooks -g 2>/dev/null || true)
+  lines=("${(@f)raw}")
+  for line in "${lines[@]}"; do
+    [[ -n $line ]] || continue
+    if [[ $line == *' '* ]]; then
+      name=${line%% *}
+      tm_hook_cmd[$name]=${line#* }
+    else
+      tm_hook_cmd[$line]=
+    fi
+  done
+}
+
 tmux_install_snapshot_hooks() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  local inner pick sr iv hook tick quoted_pick app_pat line cmd
-  pick=$(snapshot_pick_bin)
-  quoted_pick=$(printf %q "$pick")
+  local src
+  src=${functions[tmuxx]:-}
+  if (( hooks_installed )) && [[ $src == "$hooks_tmuxx_src" ]]; then
+    return 0
+  fi
+  local inner sr iv hook tick cmd
   inner=$(pin_cwd_hook_shell)
+  # One show-hooks -g for the five snapshot slots and client-detached[91].
+  tmux_hook_cmd_from_show
   for hook in \
     'client-attached[91]' \
     'session-created[91]' \
@@ -269,18 +494,14 @@ tmux_install_snapshot_hooks() {
     'after-refresh-client[91]'
   do
     # #277: only unset a slot 91 hook we wrote. Foreign plugins keep theirs.
-    line=$(tmuxx show-hooks -g "$hook" 2>/dev/null || true)
-    cmd=
-    [[ $line == "$hook "* ]] && cmd=${line#$hook }
+    cmd=${tm_hook_cmd[$hook]:-}
     if [[ -n $cmd && $cmd == *lanjump-pick* && $cmd == *--snapshot* ]]; then
       tmuxx set-hook -gu "$hook" 2>/dev/null || true
     fi
   done
   # #308: only write client-detached[91] if empty or already ours.
   hook='client-detached[91]'
-  line=$(tmuxx show-hooks -g "$hook" 2>/dev/null || true)
-  cmd=
-  [[ $line == "$hook "* ]] && cmd=${line#$hook }
+  cmd=${tm_hook_cmd[$hook]:-}
   if [[ -z $cmd || ( $cmd == *lanjump-pick* && ( $cmd == *--snapshot* || $cmd == *--refresh-pin-cwd* ) ) ]]; then
     tmuxx set-hook -g "$hook" "run-shell -b $(printf %q "$inner")" 2>/dev/null || true
   fi
@@ -293,6 +514,8 @@ tmux_install_snapshot_hooks() {
       tmuxx set-option -g status-interval 15 2>/dev/null || true
     fi
   fi
+  hooks_installed=1
+  hooks_tmuxx_src=$src
 }
 
 snapshot_recently_written() {
@@ -371,11 +594,14 @@ apply_host_grok_appearance() {
   local app
   app=$(host_grok_appearance)
   export LC_GROK_APPEARANCE=$app GROK_APPEARANCE=$app
+  REPLY=$app
+  # prepare_color folds these four into its client-env chain.
+  [[ ${1:-} == --export-only ]] && return 0
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  tmuxx set-environment -g LC_GROK_APPEARANCE "$app" 2>/dev/null || true
-  tmuxx set-environment -g GROK_APPEARANCE "$app" 2>/dev/null || true
-  tmuxx set-environment LC_GROK_APPEARANCE "$app" 2>/dev/null || true
-  tmuxx set-environment GROK_APPEARANCE "$app" 2>/dev/null || true
+  tmuxx set-environment -g LC_GROK_APPEARANCE "$app" \; \
+    set-environment -g GROK_APPEARANCE "$app" \; \
+    set-environment LC_GROK_APPEARANCE "$app" \; \
+    set-environment GROK_APPEARANCE "$app" 2>/dev/null || true
 }
 
 emit_host_grok_appearance_osc() {
@@ -393,9 +619,10 @@ reset_host_grok_appearance_osc() {
 tmux_disable_truecolor_for() {
   local t=$1
   [[ -n $t ]] || return 0
-  tmuxx set-option -as terminal-features ",${t}:RGB@" 2>/dev/null || true
-  tmuxx set-option -as terminal-features ",${t}:256" 2>/dev/null || true
-  tmuxx set-option -ag terminal-overrides ",${t}:RGB@,${t}:Tc@" 2>/dev/null || true
+  # Queued; tmux_prepare_color flushes once. #464 replaces the flush body.
+  tmux_array_add_once terminal-features "${t}:RGB@"
+  tmux_array_add_once terminal-features "${t}:256"
+  tmux_array_add_once terminal-overrides "${t}:RGB@,${t}:Tc@"
 }
 
 # PATH on this Mac puts ~/.grok/bin before ~/.local/bin, so a shim only at
@@ -472,18 +699,24 @@ install_grok_colorterm_shim() {
 # session (#447). Ghostty keeps RGB (#173).
 tmux_prepare_color() {
   (( prepared_color )) && return 0
-  apply_host_grok_appearance
+  local app dt apple=0 term=${TERM:-}
+  apply_host_grok_appearance --export-only
+  app=$REPLY
   [[ $HAS_TMUX -eq 1 ]] || { prepared_color=1; return 0 }
-  local dt apple=0 term=${TERM:-}
   [[ ${TERM_PROGRAM:-} == Apple_Terminal ]] && apple=1
 
   dt=$(tmuxx show-options -gv default-terminal 2>/dev/null || true)
   install_grok_colorterm_shim
   if (( apple )); then
     unset COLORTERM
-    tmuxx set-environment -g LANJUMP_CLIENT Apple_Terminal 2>/dev/null || true
-    tmuxx set-environment -gu COLORTERM 2>/dev/null || true
-    tmuxx set-environment -u COLORTERM 2>/dev/null || true
+    # Appearance and the Apple client env are independent; one chain.
+    tmuxx set-environment -g LC_GROK_APPEARANCE "$app" \; \
+      set-environment -g GROK_APPEARANCE "$app" \; \
+      set-environment LC_GROK_APPEARANCE "$app" \; \
+      set-environment GROK_APPEARANCE "$app" \; \
+      set-environment -g LANJUMP_CLIENT Apple_Terminal \; \
+      set-environment -gu COLORTERM \; \
+      set-environment -u COLORTERM 2>/dev/null || true
     if [[ $dt != *256color* && $dt != *direct* ]]; then
       if infocmp screen-256color >/dev/null 2>&1; then
         dt=screen-256color
@@ -495,11 +728,15 @@ tmux_prepare_color() {
     tmux_disable_truecolor_for "$term"
     tmux_disable_truecolor_for "$dt"
     # Empty cells / ignored 24-bit show this, not Terminal.app Basic white.
-    tmuxx set-option -g window-style 'bg=colour234,fg=colour252' 2>/dev/null || true
-    tmuxx set-option -g window-active-style 'bg=colour234,fg=colour252' 2>/dev/null || true
+    tmuxx set-option -g window-style 'bg=colour234,fg=colour252' \; \
+      set-option -g window-active-style 'bg=colour234,fg=colour252' 2>/dev/null || true
   else
-    tmuxx set-environment -g LANJUMP_CLIENT "${TERM_PROGRAM:-other}" 2>/dev/null || true
-    tmuxx set-environment -g COLORTERM truecolor 2>/dev/null || true
+    tmuxx set-environment -g LC_GROK_APPEARANCE "$app" \; \
+      set-environment -g GROK_APPEARANCE "$app" \; \
+      set-environment LC_GROK_APPEARANCE "$app" \; \
+      set-environment GROK_APPEARANCE "$app" \; \
+      set-environment -g LANJUMP_CLIENT "${TERM_PROGRAM:-other}" \; \
+      set-environment -g COLORTERM truecolor 2>/dev/null || true
     if [[ -z $dt || $dt == screen || $dt == xterm || $dt == dumb ]]; then
       if infocmp tmux-256color >/dev/null 2>&1; then
         dt=tmux-256color
@@ -511,10 +748,11 @@ tmux_prepare_color() {
       tmuxx set-option -g default-terminal "$dt" 2>/dev/null || true
     fi
     if [[ -n $term ]]; then
-      tmuxx set-option -as terminal-features ",${term}:RGB" 2>/dev/null || true
-      tmuxx set-option -ag terminal-overrides ",${term}:Tc" 2>/dev/null || true
+      tmux_array_add_once terminal-features "${term}:RGB"
+      tmux_array_add_once terminal-overrides "${term}:Tc"
     fi
   fi
+  tmux_terminal_option_flush
   prepared_color=1
 }
 
@@ -1658,16 +1896,6 @@ rename_pin_record() {
   done
 }
 
-tmux_set_pinned() {
-  local name=$1 on=$2
-  [[ $HAS_TMUX -eq 1 ]] || return 0
-  if [[ $on == 1 ]]; then
-    tmuxx set-option -t "=$name" @lanjump_pinned 1 2>/dev/null || true
-  else
-    tmuxx set-option -u -t "=$name" @lanjump_pinned 2>/dev/null || true
-  fi
-}
-
 grok_id_for_pid() {
   local pid=$1
   local file="$HOME/.grok/active_sessions.json" sid
@@ -1700,9 +1928,13 @@ if sid:
 }
 
 # Write a pin's directory only when the live path changed.
+# Once per tmux_state_gen. The census is loaded before the pin lock;
+# #467 keeps the locked body as re-read, merge, atomic write.
 refresh_pin_cwds() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  tmux_server_running || return 0
+  tmux_state_load
+  (( tm_server_up )) || return 0
+  (( pin_cwd_refreshed_gen == tm_state_gen )) && return 0
   local st=0
   if [[ -z ${_LANJUMP_PIN_LOCKED:-} ]]; then
     pinned_sessions_file
@@ -1717,8 +1949,8 @@ refresh_pin_cwds() {
   local -i changed=0
   for name in "${pinned_names[@]}"; do
     [[ -n $name ]] || continue
-    tmuxx has-session -t "=$name" 2>/dev/null || continue
-    live=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_current_path}' 2>/dev/null || true)
+    (( ${tm_live[$name]:-0} )) || continue
+    live=${tm_path[$name]:-}
     [[ -n $live ]] || continue
     # A pane sitting in $HOME is the default, not a move off the project.
     cwd_is_home "$live" && [[ -n ${pinned_cwd[$name]:-} ]] && continue
@@ -1726,7 +1958,10 @@ refresh_pin_cwds() {
     pinned_cwd[$name]=$live
     changed=1
   done
-  (( changed )) && save_pinned_sessions
+  if (( changed )); then
+    save_pinned_sessions || return 1
+  fi
+  pin_cwd_refreshed_gen=$tm_state_gen
 }
 
 # Settings, live cwd, and the detach hook before any restore decision.
@@ -1743,8 +1978,7 @@ prepare_pin_state() {
 restore_one_missing_session() {
   local name=$1 cwd=$2
   local -i ok=0
-  if tmuxx has-session -t "=$name" 2>/dev/null; then
-    pin_record_exists "$name" && tmux_set_pinned "$name" 1
+  if tmux_session_live "$name"; then
     return 0
   fi
   if (( restore_show_progress )); then
@@ -1759,7 +1993,7 @@ restore_one_missing_session() {
     tmuxx new-session -d -s "$name" 2>/dev/null && ok=1
   fi
   if (( ok )); then
-    pin_record_exists "$name" && tmux_set_pinned "$name" 1
+    tmux_state_invalidate
     (( restore_show_progress )) && restore_created_names+=("$name")
     return 0
   fi
@@ -1796,7 +2030,7 @@ unique_non_numeric_session_name() {
   base="s-${EPOCHSECONDS}"
   candidate=$base
   while (( n < 32 )); do
-    if ! pin_record_exists "$candidate" && ! tmuxx has-session -t "=$candidate" 2>/dev/null; then
+    if ! pin_record_exists "$candidate" && ! tmux_session_live "$candidate"; then
       REPLY=$candidate
       return 0
     fi
@@ -1819,8 +2053,10 @@ ensure_pinnable_session_name() {
     REPLY=$name
     return 1
   }
+  tmux_state_invalidate
   if ! rename_snap_record "$name" "$new"; then
     tmuxx rename-session -t "=$new" "$name" 2>/dev/null || true
+    tmux_state_invalidate
     REPLY=$name
     return 1
   fi
@@ -1839,7 +2075,6 @@ pin_named_session() {
   name=$REPLY
   cwd=$(resolve_session_cwd "$name")
   add_pin_record "$name" "${cwd:-$PWD}" "" || return
-  tmux_set_pinned "$name" 1
   REPLY=$name
   print -r -- "$name"
 }
@@ -2076,15 +2311,12 @@ snapshot_live_sessions() {
   snap_workspace=()
   snap_cmd=()
   snap_attached=()
-  raw=("${(@f)$(tmuxx list-sessions -F $'#{session_name}\x1f#{pane_current_path}\x1f#{?session_attached,1,0}\x1f#{pane_current_command}' 2>/dev/null)}")
-  for line in "${raw[@]}"; do
-    [[ -z $line ]] && continue
-    f=("${(@ps:\x1f:)line}")
-    (( ${#f} < 4 )) && continue
-    name=${f[1]}
-    cwd=${f[2]}
-    att=${f[3]}
-    cmd=${f[4]}
+  # Census already loaded by tmux_server_running above. #467 reads it
+  # outside this lock; do not list-sessions again while holding it.
+  for name in "${tm_names[@]}"; do
+    cwd=${tm_path[$name]:-}
+    att=${tm_att[$name]:-0}
+    cmd=${tm_cmd[$name]:-}
     [[ -n $name ]] || continue
     snap_names+=("$name")
     # resolve skips $HOME; keep the previous recorded cwd across that skip.
@@ -2136,6 +2368,9 @@ mark_snapshot_occupied() {
     return $st
   fi
   load_session_snapshot
+  # #467: these two reads still run under the snap lock. tmux_session_path
+  # and tmux_session_cmd already hold the census; move the reads out with
+  # the lock split.
   target=$(session_pane_target "$name")
   cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
   cmd=$(tmuxx display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
@@ -2570,6 +2805,7 @@ attach_named_session() {
     fi
   fi
   tmux_tty attach-session -t "=$name"
+  tmux_state_invalidate
   snapshot_live_sessions
   attach_shell_only=0
 }
@@ -2586,10 +2822,6 @@ restore_saved_sessions() {
   tmux_server_running && tmux_install_snapshot_hooks
 }
 
-tmux_server_running() {
-  tmuxx list-sessions >/dev/null 2>&1
-}
-
 session_has_live_client() {
   local name=$1 clients
   [[ -n $name ]] || return 1
@@ -2602,7 +2834,7 @@ any_restore_session_live() {
   collect_restore_names
   (( ${#restore_names} )) || return 1
   for n in "${restore_names[@]}"; do
-    tmuxx has-session -t "=$n" 2>/dev/null && return 0
+    tmux_session_live "$n" && return 0
   done
   return 1
 }
@@ -3353,7 +3585,7 @@ restore_boot_pending() {
   load_session_snapshot
   collect_restore_names
   for n in "${restore_names[@]}"; do
-    tmuxx has-session -t "=$n" 2>/dev/null && continue
+    tmux_session_live "$n" && continue
     pending_restore_names+=("$n")
   done
   (( ${#pending_restore_names} ))
@@ -3437,9 +3669,14 @@ picker_boot_after_first_draw() {
   local saved_stty=${stty_orig:-} before
   local -i showed=$restore_show_progress
   before=${(j:\0:)items_id}
+  restore_created_names=()
   picker_run_named_steps "${picker_boot_after_first_draw_steps[@]}"
   [[ -n $saved_stty ]] && stty_orig=$saved_stty
-  load_items
+  # First paint already loaded items. Read again only when this boot
+  # created sessions or a mutating tmux command marked the census dirty.
+  if (( ${#restore_created_names} || tm_state_dirty )); then
+    load_items
+  fi
   if (( showed )); then
     drain_pending_keys
     restore_show_progress=0
@@ -3482,6 +3719,7 @@ delete_idle_unpinned_sessions() {
     name=${items_id[$i]}
     lanjump_foreign_session "$name" && continue
     if tmuxx kill-session -t "=$name" 2>/dev/null; then
+      tmux_state_invalidate
       forget_killed_session "$name" || st=1
     fi
   done
@@ -3506,7 +3744,6 @@ toggle_session_pin() {
   old=$name
   if [[ ${items_pinned[$cursor]:-0} == 1 ]]; then
     remove_pin_record "$name" || return
-    tmux_set_pinned "$name" 0
     on=0
   else
     lanjump_foreign_session "$name" && return
@@ -3516,7 +3753,6 @@ toggle_session_pin() {
     pid=$(tmuxx display-message -p -t "$(session_pane_target "$name")" '#{pane_pid}' 2>/dev/null || true)
     grok=$(grok_id_for_pid "$pid")
     add_pin_record "$name" "$cwd" "$grok" || return
-    tmux_set_pinned "$name" 1
     on=1
     items_id[$cursor]=$name
     items_name[$cursor]=$name
@@ -3541,6 +3777,7 @@ load_items() {
   fi
 
   load_pinned_sessions
+  local n act
   items_kind=()
   items_id=()
   items_name=()
@@ -3554,32 +3791,29 @@ load_items() {
   session_titles=()
   raw=()
 
-  if [[ $HAS_TMUX -eq 1 ]] && tmuxx list-sessions >/dev/null 2>&1; then
-    raw=("${(@f)$(tmuxx list-sessions -F $'#{session_activity}\x1f#{session_name}\x1f#{session_windows}\x1f#{?session_attached,1,0}\x1f#{pane_current_path}\x1f#{window_name}\x1f#{pane_title}\x1f#{pane_current_command}')}")
-  fi
-
-  if (( ${#raw} )); then
-    for line in "${raw[@]}"; do
-      [[ -z $line ]] && continue
-      f=("${(@ps:\x1f:)line}")
-      (( ${#f} < 8 )) && continue
-      strftime -s when '%m-%d %H:%M' "${f[1]}"
-      wname=${f[6]}
-      title=${f[7]}
-      cmd=${f[8]}
+  tmux_state_load
+  if (( tm_server_up && ${#tm_names} )); then
+    for n in "${tm_names[@]}"; do
+      act=${tm_activity[$n]:-}
+      [[ $act == [0-9]## ]] || act=$EPOCHSECONDS
+      strftime -s when '%m-%d %H:%M' "$act"
+      wname=${tm_wname[$n]:-}
+      title=${tm_title[$n]:-}
+      cmd=${tm_cmd[$n]:-}
       pin=0
-      pin_record_exists "${f[2]}" && pin=1
+      pin_record_exists "$n" && pin=1
       items_kind+=("session")
-      items_id+=("${f[2]}")
-      items_name+=("${f[2]}")
-      items_att+=("${f[4]}")
+      items_id+=("$n")
+      items_name+=("$n")
+      items_att+=("${tm_att[$n]:-0}")
       items_time+=("$when")
-      items_path+=("$(short_path "${f[5]}")")
+      items_path+=("$(short_path "${tm_path[$n]:-}")")
       items_summary+=("$(useful_summary "$title" "$cmd" "$wname")")
-      session_titles[${f[2]}]=$title
+      session_titles[$n]=$title
       items_cmd+=("$cmd")
-      items_activity+=("${f[1]}")
-      items_pinned+=("$pin")    done
+      items_activity+=("$act")
+      items_pinned+=("$pin")
+    done
     snapshot_live_sessions
     refresh_pin_cwds
   fi
@@ -4631,17 +4865,22 @@ new_session_flag_invalid() {
 # Named create: pin/snap then project dir, same cwd as CLI --new-session.
 create_named_session() {
   local name=$1 cwd
+  local -i ok=0
   [[ -n $name ]] || return 1
   load_settings
   load_pinned_sessions
   load_session_snapshot
   cwd=$(resolve_session_cwd "$name")
   if [[ -n $cwd ]]; then
-    tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || \
-      tmuxx new-session -d -s "$name" 2>/dev/null
+    if tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || \
+       tmuxx new-session -d -s "$name" 2>/dev/null; then
+      ok=1
+    fi
   else
-    tmuxx new-session -d -s "$name" 2>/dev/null
+    tmuxx new-session -d -s "$name" 2>/dev/null && ok=1
   fi
+  (( ok )) && tmux_state_invalidate
+  (( ok ))
 }
 
 # List n pin cwd: live pane then project, never picker $PWD (#130).
@@ -4669,7 +4908,6 @@ prompt_new_commit_pin() {
   name=$REPLY
   cwd=$(prompt_new_pin_cwd "$name")
   add_pin_record "$name" "${cwd:-}" "" || return
-  tmux_set_pinned "$name" 1
   REPLY=$name
 }
 
@@ -4692,7 +4930,7 @@ prompt_new() {
     draw
     return
   fi
-  if [[ -n $name ]] && tmuxx has-session -t "=$name" 2>/dev/null; then
+  if [[ -n $name ]] && tmux_session_live "$name"; then
     existing=1
     prompt_new_ask_pin && pin=1
   fi
@@ -4730,11 +4968,13 @@ prompt_new() {
       created=${created%%$'\n'*}
       if [[ -z $created ]]; then
         tmux_tty new-session
+        tmux_state_invalidate
         setup_tty
         load_items
         draw
         return
       fi
+      tmux_state_invalidate
     else
       if ! create_named_session "$name"; then
         print "创建失败。"
@@ -4774,7 +5014,7 @@ prompt_delete() {
   print -n "确认删除请输入 y，其他键取消: "
   read -r ans
   if [[ $ans == y || $ans == Y ]]; then
-    if ! tmuxx kill-session -t "=$name" || ! forget_killed_session "$name"; then
+    if ! tmuxx kill-session -t "=$name" || ! { tmux_state_invalidate; forget_killed_session "$name"; }; then
       print "删除失败。"
       print -n "按回车继续…"
       read -r
@@ -4840,7 +5080,7 @@ prompt_rename() {
     draw
     return
   fi
-  if tmuxx has-session -t "=$name" 2>/dev/null; then
+  if tmux_session_live "$name"; then
     print "session「${name}」已存在。"
     print -n "按回车继续…"
     read -r
@@ -4858,8 +5098,10 @@ prompt_rename() {
     draw
     return
   }
+  tmux_state_invalidate
   if ! rename_pin_record "$old" "$name"; then
     tmuxx rename-session -t "=$name" "$old" 2>/dev/null || true
+    tmux_state_invalidate
     setup_tty
     load_items "$old"
     draw
@@ -4868,6 +5110,7 @@ prompt_rename() {
   if ! rename_snap_record "$old" "$name"; then
     rename_pin_record "$name" "$old" || true
     tmuxx rename-session -t "=$name" "$old" 2>/dev/null || true
+    tmux_state_invalidate
     setup_tty
     load_items "$old"
     draw
@@ -4896,7 +5139,7 @@ print_workspace_names() {
   collect_work_session_names
   local n
   for n in "${work_names[@]}"; do
-    tmuxx has-session -t "=$n" 2>/dev/null || continue
+    tmux_session_live "$n" || continue
     print -r -- "$n"
   done
 }
@@ -4913,7 +5156,7 @@ has_named_session() {
   else
     restore_pinned_sessions
   fi
-  tmuxx has-session -t "=$name" 2>/dev/null
+  tmux_session_live "$name"
 }
 
 # Restore before attach so list t / Ghostty matches go (#80 / #124).
@@ -4955,7 +5198,7 @@ print_last_name() {
 # Newest-activity first, up to $1 names (default 5).
 print_recent_names() {
   local -i max=${1:-5} n=0
-  local line name
+  local line name act
   local -a raw
   [[ $HAS_TMUX -eq 1 ]] || return 1
   load_pinned_sessions
@@ -4965,8 +5208,14 @@ print_recent_names() {
   else
     restore_pinned_sessions
   fi
-  raw=("${(@f)$(tmuxx list-sessions -F $'#{session_activity}\t#{session_name}' 2>/dev/null)}")
-  (( ${#raw} )) || return 1
+  tmux_state_load
+  (( tm_server_up && ${#tm_names} )) || return 1
+  raw=()
+  for name in "${tm_names[@]}"; do
+    act=${tm_activity[$name]:-0}
+    [[ $act == [0-9]## ]] || act=0
+    raw+=("${act}"$'\t'"$name")
+  done
   for line in "${(@f)$(print -r -- "${(F)raw}" | sort -t $'\t' -k1,1nr)}"; do
     [[ -n $line ]] || continue
     name=${line#*$'\t'}
@@ -4979,8 +5228,7 @@ print_recent_names() {
 
 # Restore before listing so list matches last/work (#134).
 print_session_list() {
-  local line
-  local -a raw
+  local n att
   [[ $HAS_TMUX -eq 1 ]] || return 0
   load_pinned_sessions
   load_session_snapshot
@@ -4989,10 +5237,15 @@ print_session_list() {
   else
     restore_pinned_sessions
   fi
-  raw=("${(@f)$(tmuxx list-sessions -F $'#{session_name}\t#{?session_attached,占用中,空闲}\t#{pane_current_command}\t#{pane_current_path}' 2>/dev/null)}")
-  (( ${#raw} )) || return 0
-  for line in "${raw[@]}"; do
-    [[ -n $line ]] && print -r -- "$line"
+  tmux_state_load
+  (( tm_server_up && ${#tm_names} )) || return 0
+  for n in "${tm_names[@]}"; do
+    if [[ ${tm_att[$n]:-0} == 1 ]]; then
+      att=占用中
+    else
+      att=空闲
+    fi
+    print -r -- "${n}"$'\t'"${att}"$'\t'"${tm_cmd[$n]:-}"$'\t'"${tm_path[$n]:-}"
   done
 }
 
@@ -5063,7 +5316,7 @@ if [[ ${1:-} == --new-session ]]; then
     print -u2 "这台机器上没有 tmux。"
     exit 1
   fi
-  if tmuxx has-session -t "=$name" 2>/dev/null; then
+  if tmux_session_live "$name"; then
     exit 0
   fi
   create_named_session "$name" || exit 1
