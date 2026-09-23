@@ -65,6 +65,14 @@ stamp_boot=
 stamp_token=
 stamp_gen=
 did_restore=0
+# Interactive boot only. CLI restore stays silent.
+restore_show_progress=0
+restore_progress_on=0
+restore_progress_index=0
+restore_progress_total=0
+restore_progress_name=
+restore_boot_notice=
+typeset -a pending_restore_names restore_progress_failed restore_created_names
 attach_shell_only=0
 ghostty_close_others=0
 open_target=auto
@@ -530,9 +538,14 @@ on_exit() {
 }
 
 # WINCH: session list draw only while the list is on screen.
+# During pin restore, redraw the progress screen instead of the empty list.
 draw_on_winch() {
   (( list_active )) || return 0
   [[ $loading -eq 1 ]] && return 0
+  if (( restore_progress_on )); then
+    draw_restore_progress
+    return 0
+  fi
   draw
 }
 
@@ -1725,6 +1738,38 @@ prepare_pin_state() {
   refresh_pin_cwds
 }
 
+# Create one missing pin. Existing sessions are only marked. Progress text
+# is drawn when restore_show_progress is set (interactive boot).
+restore_one_missing_session() {
+  local name=$1 cwd=$2
+  local -i ok=0
+  if tmuxx has-session -t "=$name" 2>/dev/null; then
+    pin_record_exists "$name" && tmux_set_pinned "$name" 1
+    return 0
+  fi
+  if (( restore_show_progress )); then
+    restore_progress_index=$(( restore_progress_index + 1 ))
+    restore_progress_name=$name
+    draw_restore_progress
+  fi
+  if [[ -n $cwd ]]; then
+    tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null && ok=1
+  fi
+  if (( ! ok )); then
+    tmuxx new-session -d -s "$name" 2>/dev/null && ok=1
+  fi
+  if (( ok )); then
+    pin_record_exists "$name" && tmux_set_pinned "$name" 1
+    (( restore_show_progress )) && restore_created_names+=("$name")
+    return 0
+  fi
+  if (( restore_show_progress )); then
+    restore_progress_failed+=("$name")
+    draw_restore_progress
+  fi
+  return 1
+}
+
 restore_pinned_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   prepare_pin_state
@@ -1734,18 +1779,8 @@ restore_pinned_sessions() {
     [[ -n $name ]] || continue
     numeric_session_name "$name" && continue
     lanjump_foreign_session "$name" && continue
-    if tmuxx has-session -t "=$name" 2>/dev/null; then
-      tmux_set_pinned "$name" 1
-      continue
-    fi
     cwd=$(resolve_session_cwd "$name")
-    if [[ -n $cwd ]]; then
-      tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || \
-        tmuxx new-session -d -s "$name" 2>/dev/null || continue
-    else
-      tmuxx new-session -d -s "$name" 2>/dev/null || continue
-    fi
-    tmux_set_pinned "$name" 1
+    restore_one_missing_session "$name" "$cwd" || continue
   done
   tmux_server_running && tmux_install_snapshot_hooks
 }
@@ -2545,18 +2580,8 @@ restore_saved_sessions() {
   collect_restore_names
   local name cwd
   for name in "${restore_names[@]}"; do
-    if tmuxx has-session -t "=$name" 2>/dev/null; then
-      pin_record_exists "$name" && tmux_set_pinned "$name" 1
-      continue
-    fi
     cwd=${restore_cwd[$name]:-}
-    if [[ -n $cwd ]]; then
-      tmuxx new-session -d -s "$name" -c "$cwd" 2>/dev/null || \
-        tmuxx new-session -d -s "$name" 2>/dev/null || continue
-    else
-      tmuxx new-session -d -s "$name" 2>/dev/null || continue
-    fi
-    pin_record_exists "$name" && tmux_set_pinned "$name" 1
+    restore_one_missing_session "$name" "$cwd" || continue
   done
   tmux_server_running && tmux_install_snapshot_hooks
 }
@@ -3304,8 +3329,10 @@ maybe_restore_sessions() {
   fi
 }
 
-# First paint is settings/filter + load_items + setup_tty + draw.
-# Restore, Ghostty, and tmux key/color setup wait until the list is on screen.
+# No pending pins: settings/filter + load_items + setup_tty + the session list.
+# Pending pins: same prefix, then a progress screen instead of the empty list.
+# Restore runs after that first paint. The step array is the no-pending path;
+# draw is last and is swapped when pins are missing.
 typeset -a picker_boot_before_first_draw_steps picker_boot_after_first_draw_steps
 picker_boot_before_first_draw_steps=(load_settings load_session_filter load_items setup_tty draw)
 picker_boot_after_first_draw_steps=(maybe_restore_sessions tmux_prepare_color tmux_prepare_keys)
@@ -3317,18 +3344,114 @@ picker_run_named_steps() {
   done
 }
 
+# Pins that still need a tmux session. Skips numeric names and bmx-*.
+restore_boot_pending() {
+  local n
+  pending_restore_names=()
+  [[ $HAS_TMUX -eq 1 ]] || return 1
+  load_pinned_sessions
+  load_session_snapshot
+  collect_restore_names
+  for n in "${restore_names[@]}"; do
+    tmuxx has-session -t "=$n" 2>/dev/null && continue
+    pending_restore_names+=("$n")
+  done
+  (( ${#pending_restore_names} ))
+}
+
+draw_restore_progress() {
+  local fail
+  print -n $'\e[H\e[J'
+  print -r -- "  ${c_bold}正在恢复常驻 session${c_reset}"
+  print -r -- ""
+  if (( restore_progress_index > 0 )); then
+    print -r -- "  ${restore_progress_index}/${restore_progress_total}  ${restore_progress_name}"
+  else
+    print -r -- "  0/${restore_progress_total}"
+  fi
+  for fail in "${restore_progress_failed[@]}"; do
+    print -r -- "  失败  ${fail}"
+  done
+}
+
+# Drop keypresses typed while the progress screen was up, so a buffered
+# Enter cannot create a session the moment the list appears.
+drain_pending_keys() {
+  local junk
+  [[ -t 0 ]] || return 0
+  while IFS= read -rsk 1 -t 0 junk; do
+    :
+  done
+  return 0
+}
+
+# Prefer the last session the user entered, when this boot recreated it.
+place_restored_cursor() {
+  local last n
+  local -i i
+  (( ${#restore_created_names} )) || return 0
+  last=$(read_last_session_name 2>/dev/null) || last=
+  if [[ -n $last ]]; then
+    for n in "${restore_created_names[@]}"; do
+      [[ $n == $last ]] || continue
+      for (( i = 1; i <= ${#items_id}; i++ )); do
+        if [[ ${items_id[$i]} == $last ]]; then
+          cursor=$i
+          return 0
+        fi
+      done
+    done
+  fi
+  for (( i = 1; i <= ${#items_id}; i++ )); do
+    for n in "${restore_created_names[@]}"; do
+      if [[ ${items_id[$i]} == $n ]]; then
+        cursor=$i
+        return 0
+      fi
+    done
+  fi
+}
+
 picker_boot_before_first_draw() {
   filter_on=0
-  picker_run_named_steps "${picker_boot_before_first_draw_steps[@]}"
+  picker_run_named_steps "${(@)picker_boot_before_first_draw_steps[1,-2]}"
+  if restore_boot_pending; then
+    restore_show_progress=1
+    restore_progress_on=1
+    restore_progress_total=${#pending_restore_names}
+    restore_progress_index=0
+    restore_progress_name=
+    restore_progress_failed=()
+    restore_created_names=()
+    restore_boot_notice=
+    draw_restore_progress
+  else
+    restore_show_progress=0
+    restore_progress_on=0
+    restore_boot_notice=
+    draw
+  fi
 }
 
 picker_boot_after_first_draw() {
   local saved_stty=${stty_orig:-} before
+  local -i showed=$restore_show_progress
   before=${(j:\0:)items_id}
   picker_run_named_steps "${picker_boot_after_first_draw_steps[@]}"
   [[ -n $saved_stty ]] && stty_orig=$saved_stty
   load_items
-  if [[ ${(j:\0:)items_id} != "$before" ]]; then
+  if (( showed )); then
+    drain_pending_keys
+    restore_show_progress=0
+    restore_progress_on=0
+    if (( ${#restore_progress_failed} )); then
+      restore_boot_notice="已恢复 ${#restore_created_names} 个，失败 ${#restore_progress_failed} 个"
+    else
+      restore_boot_notice="已恢复 ${#restore_created_names} 个"
+    fi
+    place_restored_cursor
+    draw
+  elif [[ ${(j:\0:)items_id} != "$before" ]]; then
     draw
   fi
 }
@@ -4092,6 +4215,9 @@ draw() {
     title+="  ${c_dim}${filter_match_count}/${filter_total_count}${c_reset}"
   fi
   draw_emit "$title" || return
+  if [[ -n $restore_boot_notice ]]; then
+    draw_emit "  ${c_dim}${restore_boot_notice}${c_reset}" || return
+  fi
   draw_help $cols || return
   draw_emit "" || return
 

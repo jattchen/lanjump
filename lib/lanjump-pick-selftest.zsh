@@ -4853,6 +4853,11 @@ pick_selftest() {
     boot_calls+=(load_items)
     _boot_orig_load_items
   }
+  # No pins: tmux down still paints the empty list, cursor row is 新建.
+  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
   boot_calls=()
   HAS_TMUX=1
   items_id=()
@@ -4862,6 +4867,152 @@ pick_selftest() {
   expect boot/first-paint-empty-steps 'load_settings load_session_filter load_items setup_tty draw' "${boot_calls[*]}"
 
   boot_restore
+
+  # Missing pins: progress screen first, then the list with a count.
+  # A failed create is skipped. Cursor prefers the last entered session.
+  {
+    typeset -A progress_live
+    progress_live=()
+    print -r -- $'name alpha\ncwd /tmp/alpha\n\nname beta\ncwd /tmp/beta\n\nname gamma\ncwd /tmp/gamma\n' \
+      >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    print -r -- beta >"$HOME/Library/Application Support/lanjump/last-session"
+    : >"$tmux_log"
+    tmuxx() {
+      print -r -- "$*" >>"$tmux_log"
+      case $1 in
+        has-session)
+          [[ $2 == -t ]] || return 1
+          (( ${progress_live[${3#=}]:-0} )) && return 0
+          return 1
+          ;;
+        new-session)
+          [[ $* == *' -s gamma'* ]] && return 1
+          local -a args
+          args=("$@")
+          local idx=${args[(I)-s]}
+          (( idx && idx < $#args )) && progress_live[${args[idx+1]}]=1
+          return 0
+          ;;
+        list-sessions)
+          if [[ $* == *session_activity* ]]; then
+            local n
+            for n in "${(@k)progress_live}"; do
+              print -r -- "200"$'\x1f'"$n"$'\x1f'"1"$'\x1f'"0"$'\x1f'"/tmp/$n"$'\x1f'"zsh"$'\x1f'"$n"$'\x1f'"zsh"
+            done
+          fi
+          (( ${#progress_live} ))
+          ;;
+        *) return 0 ;;
+      esac
+    }
+    local progress_out progress_after restore_log bi i
+    progress_out=$(picker_boot_before_first_draw 2>&1)
+    if [[ $progress_out != *'正在恢复常驻 session'* || $progress_out != *'0/3'* ]]; then
+      print -u2 "FAIL progress/first-paint got=$(printf %q "$progress_out")"
+      (( fails++ ))
+    fi
+    if [[ $progress_out == *'新建 session'* ]]; then
+      print -u2 "FAIL progress/first-paint showed the empty list"
+      (( fails++ ))
+    fi
+    progress_after=$(picker_boot_after_first_draw 2>&1)
+    if [[ $progress_after != *'1/3  alpha'* || $progress_after != *'3/3  gamma'* ]]; then
+      print -u2 "FAIL progress/steps got=$(printf %q "$progress_after")"
+      (( fails++ ))
+    fi
+    if [[ $progress_after != *'失败  gamma'* ]]; then
+      print -u2 "FAIL progress/fail-line got=$(printf %q "$progress_after")"
+      (( fails++ ))
+    fi
+    if [[ $progress_after != *'已恢复 2 个，失败 1 个'* ]]; then
+      print -u2 "FAIL progress/notice got=$(printf %q "$progress_after")"
+      (( fails++ ))
+    fi
+    if [[ ${functions[draw_restore_progress]} == *sleep* || ${functions[restore_one_missing_session]} == *sleep* || ${functions[picker_boot_after_first_draw]} == *sleep* ]]; then
+      print -u2 "FAIL progress/no-extra-pause contains sleep"
+      (( fails++ ))
+    fi
+    bi=0
+    for (( i = 1; i <= ${#items_id}; i++ )); do
+      [[ ${items_id[$i]} == beta ]] && bi=$i
+    done
+    if (( bi == 0 )) || [[ $cursor != $bi || ${items_kind[$cursor]} != session ]]; then
+      print -u2 "FAIL progress/cursor want beta at $bi got cursor=$cursor id=${items_id[$cursor]:-} kind=${items_kind[$cursor]:-}"
+      (( fails++ ))
+    fi
+    restore_log=$(<"$tmux_log")
+    if [[ $restore_log != *'new-session -d -s alpha -c /tmp/alpha'* || $restore_log != *'new-session -d -s beta -c /tmp/beta'* ]]; then
+      print -u2 "FAIL progress/create got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    if [[ $restore_log == *'new-session -d -s gamma -c /tmp/gamma'* && $restore_log != *'new-session -d -s gamma'* ]]; then
+      :
+    fi
+    if [[ $restore_log != *'new-session -d -s gamma'* ]]; then
+      print -u2 "FAIL progress/gamma-attempted got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+
+    # One pin already live: progress counts only the missing one, and does
+    # not take the old full-restore prompt path.
+    progress_live=()
+    progress_live[alpha]=1
+    print -r -- $'name alpha\ncwd /tmp/alpha\n\nname beta\ncwd /tmp/beta\n' \
+      >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    : >"$tmux_log"
+    progress_out=$(picker_boot_before_first_draw 2>&1)
+    if [[ $progress_out != *'0/1'* || $progress_out == *'0/2'* ]]; then
+      print -u2 "FAIL progress/partial-count got=$(printf %q "$progress_out")"
+      (( fails++ ))
+    fi
+    progress_after=$(picker_boot_after_first_draw 2>&1)
+    restore_log=$(<"$tmux_log")
+    if [[ $progress_after != *'已恢复 1 个'* || $progress_after == *'失败'* ]]; then
+      print -u2 "FAIL progress/partial-notice got=$(printf %q "$progress_after")"
+      (( fails++ ))
+    fi
+    if [[ $restore_log == *'new-session -d -s alpha'* || $restore_log != *'new-session -d -s beta -c /tmp/beta'* ]]; then
+      print -u2 "FAIL progress/partial-create got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    if (( did_restore )); then
+      print -u2 "FAIL progress/partial-prompt did_restore=$did_restore"
+      (( fails++ ))
+    fi
+
+    # CLI / direct restore stays silent.
+    restore_show_progress=0
+    restore_progress_on=0
+    progress_live=()
+    progress_out=$(restore_pinned_sessions 2>&1)
+    if [[ $progress_out == *'正在恢复常驻 session'* ]]; then
+      print -u2 "FAIL progress/silent-cli got=$(printf %q "$progress_out")"
+      (( fails++ ))
+    fi
+
+    # WINCH during progress redraws the progress screen, not the list.
+    local _pw_list _pw_prog
+    _pw_list=0
+    _pw_prog=0
+    functions -c draw _progress_save_draw
+    functions -c draw_restore_progress _progress_save_progress
+    draw() { (( ++_pw_list )) }
+    draw_restore_progress() { (( ++_pw_prog )) }
+    list_active=1
+    loading=0
+    restore_progress_on=1
+    draw_on_winch
+    if (( _pw_list || _pw_prog != 1 )); then
+      print -u2 "FAIL progress/winch list=$_pw_list progress=$_pw_prog"
+      (( fails++ ))
+    fi
+    functions -c _progress_save_draw draw
+    functions -c _progress_save_progress draw_restore_progress
+    unset -f _progress_save_draw _progress_save_progress
+    restore_progress_on=0
+    list_active=0
+    restore_tty >/dev/null 2>&1 || true
+  }
 
   HOME=$oldhome
   rm -rf "$testhome"
