@@ -2163,29 +2163,36 @@ if sid:
 }
 
 # Write a pin's directory only when the live path changed.
-# Once per tmux_state_gen. The census is loaded before the pin lock;
-# the locked body re-reads the pin file and merges (#314/#333).
+# Once per tmux_state_gen. Paths are copied before the pin lock.
+# The locked body re-reads the pin file and merges (#314/#333).
 refresh_pin_cwds() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  tmux_state_load
-  (( tm_server_up )) || return 0
-  (( pin_cwd_refreshed_gen == tm_state_gen )) && return 0
-  local st=0
+  local st=0 name live
+  local -i changed=0
   if [[ -z ${_LANJUMP_PIN_LOCKED:-} ]]; then
+    tmux_state_load
+    (( tm_server_up )) || return 0
+    (( pin_cwd_refreshed_gen == tm_state_gen )) && return 0
+    typeset -gA _pin_merge_path
+    typeset -g _pin_merge_gen
+    _pin_merge_path=()
+    for name in "${tm_names[@]}"; do
+      [[ -n $name ]] || continue
+      (( ${tm_live[$name]:-0} )) || continue
+      _pin_merge_path[$name]=${tm_path[$name]:-}
+    done
+    _pin_merge_gen=$tm_state_gen
     pinned_sessions_file
     _LANJUMP_PIN_LOCKED=1
     with_data_file_lock "$REPLY" refresh_pin_cwds
     st=$?
-    unset _LANJUMP_PIN_LOCKED
+    unset _LANJUMP_PIN_LOCKED _pin_merge_gen _pin_merge_path
     return $st
   fi
   load_pinned_sessions
-  local name live
-  local -i changed=0
   for name in "${pinned_names[@]}"; do
     [[ -n $name ]] || continue
-    (( ${tm_live[$name]:-0} )) || continue
-    live=${tm_path[$name]:-}
+    live=${_pin_merge_path[$name]:-}
     [[ -n $live ]] || continue
     # A pane sitting in $HOME is the default, not a move off the project.
     cwd_is_home "$live" && [[ -n ${pinned_cwd[$name]:-} ]] && continue
@@ -2196,7 +2203,7 @@ refresh_pin_cwds() {
   if (( changed )); then
     save_pinned_sessions || return 1
   fi
-  pin_cwd_refreshed_gen=$tm_state_gen
+  pin_cwd_refreshed_gen=$_pin_merge_gen
 }
 
 # Settings, live cwd, and the detach hook before any restore decision.
@@ -2497,18 +2504,31 @@ session_in_workspace() {
   [[ ${snap_workspace[$n]:-${snap_occupied[$n]:-0}} == 1 ]]
 }
 
-# list-sessions stays in this lock until #463's cache exists. Do not invent
-# that cache here. The reload-and-merge below stays inside the lock (#314/#333).
+# Census is copied before the snapshot lock. The locked body re-reads
+# the snapshot and merges (#314/#333).
 snapshot_live_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  tmux_server_running || return 0
-  local st=0
+  local st=0 name
   if [[ -z ${_LANJUMP_SNAP_LOCKED:-} ]]; then
+    tmux_server_running || return 0
+    typeset -gA _snap_merge_path _snap_merge_att _snap_merge_cmd
+    typeset -ga _snap_merge_names
+    _snap_merge_names=("${tm_names[@]}")
+    _snap_merge_path=()
+    _snap_merge_att=()
+    _snap_merge_cmd=()
+    for name in "${tm_names[@]}"; do
+      [[ -n $name ]] || continue
+      _snap_merge_path[$name]=${tm_path[$name]:-}
+      _snap_merge_att[$name]=${tm_att[$name]:-0}
+      _snap_merge_cmd[$name]=${tm_cmd[$name]:-}
+    done
     session_snapshot_file
     _LANJUMP_SNAP_LOCKED=1
     with_data_file_lock "$REPLY" snapshot_live_sessions
     st=$?
     unset _LANJUMP_SNAP_LOCKED
+    unset _snap_merge_names _snap_merge_path _snap_merge_att _snap_merge_cmd
     return $st
   fi
   local line name cwd att cmd
@@ -2548,12 +2568,10 @@ snapshot_live_sessions() {
   snap_workspace=()
   snap_cmd=()
   snap_attached=()
-  # Census already loaded by tmux_server_running above. #467 reads it
-  # outside this lock; do not list-sessions again while holding it.
-  for name in "${tm_names[@]}"; do
-    cwd=${tm_path[$name]:-}
-    att=${tm_att[$name]:-0}
-    cmd=${tm_cmd[$name]:-}
+  for name in "${_snap_merge_names[@]}"; do
+    cwd=${_snap_merge_path[$name]:-}
+    att=${_snap_merge_att[$name]:-0}
+    cmd=${_snap_merge_cmd[$name]:-}
     [[ -n $name ]] || continue
     snap_names+=("$name")
     # resolve skips $HOME; keep the previous recorded cwd across that skip.
@@ -2594,24 +2612,31 @@ snapshot_live_sessions() {
 }
 
 mark_snapshot_occupied() {
-  local name=$1 cwd cmd target st=0
+  local name=$1 cwd cmd file st=0
   [[ -n $name ]] || return 0
   if [[ -z ${_LANJUMP_SNAP_LOCKED:-} ]]; then
+    tmux_session_path "$name"
+    cwd=${REPLY:-}
+    tmux_session_cmd "$name"
+    cmd=${REPLY:-}
     session_snapshot_file
+    file=$REPLY
+    typeset -g _snap_mark_cwd=$cwd _snap_mark_cmd=$cmd
     _LANJUMP_SNAP_LOCKED=1
-    with_data_file_lock "$REPLY" mark_snapshot_occupied "$name"
+    with_data_file_lock "$file" mark_snapshot_occupied "$name"
     st=$?
     unset _LANJUMP_SNAP_LOCKED
+    # Pin lock is taken only after the snapshot lock is gone.
+    if (( st == 0 )) && pin_record_exists "$name"; then
+      refresh_pin_cwds
+      st=$?
+    fi
+    unset _snap_mark_cwd _snap_mark_cmd
     return $st
   fi
   load_session_snapshot
-  # #467: these two reads still run under the snap lock. tmux_session_path
-  # and tmux_session_cmd already hold the census; move the reads out with
-  # the lock split.
-  target=$(session_pane_target "$name")
-  # display-message stays here until #463's cache exists (#314/#333).
-  cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
-  cmd=$(tmuxx display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
+  cwd=${_snap_mark_cwd:-}
+  cmd=${_snap_mark_cmd:-}
   if (( ${snap_names[(Ie)$name]} == 0 )); then
     snap_names+=("$name")
   fi
@@ -2621,7 +2646,6 @@ mark_snapshot_occupied() {
   snap_workspace[$name]=1
   snap_attached[$name]=$EPOCHSECONDS
   save_session_snapshot
-  pin_record_exists "$name" && refresh_pin_cwds
 }
 
 collect_restore_names() {

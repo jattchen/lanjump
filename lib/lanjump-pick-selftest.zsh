@@ -8270,6 +8270,58 @@ zsystem flock -u fd
     (( fails++ ))
   fi
   rm -rf "$lock467_se"
+
+  # Census is read before the pin and snapshot locks. tmuxx inside either lock is a failure.
+  local lock467_hold_home lock467_hold_saved
+  local -i lock467_hold_hits=0 lock467_hold_has=$HAS_TMUX lock467_hold_gen=$pin_cwd_refreshed_gen
+  lock467_hold_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-467-hold.XXXXXX") || return 1
+  lock467_hold_saved=$HOME
+  functions -c tmuxx _lock467_hold_tmuxx
+  tmuxx() {
+    if (( ${_LANJUMP_PIN_LOCKED:-0} || ${_LANJUMP_SNAP_LOCKED:-0} )); then
+      lock467_hold_hits+=1
+    fi
+    case $1 in
+      list-sessions)
+        print -r -- $'100\x1fdemo\x1f1\x1f0\x1f/tmp/demo\x1fdemo\x1ftitle\x1fzsh'
+        return 0
+        ;;
+    esac
+    return 0
+  }
+  HAS_TMUX=1
+  HOME=$lock467_hold_home
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  add_pin_record demo /old
+  tmux_state_invalidate
+  pin_cwd_refreshed_gen=-1
+  refresh_pin_cwds
+  load_pinned_sessions
+  if [[ ${pinned_cwd[demo]:-} != /tmp/demo ]]; then
+    print -u2 "FAIL lock/no-tmux-held pin cwd=$(printf %q "${pinned_cwd[demo]:-}")"
+    (( fails++ ))
+  fi
+  snapshot_live_sessions
+  mark_snapshot_occupied demo
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)demo]} -eq 0 || ${snap_cmd[demo]:-} != zsh || ${snap_occupied[demo]:-} != 1 ]]; then
+    print -u2 "FAIL lock/no-tmux-held snap names=${snap_names[*]} cmd=${snap_cmd[demo]:-} occ=${snap_occupied[demo]:-}"
+    (( fails++ ))
+  fi
+  if (( lock467_hold_hits != 0 )); then
+    print -u2 "FAIL lock/no-tmux-held tmuxx during lock count=$lock467_hold_hits"
+    (( fails++ ))
+  fi
+  functions -c _lock467_hold_tmuxx tmuxx
+  unset -f _lock467_hold_tmuxx
+  tmux_state_invalidate
+  HAS_TMUX=$lock467_hold_has
+  pin_cwd_refreshed_gen=$lock467_hold_gen
+  HOME=$lock467_hold_saved
+  rm -rf "$lock467_hold_home"
   unset -f extract_lock_fn
 
   if (( fails )); then
