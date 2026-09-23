@@ -3409,7 +3409,7 @@ place_restored_cursor() {
         return 0
       fi
     done
-  fi
+  done
 }
 
 picker_boot_before_first_draw() {

@@ -4905,17 +4905,27 @@ pick_selftest() {
         *) return 0 ;;
       esac
     }
-    local progress_out progress_after restore_log bi i
-    progress_out=$(picker_boot_before_first_draw 2>&1)
-    if [[ $progress_out != *'正在恢复常驻 session'* || $progress_out != *'0/3'* ]]; then
-      print -u2 "FAIL progress/first-paint got=$(printf %q "$progress_out")"
+    local progress_out progress_before progress_after restore_log
+    # Both paints must run in one process. Separate command substitutions
+    # would drop restore_show_progress before the list is drawn.
+    progress_out=$(
+      picker_boot_before_first_draw
+      print -r -- $'\n---AFTER---'
+      picker_boot_after_first_draw
+      print -r -- $'\n---CURSOR---'
+      print -r -- "${items_kind[$cursor]:-} ${items_id[$cursor]:-}"
+    )
+    progress_before=${progress_out%%$'\n---AFTER---'*}
+    progress_after=${progress_out#*$'\n---AFTER---'}
+    progress_after=${progress_after%%$'\n---CURSOR---'*}
+    if [[ $progress_before != *'正在恢复常驻 session'* || $progress_before != *'0/3'* ]]; then
+      print -u2 "FAIL progress/first-paint got=$(printf %q "$progress_before")"
       (( fails++ ))
     fi
-    if [[ $progress_out == *'新建 session'* ]]; then
+    if [[ $progress_before == *'新建 session'* ]]; then
       print -u2 "FAIL progress/first-paint showed the empty list"
       (( fails++ ))
     fi
-    progress_after=$(picker_boot_after_first_draw 2>&1)
     if [[ $progress_after != *'1/3  alpha'* || $progress_after != *'3/3  gamma'* ]]; then
       print -u2 "FAIL progress/steps got=$(printf %q "$progress_after")"
       (( fails++ ))
@@ -4932,12 +4942,8 @@ pick_selftest() {
       print -u2 "FAIL progress/no-extra-pause contains sleep"
       (( fails++ ))
     fi
-    bi=0
-    for (( i = 1; i <= ${#items_id}; i++ )); do
-      [[ ${items_id[$i]} == beta ]] && bi=$i
-    done
-    if (( bi == 0 )) || [[ $cursor != $bi || ${items_kind[$cursor]} != session ]]; then
-      print -u2 "FAIL progress/cursor want beta at $bi got cursor=$cursor id=${items_id[$cursor]:-} kind=${items_kind[$cursor]:-}"
+    if [[ ${progress_out##*$'\n---CURSOR---'} != *'session beta'* ]]; then
+      print -u2 "FAIL progress/cursor got=$(printf %q "${progress_out##*$'\n---CURSOR---'}")"
       (( fails++ ))
     fi
     restore_log=$(<"$tmux_log")
@@ -4960,12 +4966,20 @@ pick_selftest() {
     print -r -- $'name alpha\ncwd /tmp/alpha\n\nname beta\ncwd /tmp/beta\n' \
       >"$HOME/Library/Application Support/lanjump/pinned-sessions"
     : >"$tmux_log"
-    progress_out=$(picker_boot_before_first_draw 2>&1)
-    if [[ $progress_out != *'0/1'* || $progress_out == *'0/2'* ]]; then
-      print -u2 "FAIL progress/partial-count got=$(printf %q "$progress_out")"
+    progress_out=$(
+      picker_boot_before_first_draw
+      print -r -- $'\n---AFTER---'
+      picker_boot_after_first_draw
+      print -r -- $'\n---DID---'
+      print -r -- "$did_restore"
+    )
+    progress_before=${progress_out%%$'\n---AFTER---'*}
+    progress_after=${progress_out#*$'\n---AFTER---'}
+    progress_after=${progress_after%%$'\n---DID---'*}
+    if [[ $progress_before != *'0/1'* || $progress_before == *'0/2'* ]]; then
+      print -u2 "FAIL progress/partial-count got=$(printf %q "$progress_before")"
       (( fails++ ))
     fi
-    progress_after=$(picker_boot_after_first_draw 2>&1)
     restore_log=$(<"$tmux_log")
     if [[ $progress_after != *'已恢复 1 个'* || $progress_after == *'失败'* ]]; then
       print -u2 "FAIL progress/partial-notice got=$(printf %q "$progress_after")"
@@ -4975,8 +4989,8 @@ pick_selftest() {
       print -u2 "FAIL progress/partial-create got=$(printf %q "$restore_log")"
       (( fails++ ))
     fi
-    if (( did_restore )); then
-      print -u2 "FAIL progress/partial-prompt did_restore=$did_restore"
+    if [[ ${progress_out##*$'\n---DID---'} != *0* ]]; then
+      print -u2 "FAIL progress/partial-prompt got=$(printf %q "${progress_out##*$'\n---DID---'}")"
       (( fails++ ))
     fi
 
