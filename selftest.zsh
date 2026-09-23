@@ -6,8 +6,7 @@
 # lib/lanjump-keys-selftest.zsh; that file is the same kind of regression
 # (C helper and Python fallback) and runs here too.
 #
-# Not here, so other issues can edit those suites alone:
-#   #462 fake osascript inside upgrade-selftest
+# Not in this branch yet, so those issues can add their own assertions:
 #   #463 / #464 tmux call budgets inside pick-selftest
 #   #466 dns-sd early-stop inside host-selftest
 emulate zsh
