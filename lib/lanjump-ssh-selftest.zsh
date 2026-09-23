@@ -1469,20 +1469,20 @@ EOF
   print -r -- 0 >"$tmpdir/ssh_n"
   TERM=xterm-ghostty
   sync_picker host.local mac
-  if [[ $(<"$tmpdir/ssh_n") != 2 ]]; then
-    print -u2 "FAIL ssh/sync-picker-terminfo/count got=$(<"$tmpdir/ssh_n") want=2"
+  if [[ $(<"$tmpdir/ssh_n") != 3 ]]; then
+    print -u2 "FAIL ssh/sync-picker-terminfo/count got=$(<"$tmpdir/ssh_n") want=3"
     (( fails++ ))
   fi
-  if [[ $(<"$tmpdir/ssh_stdin_1") != picker-src ]]; then
-    print -u2 "FAIL ssh/sync-picker-terminfo/picker got=$(printf %q "$(<"$tmpdir/ssh_stdin_1")")"
+  if [[ $(<"$tmpdir/ssh_stdin_2") != picker-src ]]; then
+    print -u2 "FAIL ssh/sync-picker-terminfo/picker got=$(printf %q "$(<"$tmpdir/ssh_stdin_2")")"
     (( fails++ ))
   fi
-  if [[ $(<"$tmpdir/ssh_args_2") != *tic* ]]; then
-    print -u2 "FAIL ssh/sync-picker-terminfo/tic got=$(printf %q "$(<"$tmpdir/ssh_args_2")")"
+  if [[ $(<"$tmpdir/ssh_args_3") != *tic* ]]; then
+    print -u2 "FAIL ssh/sync-picker-terminfo/tic got=$(printf %q "$(<"$tmpdir/ssh_args_3")")"
     (( fails++ ))
   fi
-  if [[ $(<"$tmpdir/ssh_stdin_2") != terminfo-src-xterm-ghostty ]]; then
-    print -u2 "FAIL ssh/sync-picker-terminfo/src got=$(printf %q "$(<"$tmpdir/ssh_stdin_2")")"
+  if [[ $(<"$tmpdir/ssh_stdin_3") != terminfo-src-xterm-ghostty ]]; then
+    print -u2 "FAIL ssh/sync-picker-terminfo/src got=$(printf %q "$(<"$tmpdir/ssh_stdin_3")")"
     (( fails++ ))
   fi
 
@@ -1708,7 +1708,7 @@ EOF
     : >"$tmpdir/ssh465_upload"
     rm -f "$tmpdir/ssh465_master" "$tmpdir/ssh465_pw" "$tmpdir/ssh465_pw_done" \
       "$tmpdir/ssh465_verify_fail" "$tmpdir/ssh465_err" "$tmpdir/ssh465_remote_ver" \
-      "$tmpdir/ssh465_mode"
+      "$tmpdir/ssh465_remote_sha" "$tmpdir/ssh465_mode"
     SSH_MUX_DISABLED=0
     SSH_MUX_OPTS=()
   }
@@ -1763,10 +1763,15 @@ if [[ \$cmd == f=* ]]; then
   if [[ \$mode == probe-fail ]]; then
     exit 255
   fi
+  if [[ -f "$tmpdir/ssh465_remote_sha" ]]; then
+    print -r -- "\$(<"$tmpdir/ssh465_remote_sha")"
+  else
+    print
+  fi
   if [[ -f "$tmpdir/ssh465_remote_ver" ]]; then
     print -r -- "\$(<"$tmpdir/ssh465_remote_ver")"
   else
-    print -r -- 200
+    print
   fi
   exit 0
 fi
@@ -1959,8 +1964,36 @@ EOF
   ssh465_reset
   st=0
   sync_picker host.local mac || st=$?
-  if (( st != 0 )) || [[ ! -s $tmpdir/ssh465_upload || $(<"$tmpdir/ssh465_args") == *'f="$HOME/.local/bin/lanjump-pick"'* ]]; then
-    print -u2 "FAIL ssh/picker-unversioned/upload st=$st args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+  if (( st != 0 )) || [[ ! -s $tmpdir/ssh465_upload || $(ssh465_args_n) != 2 ]]; then
+    print -u2 "FAIL ssh/picker-unversioned/upload st=$st calls=$(ssh465_args_n) upload=$(<"$tmpdir/ssh465_upload")"
+    (( fails++ ))
+  fi
+  ssh465_reset
+  print -r -- 'same-body' >"$PICKER"
+  shasum -a 256 "$PICKER" | awk '{print $1}' >"$tmpdir/ssh465_remote_sha"
+  st=0
+  sync_picker host.local mac || st=$?
+  if (( st != 0 )) || [[ -s $tmpdir/ssh465_upload || $(ssh465_args_n) != 1 ]]; then
+    print -u2 "FAIL ssh/picker-same-sha/skip st=$st calls=$(ssh465_args_n) upload=$(<"$tmpdir/ssh465_upload")"
+    (( fails++ ))
+  fi
+  ssh465_reset
+  print -r -- $'# lanjump-pick-version 100 local\nlocal-body' >"$PICKER"
+  print -r -- 200 >"$tmpdir/ssh465_remote_ver"
+  print -r -- '0000000000000000000000000000000000000000000000000000000000000000' >"$tmpdir/ssh465_remote_sha"
+  st=0
+  sync_picker host.local mac || st=$?
+  if (( st != 0 )) || [[ -s $tmpdir/ssh465_upload ]]; then
+    print -u2 "FAIL ssh/picker-sha-diff-remote-newer/skip st=$st upload=$(<"$tmpdir/ssh465_upload")"
+    (( fails++ ))
+  fi
+  ssh465_reset
+  print -r -- 100 >"$tmpdir/ssh465_remote_ver"
+  print -r -- '0000000000000000000000000000000000000000000000000000000000000000' >"$tmpdir/ssh465_remote_sha"
+  st=0
+  sync_picker host.local mac || st=$?
+  if (( st != 0 )) || [[ ! -s $tmpdir/ssh465_upload || $(ssh465_args_n) != 2 ]]; then
+    print -u2 "FAIL ssh/picker-same-ver-diff-sha/upload st=$st calls=$(ssh465_args_n) upload=$(<"$tmpdir/ssh465_upload")"
     (( fails++ ))
   fi
   print -r -- '# lanjump-pick-version 200 abc' >"$PICKER"

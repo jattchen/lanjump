@@ -2654,26 +2654,72 @@ sync_terminfo() {
     || true
 }
 
+# Lowercase 64-hex SHA256. shasum on macOS, sha256sum on Linux, openssl last.
+file_sha256() {
+  local file=$1 line hash
+  [[ -n $file && -f $file ]] || return 1
+  if command -v shasum >/dev/null 2>&1; then
+    line=$(shasum -a 256 "$file" 2>/dev/null) || return 1
+    hash=${line%%[[:space:]]*}
+  elif command -v sha256sum >/dev/null 2>&1; then
+    line=$(sha256sum "$file" 2>/dev/null) || return 1
+    hash=${line%%[[:space:]]*}
+  elif command -v openssl >/dev/null 2>&1; then
+    line=$(openssl dgst -sha256 "$file" 2>/dev/null) || return 1
+    hash=${line##*[[:space:]]}
+  else
+    return 1
+  fi
+  hash=${(L)hash}
+  [[ $hash == [0-9a-f](#c64) ]] || return 1
+  print -r -- "$hash"
+}
+
 sync_picker() {
   local target=$1 user=$2
-  local incoming_mtime local_ver remote_ver
-  # #465: a versioned picker asks for the remote header first and uploads
-  # the body only when this copy is newer. #286/#310 still decide inside
-  # the upload, in case the header check and the copy disagree.
+  local incoming_mtime local_ver remote_ver local_sha remote_sha remote_meta local_cmp
+  # #465: identical bytes skip the upload even when the picker has no
+  # version header. A higher remote version still blocks a downgrade.
+  # #286/#310 remain inside the upload as the second check.
   local_ver=""
+  local_sha=""
   if [[ -f $PICKER ]]; then
     local_ver=$(awk '/^# lanjump-pick-version / { print $3; exit }' "$PICKER" 2>/dev/null || true)
     [[ $local_ver == [0-9]## ]] || local_ver=""
+    local_sha=$(file_sha256 "$PICKER" 2>/dev/null || true)
+    [[ $local_sha == [0-9a-f](#c64) ]] || local_sha=""
   fi
-  if [[ -n $local_ver ]]; then
-    remote_ver=$(ssh_lanjump "${user}@${target}" 'f="$HOME/.local/bin/lanjump-pick"; if [ -f "$f" ]; then awk "/^# lanjump-pick-version / { print \$3; exit }" "$f"; fi') || return $?
-    remote_ver=${remote_ver//$'\r'/}
-    remote_ver=${remote_ver%%[[:space:]]*}
-    [[ $remote_ver == [0-9]## ]] || remote_ver=""
-    if [[ -n $remote_ver ]] && (( remote_ver >= local_ver )); then
-      sync_terminfo "$target" "$user"
-      return 0
-    fi
+  remote_meta=$(ssh_lanjump "${user}@${target}" 'f="$HOME/.local/bin/lanjump-pick"; if [ -f "$f" ]; then h=""; if command -v sha256sum >/dev/null 2>&1; then h=$(sha256sum "$f" | awk "{print \$1}"); elif command -v shasum >/dev/null 2>&1; then h=$(shasum -a 256 "$f" | awk "{print \$1}"); elif command -v openssl >/dev/null 2>&1; then h=$(openssl dgst -sha256 "$f" | awk "{print \$NF}"); fi; printf "%s\n" "$h"; v=$(awk "/^# lanjump-pick-version / { print \$3; exit }" "$f"); printf "%s\n" "$v"; fi') || return $?
+  remote_meta=${remote_meta//$'\r'/}
+  remote_sha=""
+  remote_ver=""
+  # A lone trailing newline is removed by the command substitution, so a
+  # hash with no version comes back as one line.
+  if [[ $remote_meta == *$'\n'* ]]; then
+    remote_sha=${remote_meta%%$'\n'*}
+    remote_ver=${remote_meta#*$'\n'}
+    remote_ver=${remote_ver%%$'\n'*}
+  elif [[ ${(L)remote_meta} == [0-9a-f](#c64) ]]; then
+    remote_sha=${(L)remote_meta}
+  elif [[ $remote_meta == [0-9]## ]]; then
+    remote_ver=$remote_meta
+  fi
+  remote_sha=${(L)remote_sha}
+  [[ $remote_sha == [0-9a-f](#c64) ]] || remote_sha=""
+  remote_ver=${remote_ver%%[[:space:]]*}
+  [[ $remote_ver == [0-9]## ]] || remote_ver=""
+  if [[ -n $local_sha && $local_sha == $remote_sha ]]; then
+    sync_terminfo "$target" "$user"
+    return 0
+  fi
+  local_cmp=${local_ver:-0}
+  if [[ -n $remote_ver ]] && (( remote_ver > local_cmp )); then
+    sync_terminfo "$target" "$user"
+    return 0
+  fi
+  if [[ -z $remote_sha && -n $local_ver && -n $remote_ver ]] && (( remote_ver >= local_ver )); then
+    sync_terminfo "$target" "$user"
+    return 0
   fi
   # #286: only replace the remote copy when this picker is newer.
   # #310: prefer the picker header stamp over two machines' file mtimes.
