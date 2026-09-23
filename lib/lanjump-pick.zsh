@@ -72,6 +72,7 @@ restore_progress_index=0
 restore_progress_total=0
 restore_progress_name=
 restore_boot_notice=
+notice=""
 typeset -a pending_restore_names restore_progress_failed restore_created_names
 attach_shell_only=0
 ghostty_close_others=0
@@ -1905,31 +1906,126 @@ replace_file_atomic() {
 }
 
 # Sidecar lock: dest is renamed by replace_file_atomic, so flock(dest) would
-# not serialize writers. Same-file load+replace must hold this (#276).
+# not serialize writers. Same-file load+replace must hold this (#276/#314).
+# flock waits at most 5s; LANJUMP_LOCK_NONBLOCK=1 does not wait. Timeout skips
+# this write. The mkdir fallback stores a pid and drops the dir if that pid
+# is gone, so a killed holder does not block the next writer.
 with_data_file_lock() {
   local dest=$1
   shift
-  local lock dir
-  local -i fd=-1 st=0 n=0
+  local lock dir base msg wait_s holder_pid pid held mtime
+  local -i fd=-1 st=0 n=0 budget=0 now=0
   dir=${dest:h}
   lock=${dest}.lock
-  mkdir -p "$dir"
-  [[ -e $lock ]] || : >"$lock"
-  if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
-    zsystem flock -f fd "$lock" || return 1
-    "$@"
-    st=$?
-    zsystem flock -u fd
-    return $st
+  base=${dest:t}
+  mkdir -p "$dir" || return 1
+  [[ -e $lock ]] || : >"$lock" || return 1
+  holder_pid=$$
+  if zmodload zsh/system 2>/dev/null; then
+    holder_pid=${sysparams[pid]}
   fi
-  while ! mkdir "${lock}.d" 2>/dev/null; do
-    sleep 0.05
-    (( ++n > 200 )) && return 1
-  done
-  "$@"
-  st=$?
-  rmdir "${lock}.d" 2>/dev/null
-  return $st
+  if [[ ${LANJUMP_LOCK_NONBLOCK:-0} == 1 ]]; then
+    wait_s=0
+  else
+    wait_s=${LANJUMP_LOCK_WAIT:-5}
+  fi
+  wait_s=$(( wait_s ))
+  if (( ${+_LANJUMP_LOCK_DENIED} == 0 )); then
+    typeset -gA _LANJUMP_LOCK_DENIED
+  fi
+  if (( ${_LANJUMP_LOCK_DENIED[$lock]:-0} )); then
+    wait_s=0
+  fi
+  _lanjump_lock_busy() {
+    local msg="另一个 lanjump 正在写 ${base}，稍后再试"
+    _LANJUMP_LOCK_DENIED[$lock]=1
+    [[ ${LANJUMP_LOCK_QUIET:-0} == 1 ]] && return 0
+    notice=$msg
+    if (( ${pick_interactive:-0} || ${host_list_active:-0} )); then
+      return 0
+    fi
+    [[ ${_LANJUMP_LOCK_TOLD:-} == "$msg" ]] && return 0
+    _LANJUMP_LOCK_TOLD=$msg
+    builtin print -u2 -- "$msg"
+  }
+  {
+    if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
+      zsystem flock -t "$wait_s" -i 0.05 -f fd "$lock" 2>/dev/null
+      st=$?
+      if (( st != 0 )); then
+        if (( st == 2 || wait_s == 0 )); then
+          _lanjump_lock_busy
+        fi
+        return $st
+      fi
+      if (( ${_LANJUMP_LOCK_DENIED[$lock]:-0} )); then
+        unset "_LANJUMP_LOCK_DENIED[$lock]"
+      fi
+      if [[ ${notice:-} == *"写 ${base}，"* ]]; then
+        notice=
+      fi
+      "$@"
+      st=$?
+      zsystem flock -u fd
+      return $st
+    fi
+    if (( wait_s == 0 )); then
+      budget=0
+    else
+      budget=$(( wait_s * 20 ))
+    fi
+    zmodload zsh/datetime 2>/dev/null || true
+    while true; do
+      if mkdir "${lock}.d" 2>/dev/null; then
+        if (( ${_LANJUMP_LOCK_DENIED[$lock]:-0} )); then
+          unset "_LANJUMP_LOCK_DENIED[$lock]"
+        fi
+        if [[ ${notice:-} == *"写 ${base}，"* ]]; then
+          notice=
+        fi
+        {
+          builtin print -r -- "$holder_pid" >"${lock}.d/pid" || true
+          "$@"
+          st=$?
+        } always {
+          rm -f "${lock}.d/pid" 2>/dev/null || true
+          rmdir "${lock}.d" 2>/dev/null || true
+        }
+        return $st
+      fi
+      pid=
+      if [[ -f ${lock}.d/pid ]]; then
+        pid=$(<"${lock}.d/pid") || pid=
+        pid=${pid%%$'\n'*}
+      fi
+      if [[ $pid == <-> ]] && ! kill -0 "$pid" 2>/dev/null; then
+        held=$(<"${lock}.d/pid" 2>/dev/null || true)
+        held=${held%%$'\n'*}
+        if [[ $held == "$pid" ]]; then
+          rm -f "${lock}.d/pid" 2>/dev/null || true
+          if rmdir "${lock}.d" 2>/dev/null; then
+            continue
+          fi
+        fi
+      elif [[ -z $pid ]] && (( ${+EPOCHSECONDS} )); then
+        mtime=$(stat -f %m "${lock}.d" 2>/dev/null || stat -c %Y "${lock}.d" 2>/dev/null || true)
+        now=$EPOCHSECONDS
+        if [[ $mtime == <-> ]] && (( now - mtime >= 1 )); then
+          if rmdir "${lock}.d" 2>/dev/null; then
+            continue
+          fi
+        fi
+      fi
+      if (( n >= budget )); then
+        _lanjump_lock_busy
+        return 2
+      fi
+      sleep 0.05
+      n=$(( n + 1 ))
+    done
+  } always {
+    unfunction _lanjump_lock_busy 2>/dev/null || true
+  }
 }
 
 save_pinned_sessions() {
@@ -2067,29 +2163,36 @@ if sid:
 }
 
 # Write a pin's directory only when the live path changed.
-# Once per tmux_state_gen. The census is loaded before the pin lock;
-# #467 keeps the locked body as re-read, merge, atomic write.
+# Once per tmux_state_gen. Paths are copied before the pin lock.
+# The locked body re-reads the pin file and merges (#314/#333).
 refresh_pin_cwds() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  tmux_state_load
-  (( tm_server_up )) || return 0
-  (( pin_cwd_refreshed_gen == tm_state_gen )) && return 0
-  local st=0
+  local st=0 name live
+  local -i changed=0
   if [[ -z ${_LANJUMP_PIN_LOCKED:-} ]]; then
+    tmux_state_load
+    (( tm_server_up )) || return 0
+    (( pin_cwd_refreshed_gen == tm_state_gen )) && return 0
+    typeset -gA _pin_merge_path
+    typeset -g _pin_merge_gen
+    _pin_merge_path=()
+    for name in "${tm_names[@]}"; do
+      [[ -n $name ]] || continue
+      (( ${tm_live[$name]:-0} )) || continue
+      _pin_merge_path[$name]=${tm_path[$name]:-}
+    done
+    _pin_merge_gen=$tm_state_gen
     pinned_sessions_file
     _LANJUMP_PIN_LOCKED=1
     with_data_file_lock "$REPLY" refresh_pin_cwds
     st=$?
-    unset _LANJUMP_PIN_LOCKED
+    unset _LANJUMP_PIN_LOCKED _pin_merge_gen _pin_merge_path
     return $st
   fi
   load_pinned_sessions
-  local name live
-  local -i changed=0
   for name in "${pinned_names[@]}"; do
     [[ -n $name ]] || continue
-    (( ${tm_live[$name]:-0} )) || continue
-    live=${tm_path[$name]:-}
+    live=${_pin_merge_path[$name]:-}
     [[ -n $live ]] || continue
     # A pane sitting in $HOME is the default, not a move off the project.
     cwd_is_home "$live" && [[ -n ${pinned_cwd[$name]:-} ]] && continue
@@ -2100,7 +2203,7 @@ refresh_pin_cwds() {
   if (( changed )); then
     save_pinned_sessions || return 1
   fi
-  pin_cwd_refreshed_gen=$tm_state_gen
+  pin_cwd_refreshed_gen=$_pin_merge_gen
 }
 
 # Settings, live cwd, and the detach hook before any restore decision.
@@ -2401,16 +2504,31 @@ session_in_workspace() {
   [[ ${snap_workspace[$n]:-${snap_occupied[$n]:-0}} == 1 ]]
 }
 
+# Census is copied before the snapshot lock. The locked body re-reads
+# the snapshot and merges (#314/#333).
 snapshot_live_sessions() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
-  tmux_server_running || return 0
-  local st=0
+  local st=0 name
   if [[ -z ${_LANJUMP_SNAP_LOCKED:-} ]]; then
+    tmux_server_running || return 0
+    typeset -gA _snap_merge_path _snap_merge_att _snap_merge_cmd
+    typeset -ga _snap_merge_names
+    _snap_merge_names=("${tm_names[@]}")
+    _snap_merge_path=()
+    _snap_merge_att=()
+    _snap_merge_cmd=()
+    for name in "${tm_names[@]}"; do
+      [[ -n $name ]] || continue
+      _snap_merge_path[$name]=${tm_path[$name]:-}
+      _snap_merge_att[$name]=${tm_att[$name]:-0}
+      _snap_merge_cmd[$name]=${tm_cmd[$name]:-}
+    done
     session_snapshot_file
     _LANJUMP_SNAP_LOCKED=1
     with_data_file_lock "$REPLY" snapshot_live_sessions
     st=$?
     unset _LANJUMP_SNAP_LOCKED
+    unset _snap_merge_names _snap_merge_path _snap_merge_att _snap_merge_cmd
     return $st
   fi
   local line name cwd att cmd
@@ -2450,12 +2568,10 @@ snapshot_live_sessions() {
   snap_workspace=()
   snap_cmd=()
   snap_attached=()
-  # Census already loaded by tmux_server_running above. #467 reads it
-  # outside this lock; do not list-sessions again while holding it.
-  for name in "${tm_names[@]}"; do
-    cwd=${tm_path[$name]:-}
-    att=${tm_att[$name]:-0}
-    cmd=${tm_cmd[$name]:-}
+  for name in "${_snap_merge_names[@]}"; do
+    cwd=${_snap_merge_path[$name]:-}
+    att=${_snap_merge_att[$name]:-0}
+    cmd=${_snap_merge_cmd[$name]:-}
     [[ -n $name ]] || continue
     snap_names+=("$name")
     # resolve skips $HOME; keep the previous recorded cwd across that skip.
@@ -2496,23 +2612,31 @@ snapshot_live_sessions() {
 }
 
 mark_snapshot_occupied() {
-  local name=$1 cwd cmd target st=0
+  local name=$1 cwd cmd file st=0
   [[ -n $name ]] || return 0
   if [[ -z ${_LANJUMP_SNAP_LOCKED:-} ]]; then
+    tmux_session_path "$name"
+    cwd=${REPLY:-}
+    tmux_session_cmd "$name"
+    cmd=${REPLY:-}
     session_snapshot_file
+    file=$REPLY
+    typeset -g _snap_mark_cwd=$cwd _snap_mark_cmd=$cmd
     _LANJUMP_SNAP_LOCKED=1
-    with_data_file_lock "$REPLY" mark_snapshot_occupied "$name"
+    with_data_file_lock "$file" mark_snapshot_occupied "$name"
     st=$?
     unset _LANJUMP_SNAP_LOCKED
+    # Pin lock is taken only after the snapshot lock is gone.
+    if (( st == 0 )) && pin_record_exists "$name"; then
+      refresh_pin_cwds
+      st=$?
+    fi
+    unset _snap_mark_cwd _snap_mark_cmd
     return $st
   fi
   load_session_snapshot
-  # #467: these two reads still run under the snap lock. tmux_session_path
-  # and tmux_session_cmd already hold the census; move the reads out with
-  # the lock split.
-  target=$(session_pane_target "$name")
-  cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
-  cmd=$(tmuxx display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
+  cwd=${_snap_mark_cwd:-}
+  cmd=${_snap_mark_cmd:-}
   if (( ${snap_names[(Ie)$name]} == 0 )); then
     snap_names+=("$name")
   fi
@@ -2522,7 +2646,6 @@ mark_snapshot_occupied() {
   snap_workspace[$name]=1
   snap_attached[$name]=$EPOCHSECONDS
   save_session_snapshot
-  pin_record_exists "$name" && refresh_pin_cwds
 }
 
 collect_restore_names() {
@@ -4596,6 +4719,9 @@ draw() {
     title+="  ${c_dim}${filter_match_count}/${filter_total_count}${c_reset}"
   fi
   draw_emit "$title" || return
+  if [[ -n $notice ]]; then
+    draw_emit "  ${c_cyan}${notice}${c_reset}" || return
+  fi
   if [[ -n $restore_boot_notice ]]; then
     draw_emit "  ${c_dim}${restore_boot_notice}${c_reset}" || return
   fi
@@ -5405,10 +5531,13 @@ if [[ ${1:-} == --pick-selftest ]]; then
 fi
 
 if [[ ${1:-} == --snapshot ]]; then
+  LANJUMP_LOCK_QUIET=1
   run_session_snapshot
   exit 0
 fi
 if [[ ${1:-} == --refresh-pin-cwd ]]; then
+  LANJUMP_LOCK_QUIET=1
+  LANJUMP_LOCK_NONBLOCK=1
   refresh_pin_cwds
   exit 0
 fi

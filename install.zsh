@@ -426,30 +426,126 @@ EOF
 
 # Same sidecar protocol as lib with_data_file_lock. dest is renamed by
 # replace_file_atomic, so flock(dest) would not serialize writers.
+# Same-file load+replace must hold this (#276/#314).
+# flock waits at most 5s; LANJUMP_LOCK_NONBLOCK=1 does not wait. Timeout skips
+# this write. The mkdir fallback stores a pid and drops the dir if that pid
+# is gone, so a killed holder does not block the next writer.
 with_data_file_lock() {
   local dest=$1
   shift
-  local lock dir
-  local -i fd=-1 st=0 n=0
+  local lock dir base msg wait_s holder_pid pid held mtime
+  local -i fd=-1 st=0 n=0 budget=0 now=0
   dir=${dest:h}
   lock=${dest}.lock
-  mkdir -p "$dir"
-  [[ -e $lock ]] || : >"$lock"
-  if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
-    zsystem flock -f fd "$lock" || return 1
-    "$@"
-    st=$?
-    zsystem flock -u fd
-    return $st
+  base=${dest:t}
+  mkdir -p "$dir" || return 1
+  [[ -e $lock ]] || : >"$lock" || return 1
+  holder_pid=$$
+  if zmodload zsh/system 2>/dev/null; then
+    holder_pid=${sysparams[pid]}
   fi
-  while ! mkdir "${lock}.d" 2>/dev/null; do
-    sleep 0.05
-    (( ++n > 200 )) && return 1
-  done
-  "$@"
-  st=$?
-  rmdir "${lock}.d" 2>/dev/null
-  return $st
+  if [[ ${LANJUMP_LOCK_NONBLOCK:-0} == 1 ]]; then
+    wait_s=0
+  else
+    wait_s=${LANJUMP_LOCK_WAIT:-5}
+  fi
+  wait_s=$(( wait_s ))
+  if (( ${+_LANJUMP_LOCK_DENIED} == 0 )); then
+    typeset -gA _LANJUMP_LOCK_DENIED
+  fi
+  if (( ${_LANJUMP_LOCK_DENIED[$lock]:-0} )); then
+    wait_s=0
+  fi
+  _lanjump_lock_busy() {
+    local msg="另一个 lanjump 正在写 ${base}，稍后再试"
+    _LANJUMP_LOCK_DENIED[$lock]=1
+    [[ ${LANJUMP_LOCK_QUIET:-0} == 1 ]] && return 0
+    notice=$msg
+    if (( ${pick_interactive:-0} || ${host_list_active:-0} )); then
+      return 0
+    fi
+    [[ ${_LANJUMP_LOCK_TOLD:-} == "$msg" ]] && return 0
+    _LANJUMP_LOCK_TOLD=$msg
+    builtin print -u2 -- "$msg"
+  }
+  {
+    if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
+      zsystem flock -t "$wait_s" -i 0.05 -f fd "$lock" 2>/dev/null
+      st=$?
+      if (( st != 0 )); then
+        if (( st == 2 || wait_s == 0 )); then
+          _lanjump_lock_busy
+        fi
+        return $st
+      fi
+      if (( ${_LANJUMP_LOCK_DENIED[$lock]:-0} )); then
+        unset "_LANJUMP_LOCK_DENIED[$lock]"
+      fi
+      if [[ ${notice:-} == *"写 ${base}，"* ]]; then
+        notice=
+      fi
+      "$@"
+      st=$?
+      zsystem flock -u fd
+      return $st
+    fi
+    if (( wait_s == 0 )); then
+      budget=0
+    else
+      budget=$(( wait_s * 20 ))
+    fi
+    zmodload zsh/datetime 2>/dev/null || true
+    while true; do
+      if mkdir "${lock}.d" 2>/dev/null; then
+        if (( ${_LANJUMP_LOCK_DENIED[$lock]:-0} )); then
+          unset "_LANJUMP_LOCK_DENIED[$lock]"
+        fi
+        if [[ ${notice:-} == *"写 ${base}，"* ]]; then
+          notice=
+        fi
+        {
+          builtin print -r -- "$holder_pid" >"${lock}.d/pid" || true
+          "$@"
+          st=$?
+        } always {
+          rm -f "${lock}.d/pid" 2>/dev/null || true
+          rmdir "${lock}.d" 2>/dev/null || true
+        }
+        return $st
+      fi
+      pid=
+      if [[ -f ${lock}.d/pid ]]; then
+        pid=$(<"${lock}.d/pid") || pid=
+        pid=${pid%%$'\n'*}
+      fi
+      if [[ $pid == <-> ]] && ! kill -0 "$pid" 2>/dev/null; then
+        held=$(<"${lock}.d/pid" 2>/dev/null || true)
+        held=${held%%$'\n'*}
+        if [[ $held == "$pid" ]]; then
+          rm -f "${lock}.d/pid" 2>/dev/null || true
+          if rmdir "${lock}.d" 2>/dev/null; then
+            continue
+          fi
+        fi
+      elif [[ -z $pid ]] && (( ${+EPOCHSECONDS} )); then
+        mtime=$(stat -f %m "${lock}.d" 2>/dev/null || stat -c %Y "${lock}.d" 2>/dev/null || true)
+        now=$EPOCHSECONDS
+        if [[ $mtime == <-> ]] && (( now - mtime >= 1 )); then
+          if rmdir "${lock}.d" 2>/dev/null; then
+            continue
+          fi
+        fi
+      fi
+      if (( n >= budget )); then
+        _lanjump_lock_busy
+        return 2
+      fi
+      sleep 0.05
+      n=$(( n + 1 ))
+    done
+  } always {
+    unfunction _lanjump_lock_busy 2>/dev/null || true
+  }
 }
 
 if [[ $mode == 升级 || ! -f $ROOT/lib/lanjump.zsh || ! -f $ROOT/bin/lanjump || ! -f $ROOT/src/lanjump-keys.c ]]; then

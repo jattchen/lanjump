@@ -1419,8 +1419,8 @@ pick_selftest() {
   fi
 
   # #405: forget_killed_session must take pin then snapshot (upgrade #386).
-  # Holding session-snapshot then taking pin deadlocks with upgrade
-  # (zsystem flock has no timeout).
+  # Holding session-snapshot then taking pin deadlocks with upgrade.
+  # The 5s flock timeout would turn that into a skipped write; order still matters.
   local -a lock405_order
   local -i lock405_pin=-1 lock405_snap=-1 lock405_i
   setup_last_snap gone gone
@@ -7829,6 +7829,508 @@ EOF
   HAS_TMUX=$snap426_has_tmux
   HOME=$snap426_saved_home
   rm -rf "$snap426_home"
+
+  # #467: flock waits 5s then skips the write, hooks do not wait, and a
+  # dead mkdir lock is reclaimed. Children use a temp dir and never call tmux.
+  extract_lock_fn() {
+    local file=$1 line
+    local -i depth=0 start=0
+    while IFS= read -r line; do
+      if (( !start )) && [[ $line == 'with_data_file_lock() {' ]]; then
+        start=1
+      fi
+      if (( start )); then
+        print -r -- "$line"
+        depth+=${#line//[^\{]/}
+        depth+=-${#line//[^\}]/}
+        (( depth == 0 )) && return 0
+      fi
+    done <"$file"
+    return 1
+  }
+  local lock467_root lock467_z lock467_p lock467_i
+  lock467_root=${_pick_src_file:h:h}
+  lock467_z=$(extract_lock_fn "$lock467_root/lib/lanjump.zsh" || true)
+  lock467_p=$(extract_lock_fn "$lock467_root/lib/lanjump-pick.zsh" || true)
+  lock467_i=$(extract_lock_fn "$lock467_root/install.zsh" || true)
+  if [[ -z $lock467_z || $lock467_z != "$lock467_p" || $lock467_p != "$lock467_i" ]]; then
+    print -u2 "FAIL lock/same-body host, picker, and install locks differ"
+    (( fails++ ))
+  fi
+  local lock467_src
+  lock467_src=$(<"$_pick_src_file")
+  if [[ $lock467_src != *'LANJUMP_LOCK_QUIET=1
+  run_session_snapshot
+  exit 0'* ]]; then
+    print -u2 "FAIL lock/snapshot-hook snapshot hook is not quiet"
+    (( fails++ ))
+  fi
+  if [[ $lock467_src != *'LANJUMP_LOCK_QUIET=1
+  LANJUMP_LOCK_NONBLOCK=1
+  refresh_pin_cwds
+  exit 0'* ]]; then
+    print -u2 "FAIL lock/pin-hook refresh-pin-cwd is not quiet and nonblocking"
+    (( fails++ ))
+  fi
+  local lock467_draw
+  lock467_draw=$(
+    COLUMNS=100
+    LINES=40
+    notice='另一个 lanjump 正在写 pinned-sessions，稍后再试'
+    draw
+  )
+  if [[ $lock467_draw != *'另一个 lanjump 正在写 pinned-sessions，稍后再试'* ]]; then
+    print -u2 "FAIL lock/notice-draw list did not show the lock notice"
+    (( fails++ ))
+  fi
+
+  local lock467_home lock467_saved_home lock467_fn
+  local -a lock467_names lock467_pids
+  local -i lock467_i2 lock467_w
+  lock467_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-467-pin.XXXXXX") || return 1
+  lock467_saved_home=$HOME
+  mkdir -p "$lock467_home/Library/Application Support/lanjump"
+  HOME=$lock467_home
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  add_pin_record gamma /tmp/gamma
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$lock467_home")"
+    print -r -- 'typeset -a pinned_names'
+    print -r -- 'typeset -A pinned_cwd pinned_grok'
+    for lock467_fn in lanjump_data_dir pinned_sessions_file sanitize_pin_field \
+      pin_record_exists load_pinned_sessions replace_file_atomic \
+      save_pinned_sessions add_pin_record with_data_file_lock; do
+      (( ${+functions[$lock467_fn]} )) && functions "$lock467_fn"
+    done
+    print -r -- 'LANJUMP_LOCK_WAIT=30'
+    print -r -- 'add_pin_record "$1" "/tmp/$1"'
+  } >"$lock467_home/add.zsh"
+  lock467_pids=()
+  for lock467_i2 in {1..8}; do
+    /bin/zsh "$lock467_home/add.zsh" "pin-$lock467_i2" &
+    lock467_pids+=($!)
+  done
+  for lock467_w in "${lock467_pids[@]}"; do
+    wait $lock467_w || {
+      print -u2 "FAIL lock/concurrent-pin writer $lock467_w failed"
+      (( fails++ ))
+    }
+  done
+  load_pinned_sessions
+  lock467_names=("${pinned_names[@]}")
+  HOME=$lock467_saved_home
+  for lock467_fn in gamma pin-1 pin-2 pin-3 pin-4 pin-5 pin-6 pin-7 pin-8; do
+    if (( ${lock467_names[(Ie)$lock467_fn]} == 0 )); then
+      print -u2 "FAIL lock/concurrent-pin lost $lock467_fn names=$(printf %q "${lock467_names[*]}")"
+      (( fails++ ))
+    fi
+  done
+  rm -rf "$lock467_home"
+
+  local lock467_snap lock467_a lock467_b
+  lock467_snap=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-467-snap.XXXXXX") || return 1
+  HOME=$lock467_snap
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  snap_names=(alpha beta gamma)
+  snap_cwd=([alpha]=/a [beta]=/b [gamma]=/g)
+  snap_occupied=([alpha]=0 [beta]=0 [gamma]=0)
+  snap_workspace=([alpha]=0 [beta]=0 [gamma]=0)
+  snap_cmd=([alpha]=zsh [beta]=zsh [gamma]=zsh)
+  snap_attached=([alpha]=0 [beta]=0 [gamma]=0)
+  save_session_snapshot
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset extendedglob typesetsilent'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- "HOME=$(printf %q "$lock467_snap")"
+    print -r -- 'typeset -a snap_names'
+    print -r -- 'typeset -A snap_cwd snap_occupied snap_workspace snap_cmd snap_attached'
+    for lock467_fn in lanjump_data_dir session_snapshot_file sanitize_pin_field \
+      _commit_snap_record load_session_snapshot replace_file_atomic \
+      save_session_snapshot rename_snap_record with_data_file_lock; do
+      (( ${+functions[$lock467_fn]} )) && functions "$lock467_fn"
+    done
+    print -r -- 'LANJUMP_LOCK_WAIT=30'
+    print -r -- 'rename_snap_record "$1" "$2"'
+  } >"$lock467_snap/rename.zsh"
+  /bin/zsh "$lock467_snap/rename.zsh" alpha alpha-2 &
+  lock467_a=$!
+  /bin/zsh "$lock467_snap/rename.zsh" beta beta-2 &
+  lock467_b=$!
+  wait $lock467_a || {
+    print -u2 "FAIL lock/concurrent-snap alpha rename failed"
+    (( fails++ ))
+  }
+  wait $lock467_b || {
+    print -u2 "FAIL lock/concurrent-snap beta rename failed"
+    (( fails++ ))
+  }
+  HOME=$lock467_snap
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)alpha-2]} -eq 0 || ${snap_names[(Ie)beta-2]} -eq 0 || ${snap_names[(Ie)gamma]} -eq 0 ]]; then
+    print -u2 "FAIL lock/concurrent-snap lost a record names=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  if [[ ${snap_names[(Ie)alpha]} -ne 0 || ${snap_names[(Ie)beta]} -ne 0 ]]; then
+    print -u2 "FAIL lock/concurrent-snap left an old name names=${snap_names[*]}"
+    (( fails++ ))
+  fi
+  HOME=$lock467_saved_home
+  rm -rf "$lock467_snap"
+
+  local lock467_dir lock467_dest lock467_holder lock467_ready
+  # Product default stays 5s (LANJUMP_LOCK_WAIT:-5). The suite times the same
+  # flock -t path at 0.5s so install.zsh --selftest stays under #461's minute.
+  if [[ ${functions[with_data_file_lock]} != *'LANJUMP_LOCK_WAIT:-5'* ]]; then
+    print -u2 "FAIL lock/default-wait product timeout is not 5s"
+    (( fails++ ))
+  fi
+  lock467_dir=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-467-flock.XXXXXX") || return 1
+  lock467_dest=$lock467_dir/pinned-sessions
+  lock467_ready=$lock467_dir/ready
+  : >"${lock467_dest}.lock"
+  zsh -c "
+zmodload zsh/system
+zsystem flock -f fd $(printf %q "${lock467_dest}.lock") || exit 9
+( builtin print -r -- HOLDER > $(printf %q "$lock467_dest") )
+builtin print -r -- ready > $(printf %q "$lock467_ready")
+sleep 3
+zsystem flock -u fd
+" &
+  lock467_holder=$!
+  for _ in {1..50}; do
+    [[ -f $lock467_ready ]] && break
+    sleep 0.05
+  done
+  if [[ ! -f $lock467_ready ]]; then
+    print -u2 "FAIL lock/flock-holder did not acquire"
+    (( fails++ ))
+    kill -9 $lock467_holder 2>/dev/null || true
+    wait $lock467_holder 2>/dev/null || true
+  else
+    {
+      print -r -- 'emulate -L zsh'
+      print -r -- 'setopt no_unset'
+      print -r -- 'zmodload zsh/datetime'
+      functions with_data_file_lock
+      print -r -- "dest=$(printf %q "$lock467_dest")"
+      print -r -- 'write_body() { builtin print -r -- "$1" >"$dest.try" }'
+      print -r -- 'LANJUMP_LOCK_WAIT=0.5'
+      print -r -- 'start=$EPOCHREALTIME'
+      print -r -- 'with_data_file_lock "$dest" write_body WAITER'
+      print -r -- 'st1=$?'
+      print -r -- 'mid=$EPOCHREALTIME'
+      print -r -- 'with_data_file_lock "$dest" write_body WAITER2'
+      print -r -- 'st2=$?'
+      print -r -- 'end=$EPOCHREALTIME'
+      print -r -- 'print -r -- "st1=$st1"'
+      print -r -- 'print -r -- "st2=$st2"'
+      print -r -- 'print -r -- "first=$(( mid - start ))"'
+      print -r -- 'print -r -- "second=$(( end - mid ))"'
+    } >"$lock467_dir/waiter.zsh"
+    {
+      print -r -- 'emulate -L zsh'
+      print -r -- 'setopt no_unset'
+      print -r -- 'zmodload zsh/datetime'
+      functions with_data_file_lock
+      print -r -- "dest=$(printf %q "$lock467_dest")"
+      print -r -- 'pick_interactive=1'
+      print -r -- 'LANJUMP_LOCK_WAIT=0.5'
+      print -r -- 'start=$EPOCHREALTIME'
+      print -r -- 'with_data_file_lock "$dest" builtin print -r -- UI_BODY'
+      print -r -- 'st=$?'
+      print -r -- 'end=$EPOCHREALTIME'
+      print -r -- 'print -r -- "st=$st"'
+      print -r -- 'print -r -- "elapsed=$(( end - start ))"'
+      print -r -- 'print -r -- "notice=${notice:-}"'
+    } >"$lock467_dir/ui.zsh"
+    {
+      print -r -- 'emulate -L zsh'
+      print -r -- 'setopt no_unset'
+      print -r -- 'zmodload zsh/datetime'
+      functions with_data_file_lock
+      print -r -- "dest=$(printf %q "$lock467_dest")"
+      print -r -- 'LANJUMP_LOCK_NONBLOCK=1'
+      print -r -- 'LANJUMP_LOCK_QUIET=1'
+      print -r -- 'start=$EPOCHREALTIME'
+      print -r -- 'with_data_file_lock "$dest" builtin print -r -- NB_BODY'
+      print -r -- 'st=$?'
+      print -r -- 'end=$EPOCHREALTIME'
+      print -r -- 'print -r -- "st=$st"'
+      print -r -- 'print -r -- "elapsed=$(( end - start ))"'
+      print -r -- 'print -r -- "notice=${notice:-}"'
+    } >"$lock467_dir/nb.zsh"
+    /bin/zsh "$lock467_dir/waiter.zsh" >"$lock467_dir/waiter.out" 2>"$lock467_dir/waiter.err" &
+    lock467_a=$!
+    /bin/zsh "$lock467_dir/ui.zsh" >"$lock467_dir/ui.out" 2>"$lock467_dir/ui.err" &
+    lock467_b=$!
+    /bin/zsh "$lock467_dir/nb.zsh" >"$lock467_dir/nb.out" 2>"$lock467_dir/nb.err" &
+    lock467_w=$!
+    wait $lock467_a || true
+    wait $lock467_b || true
+    wait $lock467_w || true
+    local lock467_line lock467_st1 lock467_st2 lock467_first lock467_second
+    local lock467_ust lock467_uelapsed lock467_unotice
+    local lock467_nst lock467_nelapsed lock467_nnotice
+    lock467_st1=0 lock467_st2=0 lock467_first=0 lock467_second=0
+    while IFS= read -r lock467_line; do
+      case $lock467_line in
+        st1=*) lock467_st1=${lock467_line#st1=} ;;
+        st2=*) lock467_st2=${lock467_line#st2=} ;;
+        first=*) lock467_first=${lock467_line#first=} ;;
+        second=*) lock467_second=${lock467_line#second=} ;;
+      esac
+    done <"$lock467_dir/waiter.out"
+    if [[ $lock467_st1 != 2 || $lock467_st2 == 0 ]]; then
+      print -u2 "FAIL lock/flock-timeout status st1=$lock467_st1 st2=$lock467_st2"
+      (( fails++ ))
+    fi
+    if (( lock467_first < 0.4 || lock467_first > 1.0 )); then
+      print -u2 "FAIL lock/flock-timeout first wait ${lock467_first}s"
+      (( fails++ ))
+    fi
+    if (( lock467_second > 0.4 )); then
+      print -u2 "FAIL lock/flock-timeout second wait ${lock467_second}s"
+      (( fails++ ))
+    fi
+    if [[ $(<"$lock467_dir/waiter.err") != '另一个 lanjump 正在写 pinned-sessions，稍后再试' ]]; then
+      print -u2 "FAIL lock/flock-notice stderr=$(printf %q "$(<"$lock467_dir/waiter.err")")"
+      (( fails++ ))
+    fi
+    if [[ -f $lock467_dest.try ]]; then
+      print -u2 "FAIL lock/flock-timeout wrote during the wait"
+      (( fails++ ))
+    fi
+    if [[ $(<"$lock467_dest") != HOLDER ]]; then
+      print -u2 "FAIL lock/flock-timeout disturbed holder file=$(printf %q "$(<"$lock467_dest")")"
+      (( fails++ ))
+    fi
+    lock467_ust=0 lock467_uelapsed=0 lock467_unotice=
+    while IFS= read -r lock467_line; do
+      case $lock467_line in
+        st=*) lock467_ust=${lock467_line#st=} ;;
+        elapsed=*) lock467_uelapsed=${lock467_line#elapsed=} ;;
+        notice=*) lock467_unotice=${lock467_line#notice=} ;;
+      esac
+    done <"$lock467_dir/ui.out"
+    if [[ $lock467_ust == 0 || $lock467_unotice != '另一个 lanjump 正在写 pinned-sessions，稍后再试' ]]; then
+      print -u2 "FAIL lock/interactive-notice st=$lock467_ust notice=$(printf %q "$lock467_unotice")"
+      (( fails++ ))
+    fi
+    if (( lock467_uelapsed < 0.4 || lock467_uelapsed > 1.2 )); then
+      print -u2 "FAIL lock/interactive-notice waited ${lock467_uelapsed}s"
+      (( fails++ ))
+    fi
+    if [[ -s $lock467_dir/ui.err ]]; then
+      print -u2 "FAIL lock/interactive-notice wrote stderr=$(printf %q "$(<"$lock467_dir/ui.err")")"
+      (( fails++ ))
+    fi
+    lock467_nst=0 lock467_nelapsed=0 lock467_nnotice=x
+    while IFS= read -r lock467_line; do
+      case $lock467_line in
+        st=*) lock467_nst=${lock467_line#st=} ;;
+        elapsed=*) lock467_nelapsed=${lock467_line#elapsed=} ;;
+        notice=*) lock467_nnotice=${lock467_line#notice=} ;;
+      esac
+    done <"$lock467_dir/nb.out"
+    if [[ $lock467_nst == 0 || -n $lock467_nnotice || $lock467_nnotice == x ]]; then
+      print -u2 "FAIL lock/nonblock st=$lock467_nst notice=$(printf %q "$lock467_nnotice")"
+      (( fails++ ))
+    fi
+    if (( lock467_nelapsed > 0.5 )); then
+      print -u2 "FAIL lock/nonblock waited ${lock467_nelapsed}s"
+      (( fails++ ))
+    fi
+    if [[ -s $lock467_dir/nb.err ]]; then
+      print -u2 "FAIL lock/nonblock wrote stderr=$(printf %q "$(<"$lock467_dir/nb.err")")"
+      (( fails++ ))
+    fi
+    if [[ $(<"$lock467_dir/nb.out") == *NB_BODY* || $(<"$lock467_dir/ui.out") == *UI_BODY* ]]; then
+      print -u2 "FAIL lock/held-lock ran the skipped write"
+      (( fails++ ))
+    fi
+    kill -9 $lock467_holder 2>/dev/null || true
+    wait $lock467_holder 2>/dev/null || true
+  fi
+  rm -rf "$lock467_dir"
+
+  local lock467_md lock467_mpid
+  lock467_md=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-467-mkdir.XXXXXX") || return 1
+  {
+    print -r -- 'emulate -L zsh'
+    print -r -- 'setopt no_unset'
+    print -r -- 'zmodload zsh/datetime'
+    print -r -- 'zmodload zsh/system'
+    print -r -- 'disable zsystem'
+    print -r -- 'zsystem() { return 1 }'
+    functions with_data_file_lock
+    print -r -- "dest=$(printf %q "$lock467_md/target")"
+    print -r -- 'mode=${1:-}'
+    print -r -- 'if [[ $mode == hold ]]; then'
+    print -r -- '  with_data_file_lock "$dest" sleep 30'
+    print -r -- '  exit 0'
+    print -r -- 'fi'
+    print -r -- 'if [[ $mode == probe ]]; then'
+    print -r -- '  LANJUMP_LOCK_NONBLOCK=1'
+    print -r -- '  LANJUMP_LOCK_QUIET=1'
+    print -r -- '  with_data_file_lock "$dest" builtin print -r -- PROBE'
+    print -r -- '  print -r -- "st=$?"'
+    print -r -- '  exit 0'
+    print -r -- 'fi'
+    print -r -- 'if [[ $mode == stale ]]; then'
+    print -r -- '  mkdir -p "${dest}.lock.d"'
+    print -r -- '  touch -t 202001010000 "${dest}.lock.d"'
+    print -r -- 'fi'
+    print -r -- 'start=$EPOCHREALTIME'
+    print -r -- 'with_data_file_lock "$dest" builtin print -r -- NEXT_OK'
+    print -r -- 'st=$?'
+    print -r -- 'end=$EPOCHREALTIME'
+    print -r -- 'print -r -- "st=$st"'
+    print -r -- 'print -r -- "elapsed=$(( end - start ))"'
+  } >"$lock467_md/mkdir.zsh"
+  /bin/zsh "$lock467_md/mkdir.zsh" hold &
+  lock467_holder=$!
+  for _ in {1..50}; do
+    [[ -f $lock467_md/target.lock.d/pid ]] && break
+    sleep 0.02
+  done
+  if [[ ! -f $lock467_md/target.lock.d/pid ]]; then
+    print -u2 "FAIL lock/mkdir-pid holder wrote no pid"
+    (( fails++ ))
+    kill -9 $lock467_holder 2>/dev/null || true
+    wait $lock467_holder 2>/dev/null || true
+  else
+    lock467_mpid=$(<"$lock467_md/target.lock.d/pid")
+    /bin/zsh "$lock467_md/mkdir.zsh" probe >"$lock467_md/probe.out" 2>"$lock467_md/probe.err"
+    if [[ $(<"$lock467_md/probe.out") == *'st=0'* || ! -f $lock467_md/target.lock.d/pid ]]; then
+      print -u2 "FAIL lock/mkdir-live nonblock stole a live lock out=$(printf %q "$(<"$lock467_md/probe.out")")"
+      (( fails++ ))
+    fi
+    if kill -0 $lock467_holder 2>/dev/null; then
+      :
+    else
+      print -u2 "FAIL lock/mkdir-live holder died during probe"
+      (( fails++ ))
+    fi
+    kill -9 $lock467_holder 2>/dev/null || true
+    wait $lock467_holder 2>/dev/null || true
+    /bin/zsh "$lock467_md/mkdir.zsh" next >"$lock467_md/next.out" 2>"$lock467_md/next.err"
+    lock467_nst=0 lock467_nelapsed=0
+    while IFS= read -r lock467_line; do
+      case $lock467_line in
+        st=*) lock467_nst=${lock467_line#st=} ;;
+        elapsed=*) lock467_nelapsed=${lock467_line#elapsed=} ;;
+        NEXT_OK) ;;
+      esac
+    done <"$lock467_md/next.out"
+    if [[ $lock467_nst != 0 || $(<"$lock467_md/next.out") != *NEXT_OK* ]]; then
+      print -u2 "FAIL lock/mkdir-reclaim status=$lock467_nst out=$(printf %q "$(<"$lock467_md/next.out")")"
+      (( fails++ ))
+    fi
+    if (( lock467_nelapsed > 1 )); then
+      print -u2 "FAIL lock/mkdir-reclaim took ${lock467_nelapsed}s after kill -9 of $lock467_mpid"
+      (( fails++ ))
+    fi
+    if [[ -d $lock467_md/target.lock.d ]]; then
+      print -u2 "FAIL lock/mkdir-reclaim left the lock dir"
+      (( fails++ ))
+    fi
+    /bin/zsh "$lock467_md/mkdir.zsh" stale >"$lock467_md/stale.out"
+    if [[ $(<"$lock467_md/stale.out") != *'st=0'* || $(<"$lock467_md/stale.out") != *NEXT_OK* ]]; then
+      print -u2 "FAIL lock/mkdir-stale out=$(printf %q "$(<"$lock467_md/stale.out")")"
+      (( fails++ ))
+    fi
+  fi
+  rm -rf "$lock467_md"
+
+  local lock467_se
+  lock467_se=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-467-sete.XXXXXX") || return 1
+  {
+    print -r -- 'set -euo pipefail'
+    functions with_data_file_lock
+    print -r -- "dest=$(printf %q "$lock467_se/hosts")"
+    print -r -- ': >"$dest.lock"'
+    print -r -- "zsh -c 'zmodload zsh/system; zsystem flock -f fd $(printf %q "$lock467_se/hosts.lock") || exit 9; sleep 3; zsystem flock -u fd' &"
+    print -r -- 'hp=$!'
+    print -r -- 'sleep 0.05'
+    print -r -- 'LANJUMP_LOCK_WAIT=0.5'
+    print -r -- 'st=0'
+    print -r -- 'with_data_file_lock "$dest" builtin print -r -- RAN || st=$?'
+    print -r -- 'print -r -- "continued st=$st"'
+    print -r -- 'kill -9 $hp 2>/dev/null || true'
+    print -r -- 'wait $hp 2>/dev/null || true'
+  } >"$lock467_se/sete.zsh"
+  /bin/zsh "$lock467_se/sete.zsh" >"$lock467_se/out" 2>"$lock467_se/err" || {
+    print -u2 "FAIL lock/install-errexit script aborted err=$(printf %q "$(<"$lock467_se/err")")"
+    (( fails++ ))
+  }
+  if [[ $(<"$lock467_se/out") != *'continued st=2'* ]]; then
+    print -u2 "FAIL lock/install-errexit out=$(printf %q "$(<"$lock467_se/out")") err=$(printf %q "$(<"$lock467_se/err")")"
+    (( fails++ ))
+  fi
+  if [[ $(<"$lock467_se/err") != *'另一个 lanjump 正在写 hosts，稍后再试'* ]]; then
+    print -u2 "FAIL lock/install-notice err=$(printf %q "$(<"$lock467_se/err")")"
+    (( fails++ ))
+  fi
+  rm -rf "$lock467_se"
+
+  # Census is read before the pin and snapshot locks. tmuxx inside either lock is a failure.
+  local lock467_hold_home lock467_hold_saved
+  local -i lock467_hold_hits=0 lock467_hold_has=$HAS_TMUX lock467_hold_gen=$pin_cwd_refreshed_gen
+  lock467_hold_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-467-hold.XXXXXX") || return 1
+  lock467_hold_saved=$HOME
+  functions -c tmuxx _lock467_hold_tmuxx
+  tmuxx() {
+    if (( ${_LANJUMP_PIN_LOCKED:-0} || ${_LANJUMP_SNAP_LOCKED:-0} )); then
+      lock467_hold_hits+=1
+    fi
+    case $1 in
+      list-sessions)
+        print -r -- $'100\x1fdemo\x1f1\x1f0\x1f/tmp/demo\x1fdemo\x1ftitle\x1fzsh'
+        return 0
+        ;;
+    esac
+    return 0
+  }
+  HAS_TMUX=1
+  HOME=$lock467_hold_home
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  pinned_names=()
+  pinned_cwd=()
+  pinned_grok=()
+  add_pin_record demo /old
+  tmux_state_invalidate
+  pin_cwd_refreshed_gen=-1
+  refresh_pin_cwds
+  load_pinned_sessions
+  if [[ ${pinned_cwd[demo]:-} != /tmp/demo ]]; then
+    print -u2 "FAIL lock/no-tmux-held pin cwd=$(printf %q "${pinned_cwd[demo]:-}")"
+    (( fails++ ))
+  fi
+  snapshot_live_sessions
+  mark_snapshot_occupied demo
+  load_session_snapshot
+  if [[ ${snap_names[(Ie)demo]} -eq 0 || ${snap_cmd[demo]:-} != zsh || ${snap_occupied[demo]:-} != 1 ]]; then
+    print -u2 "FAIL lock/no-tmux-held snap names=${snap_names[*]} cmd=${snap_cmd[demo]:-} occ=${snap_occupied[demo]:-}"
+    (( fails++ ))
+  fi
+  if (( lock467_hold_hits != 0 )); then
+    print -u2 "FAIL lock/no-tmux-held tmuxx during lock count=$lock467_hold_hits"
+    (( fails++ ))
+  fi
+  functions -c _lock467_hold_tmuxx tmuxx
+  unset -f _lock467_hold_tmuxx
+  tmux_state_invalidate
+  HAS_TMUX=$lock467_hold_has
+  pin_cwd_refreshed_gen=$lock467_hold_gen
+  HOME=$lock467_hold_saved
+  rm -rf "$lock467_hold_home"
+  unset -f extract_lock_fn
 
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
