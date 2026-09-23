@@ -2358,8 +2358,11 @@ target_for() {
   print -r -- "$hostname"
 }
 
-typeset -a SSH_OPTS
+typeset -a SSH_OPTS SSH_MUX_OPTS
 SSH_OPTS=(-o AddressFamily=inet -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8)
+SSH_MUX_OPTS=()
+# ssh_probe sets this when ssh exits 255 and stderr is a network failure.
+typeset -i SSH_LAST_NET=0
 
 # #280: advertised _ssh._tcp port must reach later ssh (default 22 is a no-op).
 apply_ssh_port() {
@@ -2381,6 +2384,73 @@ apply_ssh_port() {
   if [[ $port == [1-9][0-9](#c0,4) && $port != 22 ]] && (( port <= 65535 )); then
     SSH_OPTS+=(-o "Port=${port}")
   fi
+}
+
+# #465: one background master per user@host. %C is 40 hex chars and macOS
+# caps socket paths at 104 bytes, so the directory stays under ~/.ssh.
+# LANJUMP_NO_SSH_MUX=1 leaves every ssh as its own handshake.
+ssh_prepare_mux() {
+  SSH_MUX_OPTS=()
+  [[ -z ${LANJUMP_NO_SSH_MUX:-} ]] || return 0
+  local dir="$HOME/.ssh/lanjump-cm"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  chmod 700 "$dir" 2>/dev/null || true
+  SSH_MUX_OPTS=(
+    -o ControlMaster=auto
+    -o "ControlPath=${dir}/%C"
+    -o ControlPersist=60
+    -o ServerAliveInterval=5
+    -o ServerAliveCountMax=2
+  )
+}
+
+ssh_stderr_is_network() {
+  local text
+  [[ -n ${1:-} && -f $1 ]] || return 1
+  text=$(<"$1")
+  [[ $text == *[Tt]imed\ out* \
+    || $text == *'No route to host'* \
+    || $text == *'Connection refused'* \
+    || $text == *'Host is down'* \
+    || $text == *'Network is unreachable'* ]]
+}
+
+# Probe. mode=mux is the lanjump key and may own the master. mode=plain
+# must not: another key or the password install would become that master.
+# ConnectTimeout=3 is placed first so it wins over SSH_OPTS' 8s.
+ssh_probe() {
+  local mode=$1
+  shift
+  local errf st
+  local -a mux
+  SSH_LAST_NET=0
+  mux=()
+  if [[ $mode == mux ]]; then
+    ssh_prepare_mux
+    mux=("${SSH_MUX_OPTS[@]}")
+  fi
+  errf=$(mktemp "${TMPDIR:-/tmp}/lanjump-ssherr.XXXXXX") || return 1
+  ssh -o BatchMode=yes -o ConnectTimeout=3 "${mux[@]}" "${SSH_OPTS[@]}" "$@" true >/dev/null 2>"$errf"
+  st=$?
+  # A too-long socket path fails before the network is tried. Retry once
+  # without mux so that local error is not treated as a bad key (#465).
+  if (( st == 255 )) && [[ $mode == mux ]] && [[ $(<"$errf") == *'ControlPath too long'* ]]; then
+    rm -f "$errf"
+    ssh_probe plain "$@"
+    return $?
+  fi
+  if (( st == 255 )) && ssh_stderr_is_network "$errf"; then
+    SSH_LAST_NET=1
+  fi
+  rm -f "$errf"
+  return $st
+}
+
+# Non-interactive lanjump-key ssh. Short connect timeout, shared master.
+ssh_lanjump() {
+  ssh_prepare_mux
+  ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" -o ConnectTimeout=3 \
+    "${SSH_MUX_OPTS[@]}" "${SSH_OPTS[@]}" "$@"
 }
 
 # Interactive SSH only. Batch/key-install calls stay plain ssh.
@@ -2434,6 +2504,14 @@ ssh_tty() {
   fi
 }
 
+# Interactive lanjump-key ssh. SSH_OPTS keeps ConnectTimeout=8.
+# The master is the earlier ssh_probe, not the grok wrap process.
+ssh_lanjump_tty() {
+  ssh_prepare_mux
+  ssh_tty -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" \
+    "${SSH_MUX_OPTS[@]}" "${SSH_OPTS[@]}" "$@"
+}
+
 lan_pub_install_cmd() {
   local pub b64
   pub=$(cat "$KEY.pub")
@@ -2444,42 +2522,78 @@ lan_pub_install_cmd() {
   print -r -- "umask 077; mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys; pub=\$(printf '%s' '$b64' | base64 -d 2>/dev/null || printf '%s' '$b64' | base64 -D); [ -s ~/.ssh/authorized_keys ] && [ \"\$(tail -c 1 ~/.ssh/authorized_keys | wc -l)\" -eq 0 ] && printf '\\n' >> ~/.ssh/authorized_keys; grep -Fqx \"\$pub\" ~/.ssh/authorized_keys 2>/dev/null || printf '%s\n' \"\$pub\" >> ~/.ssh/authorized_keys"
 }
 
-try_ssh() {
-  ssh -o BatchMode=yes "${SSH_OPTS[@]}" "$@" true >/dev/null 2>&1
-}
-
 install_lan_pub() {
   local user=$1 target=$2
   shift 2
+  # No mux: this session authenticates with some other key (#465).
   ssh "${SSH_OPTS[@]}" "$@" "${user}@${target}" "$(lan_pub_install_cmd)"
 }
 
+# 0: lanjump key already works. 10: a key was just installed.
+# 11: network unreachable; do not try more keys or a password.
+# 1: auth or other failure.
 setup_access() {
   local user=$1 target=$2
-  local id
+  local id st
   local -a ids
-  if try_ssh -o IdentitiesOnly=yes -i "$KEY" "${user}@${target}"; then
+  ssh_probe mux -o IdentitiesOnly=yes -i "$KEY" "${user}@${target}"
+  st=$?
+  if (( st == 0 )); then
     return 0
+  fi
+  if (( SSH_LAST_NET )); then
+    return 11
   fi
   ids=($HOME/.ssh/id_*(N.))
   for id in "${ids[@]}"; do
     [[ $id == *.pub ]] && continue
     [[ $id == "$KEY" ]] && continue
-    if try_ssh -o IdentitiesOnly=yes -i "$id" "${user}@${target}"; then
+    ssh_probe plain -o IdentitiesOnly=yes -i "$id" "${user}@${target}"
+    st=$?
+    if (( st == 0 )); then
       print "发现已有密钥，正在安装局域网公钥…"
-      install_lan_pub "$user" "$target" -o IdentitiesOnly=yes -i "$id"
-      return $?
+      if install_lan_pub "$user" "$target" -o IdentitiesOnly=yes -i "$id"; then
+        return 10
+      fi
+      return 1
+    fi
+    if (( SSH_LAST_NET )); then
+      return 11
     fi
   done
   print
   print "请输入 ${user}@${target} 的登录密码（只此一次，用来安装公钥，密码不会保存）。"
-  ssh -tt "${SSH_OPTS[@]}" \
+  # No mux: a one-time password session must not become the master (#465).
+  if ssh -tt "${SSH_OPTS[@]}" \
     -o PreferredAuthentications=keyboard-interactive,password \
     -o PubkeyAuthentication=no \
     -o PasswordAuthentication=yes \
     -o KbdInteractiveAuthentication=yes \
     -o NumberOfPasswordPrompts=3 \
-    "${user}@${target}" "$(lan_pub_install_cmd)"
+    "${user}@${target}" "$(lan_pub_install_cmd)"; then
+    return 10
+  fi
+  return 1
+}
+
+# 0 ready. 11 network. 12 installed but the lanjump key still fails. 1 other.
+# Return 0 from setup_access means the first probe already succeeded, so
+# there is no second `ssh true` (#465).
+ssh_access_ready() {
+  local user=$1 target=$2 st
+  setup_access "$user" "$target"
+  st=$?
+  case $st in
+    0) return 0 ;;
+    10)
+      if ssh_lanjump "${user}@${target}" true; then
+        return 0
+      fi
+      return 12
+      ;;
+    11) return 11 ;;
+  esac
+  return 1
 }
 
 # Stock names exist on every macOS. Ghostty/kitty do not; tmux attach then
@@ -2528,20 +2642,37 @@ sync_terminfo() {
   terminfo_is_stock "$term" && return 0
   src=$(terminfo_source "$term") || return 0
   [[ -n $src ]] || return 0
-  print -r -- "$src" | ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" \
-    "${user}@${target}" \
+  print -r -- "$src" | ssh_lanjump "${user}@${target}" \
     'tmp=$(mktemp "${TMPDIR:-/tmp}/lanjump-terminfo.XXXXXX") && cat >"$tmp" && { tic -x "$tmp" 2>/dev/null || tic "$tmp" 2>/dev/null || true; }; rm -f "$tmp"' \
     || true
 }
 
 sync_picker() {
   local target=$1 user=$2
-  local incoming_mtime
+  local incoming_mtime local_ver remote_ver
+  # #465: a versioned picker asks for the remote header first and uploads
+  # the body only when this copy is newer. #286/#310 still decide inside
+  # the upload, in case the header check and the copy disagree.
+  local_ver=""
+  if [[ -f $PICKER ]]; then
+    local_ver=$(awk '/^# lanjump-pick-version / { print $3; exit }' "$PICKER" 2>/dev/null || true)
+    [[ $local_ver == [0-9]## ]] || local_ver=""
+  fi
+  if [[ -n $local_ver ]]; then
+    remote_ver=$(ssh_lanjump "${user}@${target}" 'f="$HOME/.local/bin/lanjump-pick"; if [ -f "$f" ]; then awk "/^# lanjump-pick-version / { print \$3; exit }" "$f"; fi') || return $?
+    remote_ver=${remote_ver//$'\r'/}
+    remote_ver=${remote_ver%%[[:space:]]*}
+    [[ $remote_ver == [0-9]## ]] || remote_ver=""
+    if [[ -n $remote_ver ]] && (( remote_ver >= local_ver )); then
+      sync_terminfo "$target" "$user"
+      return 0
+    fi
+  fi
   # #286: only replace the remote copy when this picker is newer.
   # #310: prefer the picker header stamp over two machines' file mtimes.
   incoming_mtime=$(stat -c %Y "$PICKER" 2>/dev/null) || incoming_mtime=$(stat -f %m "$PICKER" 2>/dev/null) || incoming_mtime=0
   [[ $incoming_mtime == [0-9]## ]] || incoming_mtime=0
-  ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
+  ssh_lanjump "${user}@${target}" \
     'dest="$HOME/.local/bin/lanjump-pick"; mkdir -p "$HOME/.local/bin" || exit 1; tmp=$(mktemp "$HOME/.local/bin/.lanjump-pick.XXXXXX") || exit 1; cat >"$tmp" || { rm -f "$tmp"; exit 1; }; keep=0; if [ -f "$dest" ]; then dest_ver=$(awk "/^# lanjump-pick-version / { print \$3; exit }" "$dest"); incoming_ver=$(awk "/^# lanjump-pick-version / { print \$3; exit }" "$tmp"); case $dest_ver in *[!0-9]*) dest_ver= ;; esac; case $incoming_ver in *[!0-9]*) incoming_ver= ;; esac; if [ -n "$dest_ver" ] || [ -n "$incoming_ver" ]; then [ -n "$dest_ver" ] || dest_ver=0; [ -n "$incoming_ver" ] || incoming_ver=0; [ "$dest_ver" -gt "$incoming_ver" ] && keep=1; else dest_mtime=$(stat -c %Y "$dest" 2>/dev/null || stat -f %m "$dest" 2>/dev/null || echo 0); incoming_mtime='"$incoming_mtime"'; case $dest_mtime in *[!0-9]*) dest_mtime=0 ;; esac; [ "$dest_mtime" -gt "$incoming_mtime" ] && keep=1; fi; fi; if [ "$keep" -eq 1 ]; then rm -f "$tmp"; else chmod 755 "$tmp" && mv -f "$tmp" "$dest" || { rm -f "$tmp"; exit 1; }; fi' \
     <"$PICKER" || return $?
   sync_terminfo "$target" "$user"
@@ -2577,7 +2708,7 @@ connect_item() {
   local ip=${items_ip[$i]}
   local mac=${items_mac[$i]}
   local port=${items_port[$i]:-22}
-  local target
+  local target acc
 
   apply_ssh_port "$port"
   restore_tty
@@ -2596,16 +2727,26 @@ connect_item() {
   target=$(target_for "$hostname" "$ip")
   print
   print "正在连接 ${user}@${target} …"
-  if ! setup_access "$user" "$target"; then
+  ssh_access_ready "$user" "$target"
+  acc=$?
+  if (( acc == 11 )); then
     print
-    print "公钥安装失败。请确认用户名、密码，以及对方已打开远程登录。"
+    print -r -- "连不上 ${alias}（可能睡眠、离线或换了网络）。可以按 r 重新扫描。"
     print -n "按回车回到列表…"
     read -r
     setup_tty
     return
   fi
-  if ! ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" true; then
+  if (( acc == 12 )); then
     print "密钥登录仍失败。"
+    print -n "按回车回到列表…"
+    read -r
+    setup_tty
+    return
+  fi
+  if (( acc != 0 )); then
+    print
+    print "公钥安装失败。请确认用户名、密码，以及对方已打开远程登录。"
     print -n "按回车回到列表…"
     read -r
     setup_tty
@@ -2631,8 +2772,7 @@ connect_item() {
   remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
   remote_cmd+="; export LANJUMP_PICK_BIN=\$HOME/.local/bin/lanjump-pick"
   remote_cmd+="; $(remote_pick_exec)"
-  ssh_tty -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
-    "$remote_cmd"
+  ssh_lanjump_tty "${user}@${target}" "$remote_cmd"
   local st=$?
   if [[ $st -eq 0 ]]; then
     restore_tty
@@ -2911,10 +3051,27 @@ cli_is_command() {
   return 1
 }
 
+# 0 when the lanjump key is ready. Network and auth both return 2 (#175/#178);
+# the message says which one (#465).
+cli_ensure_access() {
+  local alias=$1 user=$2 target=$3 acc
+  ssh_access_ready "$user" "$target"
+  acc=$?
+  if (( acc == 11 )); then
+    print -u2 "连不上 ${alias}（可能睡眠、离线或换了网络）。"
+    return 2
+  fi
+  if (( acc != 0 )); then
+    print -u2 "无法登录 ${user}@${target}。"
+    return 2
+  fi
+  return 0
+}
+
 cli_remote_pick() {
   local alias=$1
   shift
-  local idx user hostname ip target
+  local idx user hostname ip target acc
   idx=$(find_host_index "$alias") || {
     print -u2 "没有保存的机器「${alias}」。"
     return 1
@@ -2924,9 +3081,10 @@ cli_remote_pick() {
   ip=${h_ip[$idx]}
   apply_ssh_port "${h_port[$idx]:-22}"
   target=$(target_for "$hostname" "$ip")
-  if ! setup_access "$user" "$target"; then
-    print -u2 "无法登录 ${user}@${target}。"
-    return 1
+  cli_ensure_access "$alias" "$user" "$target"
+  acc=$?
+  if (( acc != 0 )); then
+    return $acc
   fi
   if ! sync_picker "$target" "$user"; then
     print -u2 "无法把 tmux 选择界面同步到对方。"
@@ -2938,14 +3096,13 @@ cli_remote_pick() {
   remote_cmd+="; export TERM_PROGRAM=$(printf %q "${TERM_PROGRAM:-}") TERM_PROGRAM_VERSION=$(printf %q "${TERM_PROGRAM_VERSION:-}")"
   remote_cmd+="; export LANJUMP_PICK_BIN=\$HOME/.local/bin/lanjump-pick"
   remote_cmd+="; $(remote_pick_exec "$@")"
-  ssh_tty -t -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
-    "$remote_cmd"
+  ssh_lanjump_tty "${user}@${target}" "$remote_cmd"
 }
 
 cli_remote_print() {
   local alias=$1
   shift
-  local idx user hostname ip target
+  local idx user hostname ip target acc
   idx=$(find_host_index "$alias") || {
     print -u2 "没有保存的机器「${alias}」。"
     return 2
@@ -2955,9 +3112,10 @@ cli_remote_print() {
   ip=${h_ip[$idx]}
   apply_ssh_port "${h_port[$idx]:-22}"
   target=$(target_for "$hostname" "$ip")
-  if ! setup_access "$user" "$target"; then
-    print -u2 "无法登录 ${user}@${target}。"
-    return 2
+  cli_ensure_access "$alias" "$user" "$target"
+  acc=$?
+  if (( acc != 0 )); then
+    return $acc
   fi
   if ! sync_picker "$target" "$user"; then
     print -u2 "无法把 tmux 选择界面同步到对方。"
@@ -2966,8 +3124,7 @@ cli_remote_print() {
   local remote_cmd
   remote_cmd="export PATH=\"\$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:\$PATH\""
   remote_cmd+="; $(remote_pick_exec "$@")"
-  ssh -o BatchMode=yes -o IdentitiesOnly=yes -i "$KEY" "${SSH_OPTS[@]}" "${user}@${target}" \
-    "$remote_cmd"
+  ssh_lanjump "${user}@${target}" "$remote_cmd"
 }
 
 cli_pick() {

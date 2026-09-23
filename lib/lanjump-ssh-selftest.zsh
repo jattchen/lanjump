@@ -16,6 +16,9 @@ ssh_selftest() {
   local real_hosts_hash="" new_hosts_hash=""
   [[ -f $real_ssh ]] && real_hash=$(shasum -a 256 "$real_ssh")
   [[ -f $real_hosts ]] && real_hosts_hash=$(shasum -a 256 "$real_hosts")
+  local real_mux="$orig_home/.ssh/lanjump-cm"
+  local -i real_mux_existed=0
+  [[ -d $real_mux ]] && real_mux_existed=1
   [[ -f $real_ssh ]] && cp "$real_ssh" "$tmpdir/guard-ssh-config" && chmod u+w "$tmpdir/guard-ssh-config"
   [[ -f $real_hosts ]] && cp "$real_hosts" "$tmpdir/guard-hosts" && chmod u+w "$tmpdir/guard-hosts"
 
@@ -1630,6 +1633,386 @@ EOF
   fi
   unset _lj341_tick
 
+  # #465: mux, short probe, network fail-fast, skip the second verify,
+  # upload the picker only when its version is newer. Fake ssh counts
+  # a new ControlMaster as a handshake and a later one as reuse.
+  local saved_no_mux=${LANJUMP_NO_SSH_MUX-}
+  local -a ssh465_kind_save ssh465_alias_save ssh465_user_save ssh465_hn_save ssh465_ip_save ssh465_mac_save ssh465_port_save ssh465_opts_save
+  ssh465_opts_save=("${SSH_OPTS[@]}")
+  ssh465_kind_save=("${items_kind[@]}")
+  ssh465_alias_save=("${items_alias[@]}")
+  ssh465_user_save=("${items_user[@]}")
+  ssh465_hn_save=("${items_hostname[@]}")
+  ssh465_ip_save=("${items_ip[@]}")
+  ssh465_mac_save=("${items_mac[@]}")
+  ssh465_port_save=("${items_port[@]}")
+  mkdir -p "$HOME/.ssh"
+  : >"$HOME/.ssh/id_rsa"
+  chmod 600 "$HOME/.ssh/id_rsa"
+  print -r -- 'ssh: connect to host 10.0.0.8 port 22: Operation timed out' >"$tmpdir/ssh465_net_yes"
+  print -r -- 'mac@host: Permission denied (publickey,password).' >"$tmpdir/ssh465_net_no"
+  if ! ssh_stderr_is_network "$tmpdir/ssh465_net_yes"; then
+    print -u2 "FAIL ssh/net-stderr/timed-out not treated as network"
+    (( fails++ ))
+  fi
+  if ssh_stderr_is_network "$tmpdir/ssh465_net_no"; then
+    print -u2 "FAIL ssh/net-stderr/auth treated permission denied as network"
+    (( fails++ ))
+  fi
+  for ssh465_msg in \
+    'ssh: connect to host 10.0.0.8 port 22: Connection timed out' \
+    'ssh: connect to host 10.0.0.8 port 22: No route to host' \
+    'ssh: connect to host 10.0.0.8 port 22: Connection refused' \
+    'ssh: connect to host 10.0.0.8 port 22: Host is down' \
+    'ssh: connect to host 10.0.0.8 port 22: Network is unreachable'
+  do
+    print -r -- "$ssh465_msg" >"$tmpdir/ssh465_net_yes"
+    if ! ssh_stderr_is_network "$tmpdir/ssh465_net_yes"; then
+      print -u2 "FAIL ssh/net-stderr/pattern not network: $(printf %q "$ssh465_msg")"
+      (( fails++ ))
+    fi
+  done
+  if [[ $HOME != "$tmpdir" ]]; then
+    print -u2 "FAIL ssh/mux-dir/home selftest HOME is not the temp dir"
+    (( fails++ ))
+  fi
+  LANJUMP_NO_SSH_MUX=1
+  ssh_prepare_mux
+  if (( ${#SSH_MUX_OPTS} )); then
+    print -u2 "FAIL ssh/mux-off/opts LANJUMP_NO_SSH_MUX still set mux options"
+    (( fails++ ))
+  fi
+  unset LANJUMP_NO_SSH_MUX
+  ssh_prepare_mux
+  if (( ${#SSH_MUX_OPTS} != 10 )); then
+    print -u2 "FAIL ssh/mux-on/opts count got=${#SSH_MUX_OPTS} want=10 opts=$(printf %q "${SSH_MUX_OPTS[*]}")"
+    (( fails++ ))
+  fi
+  if [[ ${SSH_MUX_OPTS[*]} != *"ControlPath=${HOME}/.ssh/lanjump-cm/%C"* || ${SSH_MUX_OPTS[*]} != *ControlPersist=60* || ${SSH_MUX_OPTS[*]} != *ServerAliveInterval=5* || ${SSH_MUX_OPTS[*]} != *ServerAliveCountMax=2* ]]; then
+    print -u2 "FAIL ssh/mux-on/path got=$(printf %q "${SSH_MUX_OPTS[*]}")"
+    (( fails++ ))
+  fi
+  if [[ $(stat -f %Lp "$HOME/.ssh/lanjump-cm") != 700 ]]; then
+    print -u2 "FAIL ssh/mux-dir/mode want=700 got=$(stat -f %Lp "$HOME/.ssh/lanjump-cm")"
+    (( fails++ ))
+  fi
+
+  ssh465_reset() {
+    : >"$tmpdir/ssh465_args"
+    : >"$tmpdir/ssh465_kind"
+    : >"$tmpdir/ssh465_upload"
+    rm -f "$tmpdir/ssh465_master" "$tmpdir/ssh465_pw" "$tmpdir/ssh465_pw_done" \
+      "$tmpdir/ssh465_verify_fail" "$tmpdir/ssh465_err" "$tmpdir/ssh465_remote_ver" \
+      "$tmpdir/ssh465_mode"
+  }
+  ssh465_n() {
+    local n
+    n=$(grep -c "^${1}$" "$tmpdir/ssh465_kind" 2>/dev/null || true)
+    [[ $n == [0-9]## ]] || n=0
+    print -r -- "$n"
+  }
+  ssh465_args_n() {
+    local n
+    n=$(wc -l <"$tmpdir/ssh465_args" | tr -d ' ')
+    [[ $n == [0-9]## ]] || n=0
+    print -r -- "$n"
+  }
+  cat >"$fake_bin/ssh" <<EOF
+#!/bin/zsh
+print -r -- "\$*" >>"$tmpdir/ssh465_args"
+mode=ok
+[[ -f "$tmpdir/ssh465_mode" ]] && mode=\$(<"$tmpdir/ssh465_mode")
+if [[ \$* == *ControlMaster=auto* ]]; then
+  if [[ -f "$tmpdir/ssh465_master" ]]; then
+    print -r -- reuse >>"$tmpdir/ssh465_kind"
+  else
+    print -r -- master >>"$tmpdir/ssh465_kind"
+    : >"$tmpdir/ssh465_master"
+  fi
+else
+  print -r -- direct >>"$tmpdir/ssh465_kind"
+fi
+cmd=\${@[-1]}
+if [[ \$mode == path-long ]]; then
+  if [[ \$* == *ControlMaster* ]]; then
+    print -u2 "ControlPath too long (test)"
+    exit 255
+  fi
+  print -u2 "ssh: connect to host 10.0.0.8 port 22: Operation timed out"
+  exit 255
+fi
+if [[ \$mode == net ]]; then
+  [[ -f "$tmpdir/ssh465_err" ]] && cat "$tmpdir/ssh465_err" >&2
+  exit 255
+fi
+if [[ \$* == *PreferredAuthentications=keyboard-interactive* ]]; then
+  print -r -- "\$*" >"$tmpdir/ssh465_pw"
+  : >"$tmpdir/ssh465_pw_done"
+  exit 0
+fi
+if [[ \$cmd == f=* ]]; then
+  if [[ \$mode == probe-fail ]]; then
+    exit 255
+  fi
+  if [[ -f "$tmpdir/ssh465_remote_ver" ]]; then
+    print -r -- "\$(<"$tmpdir/ssh465_remote_ver")"
+  else
+    print -r -- 200
+  fi
+  exit 0
+fi
+if [[ \$cmd == dest=* ]]; then
+  print -r -- upload >>"$tmpdir/ssh465_upload"
+  cat >/dev/null
+  exit 0
+fi
+if [[ \$cmd == *tic* ]]; then
+  cat >/dev/null
+  exit 0
+fi
+if [[ \$cmd == true ]]; then
+  if [[ \$mode == auth ]]; then
+    if [[ ! -f "$tmpdir/ssh465_pw_done" ]]; then
+      print -u2 "Permission denied (publickey)."
+      exit 255
+    fi
+    if [[ -f "$tmpdir/ssh465_verify_fail" ]]; then
+      exit 1
+    fi
+  fi
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$fake_bin/ssh"
+  rehash
+  TERM=xterm-256color
+
+  ssh465_reset
+  print -r -- net >"$tmpdir/ssh465_mode"
+  print -r -- 'ssh: connect to host 10.0.0.8 port 22: Operation timed out' >"$tmpdir/ssh465_err"
+  st=0
+  out=$(setup_access mac offline.local 2>"$tmpdir/ssh465_setup_err") || st=$?
+  if (( st != 11 )); then
+    print -u2 "FAIL ssh/net-stop/status got $st want 11 err=$(printf %q "$(<"$tmpdir/ssh465_setup_err")")"
+    (( fails++ ))
+  fi
+  if [[ $(ssh465_args_n) != 1 ]]; then
+    print -u2 "FAIL ssh/net-stop/calls got=$(ssh465_args_n) want=1 args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  if [[ $out == *请输入* || $out == *发现已有密钥* || $(<"$tmpdir/ssh465_args") == *id_rsa* ]]; then
+    print -u2 "FAIL ssh/net-stop/fallback still tried keys or a password out=$(printf %q "$out")"
+    (( fails++ ))
+  fi
+  if [[ $(<"$tmpdir/ssh465_args") != *ConnectTimeout=3*ConnectTimeout=8* ]]; then
+    print -u2 "FAIL ssh/net-stop/timeout probe ConnectTimeout=3 must precede 8 got=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+
+  ssh465_reset
+  print -r -- path-long >"$tmpdir/ssh465_mode"
+  st=0
+  out=$(setup_access mac longhome.local) || st=$?
+  if (( st != 11 )) || [[ $(ssh465_args_n) != 2 || $out == *请输入* || $(<"$tmpdir/ssh465_args") == *id_rsa* ]]; then
+    print -u2 "FAIL ssh/mux-path-long/stop st=$st calls=$(ssh465_args_n) out=$(printf %q "$out") args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  if [[ $(sed -n '1p' "$tmpdir/ssh465_args") != *ControlMaster=auto* || $(sed -n '2p' "$tmpdir/ssh465_args") == *ControlMaster* || $(sed -n '2p' "$tmpdir/ssh465_args") != *" -i ${KEY} "* ]]; then
+    print -u2 "FAIL ssh/mux-path-long/retry got1=$(printf %q "$(sed -n '1p' "$tmpdir/ssh465_args")") got2=$(printf %q "$(sed -n '2p' "$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+
+  ssh465_reset
+  print -r -- auth >"$tmpdir/ssh465_mode"
+  st=0
+  out=$(setup_access mac needpw.local) || st=$?
+  if (( st != 10 )); then
+    print -u2 "FAIL ssh/auth-continue/status got $st want 10 out=$(printf %q "$out")"
+    (( fails++ ))
+  fi
+  if [[ $(ssh465_args_n) != 3 ]]; then
+    print -u2 "FAIL ssh/auth-continue/calls got=$(ssh465_args_n) want=3 args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  if [[ $(sed -n '1p' "$tmpdir/ssh465_args") != *ControlMaster=auto* ]]; then
+    print -u2 "FAIL ssh/auth-continue/first lanjump probe missing mux"
+    (( fails++ ))
+  fi
+  if [[ $(sed -n '2p' "$tmpdir/ssh465_args") == *ControlMaster* || $(sed -n '2p' "$tmpdir/ssh465_args") != *id_rsa* ]]; then
+    print -u2 "FAIL ssh/auth-continue/other-key got=$(printf %q "$(sed -n '2p' "$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  if [[ ! -f $tmpdir/ssh465_pw || $(<"$tmpdir/ssh465_pw") == *ControlMaster* || $(<"$tmpdir/ssh465_pw") == *ConnectTimeout=3* || $(<"$tmpdir/ssh465_pw") != *ConnectTimeout=8* || $(<"$tmpdir/ssh465_pw") != *PreferredAuthentications=keyboard-interactive* ]]; then
+    print -u2 "FAIL ssh/auth-continue/password got=$(printf %q "$(<"$tmpdir/ssh465_pw")")"
+    (( fails++ ))
+  fi
+
+  ssh465_reset
+  st=0
+  ssh_access_ready mac ready.local || st=$?
+  if (( st != 0 )); then
+    print -u2 "FAIL ssh/first-ok/status got $st want 0"
+    (( fails++ ))
+  fi
+  if [[ $(ssh465_args_n) != 1 || $(grep -c ' true$' "$tmpdir/ssh465_args") != 1 ]]; then
+    print -u2 "FAIL ssh/first-ok/verify still probed twice args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+
+  ssh465_reset
+  print -r -- auth >"$tmpdir/ssh465_mode"
+  st=0
+  ssh_access_ready mac installed.local >/dev/null || st=$?
+  if (( st != 0 )); then
+    print -u2 "FAIL ssh/installed-verify/status got $st want 0"
+    (( fails++ ))
+  fi
+  if [[ $(ssh465_args_n) != 4 ]]; then
+    print -u2 "FAIL ssh/installed-verify/calls got=$(ssh465_args_n) want=4 args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  if [[ $(sed -n '4p' "$tmpdir/ssh465_args") != *ControlMaster=auto* || $(sed -n '4p' "$tmpdir/ssh465_args") != *" -i ${KEY} "* || $(sed -n '4p' "$tmpdir/ssh465_args") != *' true' ]]; then
+    print -u2 "FAIL ssh/installed-verify/second got=$(printf %q "$(sed -n '4p' "$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+
+  print -r -- '# lanjump-pick-version 200 abc' >"$PICKER"
+  ssh465_reset
+  print -r -- 200 >"$tmpdir/ssh465_remote_ver"
+  st=0
+  sync_picker host.local mac || st=$?
+  if (( st != 0 )) || [[ -s $tmpdir/ssh465_upload || $(ssh465_args_n) != 1 ]]; then
+    print -u2 "FAIL ssh/picker-current/skip st=$st calls=$(ssh465_args_n) upload=$(<"$tmpdir/ssh465_upload") args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  ssh465_reset
+  print -r -- 300 >"$tmpdir/ssh465_remote_ver"
+  st=0
+  sync_picker host.local mac || st=$?
+  if (( st != 0 )) || [[ -s $tmpdir/ssh465_upload ]]; then
+    print -u2 "FAIL ssh/picker-newer-remote/skip st=$st upload=$(<"$tmpdir/ssh465_upload")"
+    (( fails++ ))
+  fi
+  ssh465_reset
+  print -r -- 100 >"$tmpdir/ssh465_remote_ver"
+  st=0
+  sync_picker host.local mac || st=$?
+  if (( st != 0 )) || [[ ! -s $tmpdir/ssh465_upload || $(ssh465_args_n) != 2 ]]; then
+    print -u2 "FAIL ssh/picker-older-remote/upload st=$st calls=$(ssh465_args_n) upload=$(<"$tmpdir/ssh465_upload")"
+    (( fails++ ))
+  fi
+  print -r -- 'picker-body' >"$PICKER"
+  ssh465_reset
+  st=0
+  sync_picker host.local mac || st=$?
+  if (( st != 0 )) || [[ ! -s $tmpdir/ssh465_upload || $(<"$tmpdir/ssh465_args") == *'f="$HOME/.local/bin/lanjump-pick"'* ]]; then
+    print -u2 "FAIL ssh/picker-unversioned/upload st=$st args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  print -r -- '# lanjump-pick-version 200 abc' >"$PICKER"
+  ssh465_reset
+  print -r -- probe-fail >"$tmpdir/ssh465_mode"
+  st=0
+  sync_picker host.local mac || st=$?
+  if (( st == 0 )) || [[ -s $tmpdir/ssh465_upload ]]; then
+    print -u2 "FAIL ssh/picker-probe-fail/upload st=$st upload=$(<"$tmpdir/ssh465_upload")"
+    (( fails++ ))
+  fi
+
+  print -r -- '# lanjump-pick-version 200 abc' >"$PICKER"
+  ssh465_reset
+  print -r -- 200 >"$tmpdir/ssh465_remote_ver"
+  st=0
+  ssh_access_ready mac host.local || st=$?
+  (( st == 0 )) && sync_picker host.local mac || st=$?
+  (( st == 0 )) && ssh_lanjump_tty mac@host.local true || st=$?
+  if [[ $(ssh465_n master) != 1 || $(ssh465_n reuse) != 2 || $(ssh465_n direct) != 0 || -s $tmpdir/ssh465_upload ]]; then
+    print -u2 "FAIL ssh/mux-enter/kinds master=$(ssh465_n master) reuse=$(ssh465_n reuse) direct=$(ssh465_n direct) upload=$(<"$tmpdir/ssh465_upload") args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  ssh465_tty=$(grep -e '^-t ' "$tmpdir/ssh465_args" || true)
+  if [[ $ssh465_tty == *ConnectTimeout=3* || $ssh465_tty != *ConnectTimeout=8* || $ssh465_tty != *ControlMaster=auto* ]]; then
+    print -u2 "FAIL ssh/mux-enter/interactive-timeout got=$(printf %q "$ssh465_tty")"
+    (( fails++ ))
+  fi
+
+  ssh465_reset
+  print -r -- 200 >"$tmpdir/ssh465_remote_ver"
+  st=0
+  ssh_access_ready mac host.local || st=$?
+  (( st == 0 )) && sync_picker host.local mac || st=$?
+  (( st == 0 )) && ssh_lanjump mac@host.local true || st=$?
+  (( st == 0 )) && ssh_access_ready mac host.local || st=$?
+  (( st == 0 )) && sync_picker host.local mac || st=$?
+  (( st == 0 )) && ssh_lanjump_tty mac@host.local true || st=$?
+  if (( st != 0 )) || [[ $(ssh465_n master) != 1 || $(ssh465_n reuse) != 5 || $(ssh465_n direct) != 0 ]]; then
+    print -u2 "FAIL ssh/mux-go/kinds st=$st master=$(ssh465_n master) reuse=$(ssh465_n reuse) direct=$(ssh465_n direct) args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+
+  ssh465_reset
+  print -r -- 200 >"$tmpdir/ssh465_remote_ver"
+  LANJUMP_NO_SSH_MUX=1
+  st=0
+  ssh_access_ready mac host.local || st=$?
+  (( st == 0 )) && sync_picker host.local mac || st=$?
+  (( st == 0 )) && ssh_lanjump mac@host.local true || st=$?
+  (( st == 0 )) && ssh_access_ready mac host.local || st=$?
+  (( st == 0 )) && sync_picker host.local mac || st=$?
+  (( st == 0 )) && ssh_lanjump_tty mac@host.local true || st=$?
+  unset LANJUMP_NO_SSH_MUX
+  if (( st != 0 )) || [[ $(ssh465_n master) != 0 || $(ssh465_n reuse) != 0 || $(ssh465_n direct) != 6 || $(<"$tmpdir/ssh465_args") == *ControlMaster* ]]; then
+    print -u2 "FAIL ssh/mux-off/kinds st=$st master=$(ssh465_n master) reuse=$(ssh465_n reuse) direct=$(ssh465_n direct)"
+    (( fails++ ))
+  fi
+
+  functions -c restore_tty _ssh465_restore
+  functions -c setup_tty _ssh465_setup
+  restore_tty() { : }
+  setup_tty() { : }
+  items_kind=(host)
+  items_alias=(office)
+  items_user=(mac)
+  items_hostname=(office.local)
+  items_ip=(10.0.0.8)
+  items_mac=('aa:bb:cc:dd:ee:01')
+  items_port=(22)
+  ssh465_reset
+  print -r -- net >"$tmpdir/ssh465_mode"
+  print -r -- 'ssh: connect to host 10.0.0.8 port 22: Operation timed out' >"$tmpdir/ssh465_err"
+  out=$(connect_item 1 </dev/null)
+  if [[ $out != *'连不上 office（可能睡眠、离线或换了网络）。可以按 r 重新扫描。'* || $out == *请输入* || $out == *公钥安装失败* || $(ssh465_args_n) != 1 ]]; then
+    print -u2 "FAIL ssh/net-ui/msg calls=$(ssh465_args_n) out=$(printf %q "$out")"
+    (( fails++ ))
+  fi
+  ssh465_reset
+  print -r -- auth >"$tmpdir/ssh465_mode"
+  : >"$tmpdir/ssh465_verify_fail"
+  out=$(connect_item 1 </dev/null)
+  if [[ $out != *密钥登录仍失败* || $out == *连不上* || $out == *公钥安装失败* || $(<"$tmpdir/ssh465_args") == *'dest="$HOME/.local/bin/lanjump-pick"'* ]]; then
+    print -u2 "FAIL ssh/installed-verify-ui/msg out=$(printf %q "$out")"
+    (( fails++ ))
+  fi
+  functions -c _ssh465_restore restore_tty
+  functions -c _ssh465_setup setup_tty
+  unfunction _ssh465_restore _ssh465_setup
+  SSH_OPTS=("${ssh465_opts_save[@]}")
+  items_kind=("${ssh465_kind_save[@]}")
+  items_alias=("${ssh465_alias_save[@]}")
+  items_user=("${ssh465_user_save[@]}")
+  items_hostname=("${ssh465_hn_save[@]}")
+  items_ip=("${ssh465_ip_save[@]}")
+  items_mac=("${ssh465_mac_save[@]}")
+  items_port=("${ssh465_port_save[@]}")
+  rm -f "$HOME/.ssh/id_rsa"
+  unfunction ssh465_reset ssh465_n ssh465_args_n
+  if [[ -n $saved_no_mux ]]; then
+    LANJUMP_NO_SSH_MUX=$saved_no_mux
+  else
+    unset LANJUMP_NO_SSH_MUX
+  fi
+
   PICKER=$saved_picker
   unfunction terminfo_source 2>/dev/null || true
 
@@ -1758,6 +2141,11 @@ EOF
     if [[ -f $tmpdir/guard-hosts ]]; then
       cp "$tmpdir/guard-hosts" "$real_hosts"
     fi
+  fi
+  if (( ! real_mux_existed )) && [[ -d $real_mux ]]; then
+    print -u2 "FAIL ssh/real-mux-untouched selftest created ${real_mux}"
+    (( fails++ ))
+    rm -rf "$real_mux"
   fi
   rm -rf "$tmpdir"
 
