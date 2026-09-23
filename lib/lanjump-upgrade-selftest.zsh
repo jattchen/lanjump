@@ -1,10 +1,14 @@
 #!/bin/zsh
 # Run from repo: zsh lib/lanjump-upgrade-selftest.zsh
+# #461 calls this file for the upgrade entry. Unless LANJUMP_SELFTEST_FINDER=1,
+# a fake osascript is first on PATH (ok / fail / timeout). Finder is not contacted.
 emulate -L zsh
 set -euo pipefail
+zmodload zsh/datetime
 
 ROOT=${0:A:h:h}
 fails=0
+fake_osascript_bin=
 
 fail() {
   print -u2 "FAIL $1"
@@ -26,6 +30,95 @@ has_desktop_name() {
   done
   return 1
 }
+
+# #462: default never talks to the real Finder. Opt in with LANJUMP_SELFTEST_FINDER=1.
+if [[ ${LANJUMP_SELFTEST_FINDER:-} == 1 ]]; then
+  print -u2 "LANJUMP_SELFTEST_FINDER=1: using real osascript"
+else
+  export LANJUMP_SELFTEST_FORBID_DESKTOP=${HOME:A}/Desktop
+  fake_osascript_bin=$(mktemp -d)
+  cat >"$fake_osascript_bin/osascript" <<'EOF'
+#!/bin/zsh
+emulate -L zsh
+set -u
+
+mode=${LANJUMP_FAKE_OSASCRIPT:-ok}
+log=${LANJUMP_FAKE_OSASCRIPT_LOG:-}
+script=
+if [[ ${1:-} == - ]]; then
+  script=$(cat || true)
+  shift
+elif [[ -n ${1:-} && -f ${1:-} ]]; then
+  script=$(<"$1")
+  shift
+fi
+if [[ -n $log ]]; then
+  print -r -- "call mode=$mode argv: $*" >>"$log"
+  [[ -n $script ]] && print -r -- "$script" >"${log}.script"
+fi
+if [[ $mode == timeout ]]; then
+  # In-process wait that ignores TERM, so the installer must KILL the process.
+  # exec sleep would drop the trap and die on TERM.
+  trap '' TERM
+  zmodload zsh/zselect
+  zselect -t 12000
+  exit 0
+fi
+if [[ $mode == fail ]]; then
+  print -u2 "fake-osascript: finder failed"
+  exit 1
+fi
+if [[ $mode != ok ]]; then
+  print -u2 "fake-osascript: unknown mode $mode"
+  exit 1
+fi
+desk=${1:-}
+src=${2:-}
+wanted=${3:-}
+if [[ -z $desk || -z $wanted ]]; then
+  print -u2 "fake-osascript: missing desk/wanted"
+  exit 1
+fi
+desk_real=${desk:A}
+if [[ -n ${LANJUMP_SELFTEST_FORBID_DESKTOP:-} && $desk_real == ${LANJUMP_SELFTEST_FORBID_DESKTOP:A} ]]; then
+  print -u2 "fake-osascript: refuse real desktop $desk_real"
+  exit 1
+fi
+if [[ $desk_real != "${HOME:A}/Desktop" ]]; then
+  print -u2 "fake-osascript: refuse $desk_real"
+  exit 1
+fi
+dest="$desk/$wanted"
+if [[ -L $dest ]]; then
+  print -u2 "fake-osascript: refuse symlink dest $dest"
+  exit 1
+fi
+if [[ -e $dest ]]; then
+  kind=$(file -b -- "$dest")
+  if [[ $kind == *Alias* ]]; then
+    print ok
+    exit 0
+  fi
+  print -u2 "fake-osascript: dest exists"
+  exit 1
+fi
+mkdir -p -- "$desk"
+# file(1) treats this header as "MacOS Alias file". Not a resolvable bookmark.
+printf 'book\0\0\0\0mark\0\0\0\0' >"$dest"
+print ok
+exit 0
+EOF
+  chmod 755 "$fake_osascript_bin/osascript"
+  export PATH="$fake_osascript_bin:$PATH"
+  export LANJUMP_FAKE_OSASCRIPT=${LANJUMP_FAKE_OSASCRIPT:-ok}
+  export LANJUMP_FAKE_OSASCRIPT_LOG="$fake_osascript_bin/calls"
+  : >"$LANJUMP_FAKE_OSASCRIPT_LOG"
+  osa=$(command -v osascript)
+  if [[ $osa != "$fake_osascript_bin/osascript" ]]; then
+    print -u2 "FAIL osascript is not the fake: $osa"
+    exit 1
+  fi
+fi
 
 fakehome=$(mktemp -d)
 mkdir -p "$fakehome/Desktop" "$fakehome/.ssh" "$fakehome/Library/Application Support"
@@ -990,6 +1083,237 @@ if (( st339 == 0 )); then
     fail "#339 next upgrade skipped as if unused sha was installed: $out"
   fi
 fi
+
+# #462: success trashes old official scripts only after the alias exists.
+if [[ ! -e "$fakehome/.Trash/Lanjump.command" ]]; then
+  fail "#462 success path did not trash old Lanjump.command"
+fi
+if [[ ! -e "$fakehome/.Trash/启动 xx.command" ]]; then
+  fail "#462 success path did not trash content-matching 启动 xx.command"
+fi
+
+home462= home462t= home462u= tar462=
+if [[ ${LANJUMP_SELFTEST_FINDER:-} == 1 ]]; then
+  :
+else
+  msg462='桌面快捷方式没建成（Finder 没响应），可以在终端输入 lanjump 打开'
+  script462="${LANJUMP_FAKE_OSASCRIPT_LOG}.script"
+  if [[ ! -s $LANJUMP_FAKE_OSASCRIPT_LOG ]]; then
+    fail "#462 fake osascript was never called"
+  fi
+  if [[ ! -f $script462 ]]; then
+    fail "#462 fake osascript did not record the AppleScript"
+  else
+    body462=$(<"$script462")
+    timed462=${body462#*'with timeout of 10 seconds'}
+    if [[ $timed462 == "$body462" || $timed462 != *'tell application "Finder"'* || $timed462 != *'end timeout'* ]]; then
+      fail "#462 AppleScript does not wrap Finder in a 10s timeout"
+    fi
+  fi
+
+  sha462=462c462c462c462c462c462c462c462c462c462c
+  pkg462=$(mktemp -d)
+  mkdir -p "$pkg462/lanjump-main"/{bin,lib,src}
+  cp "$ROOT/bin/lanjump.command" "$pkg462/lanjump-main/bin/"
+  cp "$ROOT/bin/lanjump-ghostty-attach" "$pkg462/lanjump-main/bin/"
+  cp "$ROOT/lib/"* "$pkg462/lanjump-main/lib/"
+  cp "$ROOT/src/lanjump-keys.c" "$pkg462/lanjump-main/src/"
+  cp "$ROOT/install.zsh" "$pkg462/lanjump-main/install.zsh"
+  tar462=$(mktemp)
+  tar -czf "$tar462" -C "$pkg462" lanjump-main
+  rm -rf "$pkg462"
+
+  trash_listing() {
+    local d=$1 f
+    for f in "$d"/.Trash/*(N); do
+      print -r -- "${f:t}"
+    done | sort
+  }
+
+  # Failure keeps an existing official .command, writes the marker, and does not touch trash.
+  home462=$(mktemp -d)
+  mkdir -p "$home462/Desktop" "$home462/.Trash" "$home462/Library/Application Support"
+  cp "$ROOT/bin/lanjump.command" "$home462/Desktop/启动 lanjump.command"
+  chmod 755 "$home462/Desktop/启动 lanjump.command"
+  sum462=$(cksum "$home462/Desktop/启动 lanjump.command")
+  cat >"$home462/Desktop/my-custom-tool.command" <<'EOF'
+#!/bin/zsh
+print custom-462
+EOF
+  trash462=$(trash_listing "$home462")
+  start462=$EPOCHREALTIME
+  st462=0
+  out462=$(HOME=$home462 LANJUMP_FAKE_OSASCRIPT=fail /bin/zsh "$ROOT/install.zsh" 2>&1) || st462=$?
+  el462=$(( EPOCHREALTIME - start462 ))
+  mark462="$home462/Library/Application Support/lanjump/desktop-finder-failed"
+  if (( st462 )); then
+    fail "#462 fail-path install exited $st462: $out462"
+  fi
+  if [[ $out462 != *"$msg462"* || $out462 != *安装完成* ]]; then
+    fail "#462 fail-path missing notice or success: $out462"
+  fi
+  if (( el462 >= 12 )); then
+    fail "#462 immediate Finder failure took ${el462}s"
+  fi
+  if [[ ! -f $mark462 ]]; then
+    fail "#462 fail-path did not remember the Finder failure"
+  fi
+  if [[ $(cksum "$home462/Desktop/启动 lanjump.command") != "$sum462" ]]; then
+    fail "#462 fail-path replaced the existing .command"
+  fi
+  if [[ -e "$home462/Desktop/启动 lanjump" || -L "$home462/Desktop/启动 lanjump" ]]; then
+    fail "#462 fail-path created a second launcher beside the .command"
+  fi
+  if [[ ! -f "$home462/Desktop/my-custom-tool.command" ]]; then
+    fail "#462 fail-path deleted a custom .command"
+  fi
+  if [[ $(trash_listing "$home462") != "$trash462" ]]; then
+    fail "#462 fail-path changed trash: $(trash_listing "$home462")"
+  fi
+
+  # Later upgrade keeps that .command and does not call Finder again.
+  line462=$(( $(wc -l <"$LANJUMP_FAKE_OSASCRIPT_LOG") + 1 ))
+  start462=$EPOCHREALTIME
+  st462=0
+  out462=$(HOME=$home462 LANJUMP_FAKE_OSASCRIPT=timeout LANJUMP_REMOTE_SHA=$sha462 LANJUMP_ARCHIVE_URL="file://${tar462}" "$home462/.local/bin/lanjump" upgrade 2>&1) || st462=$?
+  el462=$(( EPOCHREALTIME - start462 ))
+  if (( st462 )); then
+    fail "#462 remembered-failure upgrade exited $st462: $out462"
+  fi
+  if [[ $out462 == *"$msg462"* || $out462 != *已从*462c462* ]]; then
+    fail "#462 remembered-failure upgrade did not skip Finder: $out462"
+  fi
+  if (( el462 >= 12 )); then
+    fail "#462 remembered-failure upgrade took ${el462}s"
+  fi
+  if sed -n "${line462},\$p" "$LANJUMP_FAKE_OSASCRIPT_LOG" | grep -q 'mode=timeout'; then
+    fail "#462 remembered-failure upgrade called osascript"
+  fi
+  if [[ ! -f $mark462 || $(cksum "$home462/Desktop/启动 lanjump.command") != "$sum462" ]]; then
+    fail "#462 remembered-failure upgrade dropped the marker or the .command"
+  fi
+  if [[ $(trash_listing "$home462") != "$trash462" ]]; then
+    fail "#462 remembered-failure upgrade changed trash"
+  fi
+
+  # A non-upgrade install clears the marker and tries Finder again.
+  st462=0
+  out462=$(HOME=$home462 LANJUMP_FAKE_OSASCRIPT=ok /bin/zsh "$ROOT/install.zsh" 2>&1) || st462=$?
+  if (( st462 )); then
+    fail "#462 reinstall exited $st462: $out462"
+  fi
+  if [[ -f $mark462 ]]; then
+    fail "#462 reinstall left the Finder failure marker"
+  fi
+  if [[ -e "$home462/Desktop/启动 lanjump.command" || -e "$home462/Desktop/Lanjump.command" ]]; then
+    fail "#462 reinstall left the official .command after the alias existed"
+  fi
+  if [[ -L "$home462/Desktop/启动 lanjump" ]] || [[ $(file -b -- "$home462/Desktop/启动 lanjump") != *Alias* ]]; then
+    fail "#462 reinstall did not replace the fallback with an alias"
+  fi
+  if [[ ! -f "$home462/Desktop/my-custom-tool.command" ]]; then
+    fail "#462 reinstall deleted a custom .command"
+  fi
+  if [[ ! -e "$home462/.Trash/启动 lanjump.command" ]]; then
+    fail "#462 reinstall did not trash the official .command after success"
+  fi
+
+  # No existing .command: outer 15s cap, then a symlink, and trash stays empty.
+  home462t=$(mktemp -d)
+  mkdir -p "$home462t/Desktop" "$home462t/.Trash"
+  start462=$EPOCHREALTIME
+  st462=0
+  out462=$(HOME=$home462t LANJUMP_FAKE_OSASCRIPT=timeout /bin/zsh "$ROOT/install.zsh" 2>&1) || st462=$?
+  el462=$(( EPOCHREALTIME - start462 ))
+  link462="$home462t/Desktop/启动 lanjump"
+  launcher462="$home462t/Library/Application Support/lanjump/lanjump.command"
+  if (( st462 )); then
+    fail "#462 timeout install exited $st462: $out462"
+  fi
+  if [[ $out462 != *"$msg462"* ]]; then
+    fail "#462 timeout install missing notice: $out462"
+  fi
+  if (( el462 < 14 || el462 > 30 )); then
+    fail "#462 timeout install took ${el462}s, want 14..30"
+  fi
+  if [[ ! -f "$home462t/Library/Application Support/lanjump/desktop-finder-failed" ]]; then
+    fail "#462 timeout install did not remember the failure"
+  fi
+  if [[ ! -L $link462 ]]; then
+    fail "#462 timeout install did not create a symlink fallback"
+  fi
+  if [[ ${link462:A} != ${launcher462:A} ]]; then
+    fail "#462 symlink target is ${link462:A}"
+  fi
+  if [[ -e "$home462t/Desktop/启动 lanjump.command" ]]; then
+    fail "#462 timeout install copied a .command"
+  fi
+  if [[ -n $(trash_listing "$home462t") ]]; then
+    fail "#462 timeout install put files in trash: $(trash_listing "$home462t")"
+  fi
+  if [[ $(head -n 1 "$launcher462") != '#!/bin/zsh' ]]; then
+    fail "#462 timeout install rewrote the app launcher"
+  fi
+
+  # Finder works on the next upgrade: swap the symlink for an alias without rewriting the target.
+  st462=0
+  out462=$(HOME=$home462t LANJUMP_FAKE_OSASCRIPT=ok LANJUMP_REMOTE_SHA=$sha462 LANJUMP_ARCHIVE_URL="file://${tar462}" "$home462t/.local/bin/lanjump" upgrade 2>&1) || st462=$?
+  if (( st462 )); then
+    fail "#462 symlink upgrade exited $st462: $out462"
+  fi
+  if [[ -L $link462 ]] || [[ $(file -b -- "$link462") != *Alias* ]]; then
+    fail "#462 upgrade did not replace the symlink with an alias ($(file -b -- "$link462" 2>/dev/null || print missing))"
+  fi
+  if [[ -f "$home462t/Library/Application Support/lanjump/desktop-finder-failed" ]]; then
+    fail "#462 successful upgrade left the Finder failure marker"
+  fi
+  if [[ -e "$home462t/Desktop/启动 lanjump.command" ]]; then
+    fail "#462 successful upgrade created a .command"
+  fi
+  if [[ $(head -n 1 "$launcher462") != '#!/bin/zsh' ]]; then
+    fail "#462 symlink replacement rewrote the app launcher"
+  fi
+  leftover462=("$home462t"/Desktop/.启动\ lanjump.new.*(N))
+  if (( ${#leftover462} )); then
+    fail "#462 left a temporary alias beside the launcher: ${leftover462[*]}"
+  fi
+
+  # A user-owned file with the launcher name is left alone.
+  home462u=$(mktemp -d)
+  mkdir -p "$home462u/Desktop" "$home462u/.Trash"
+  print -r -- 'user-owned' >"$home462u/Desktop/启动 lanjump"
+  cat >"$home462u/Desktop/my-custom-tool.command" <<'EOF'
+#!/bin/zsh
+print custom-462-user
+EOF
+  st462=0
+  out462=$(HOME=$home462u LANJUMP_FAKE_OSASCRIPT=fail /bin/zsh "$ROOT/install.zsh" 2>&1) || st462=$?
+  if (( st462 )); then
+    fail "#462 occupied-name install exited $st462: $out462"
+  fi
+  if [[ $out462 != *"$msg462"* ]]; then
+    fail "#462 occupied-name install missing notice: $out462"
+  fi
+  if [[ -L "$home462u/Desktop/启动 lanjump" || $(<"$home462u/Desktop/启动 lanjump") != user-owned ]]; then
+    fail "#462 occupied-name install changed the user's file"
+  fi
+  if [[ -e "$home462u/Desktop/启动 lanjump.command" ]]; then
+    fail "#462 occupied-name install copied a .command"
+  fi
+  if [[ ! -f "$home462u/Desktop/my-custom-tool.command" ]]; then
+    fail "#462 occupied-name install deleted a custom .command"
+  fi
+  if [[ ! -f "$home462u/Library/Application Support/lanjump/desktop-finder-failed" ]]; then
+    fail "#462 occupied-name install did not remember the failure"
+  fi
+  if [[ -n $(trash_listing "$home462u") ]]; then
+    fail "#462 occupied-name install changed trash"
+  fi
+fi
+
+for junk462 in "$home462" "$home462t" "$home462u" "$tar462" "$fake_osascript_bin"; do
+  [[ -n $junk462 ]] && rm -rf "$junk462"
+done
 
 rm -rf "$fakehome" "$oldpkg" "$oldtar" "$newpkg" "$newtar" "$badpkg" "$badtar" "$fakebin" "$mainpkg" "$shapkg" "$maintar" "$shatar" "$curl_log" "$repairpkg" "$repairtar" "$home311" "$fakebin311" "$mainpkg311" "$shapkg311" "$maintar311" "$shatar311" "$curl_log311" "$mixpkg" "$mixtar" "$mvwrap" "$pipehome" "$pipepkg" "$pipetar" "$pathhome" "$home283" "$bin283" "$home306" "$home334" "$mvwrap334" "$home335" "$cpwrap335" "$home358" "$mvwrap358" "$mark358" "$home386" "$mvwrap386" "$mark386" "$home419" "$mvwrap419" "$mark419" "$writer430" "$home430" "$mvwrap430" "$mark430" "$home338" "$pkg338" "$tar338" "$api338" "$home339" "$pkg339" "$tar339" "$api339" "$curl_log339" "$fakebin339"
 
