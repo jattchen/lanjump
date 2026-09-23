@@ -6,6 +6,11 @@ ROOT=${SELF:h}
 ARCHIVE_URL=${LANJUMP_ARCHIVE_URL:-'https://github.com/jattchen/lanjump/archive/refs/heads/main.tar.gz'}
 VERSION_API=${LANJUMP_VERSION_API:-'https://api.github.com/repos/jattchen/lanjump/commits/main'}
 
+# Regression only. Must stay above any install side effect.
+if [[ ${1:-} == --selftest ]]; then
+  exec /bin/zsh "$ROOT/selftest.zsh"
+fi
+
 if [[ ${1:-} == --tar ]]; then
   tar -C "$ROOT" -czf - install.zsh bin lib src
   exit 0

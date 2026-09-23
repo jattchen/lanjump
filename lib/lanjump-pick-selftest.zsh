@@ -3064,9 +3064,25 @@ pick_selftest() {
     (( fails++ ))
   fi
   print -r -- "$script" >"$testhome/ghostty-space.applescript"
-  if ! /usr/bin/osacompile -o "$testhome/ghostty-space.scpt" "$testhome/ghostty-space.applescript" 2>"$testhome/osacompile-space.err"; then
-    print -u2 "FAIL ghostty/space-compile $(<"$testhome/osacompile-space.err") got=$(printf %q "$script")"
-    (( fails++ ))
+  # `surface configuration` exists only in Ghostty's scripting dictionary.
+  # CI has no Ghostty.app. String checks above still run; compile does not.
+  if [[ -z ${_lj_ghostty_dict:-} ]]; then
+    typeset -g _lj_ghostty_dict=0
+    local _gdir
+    _gdir=$(mktemp -d) || _gdir=
+    if [[ -n $_gdir ]]; then
+      print -r -- $'tell application "Ghostty"\nset cfg to new surface configuration\nend tell' >"$_gdir/probe.applescript"
+      if /usr/bin/osacompile -o "$_gdir/probe.scpt" "$_gdir/probe.applescript" >/dev/null 2>&1; then
+        _lj_ghostty_dict=1
+      fi
+      rm -rf "$_gdir"
+    fi
+  fi
+  if (( _lj_ghostty_dict )); then
+    if ! /usr/bin/osacompile -o "$testhome/ghostty-space.scpt" "$testhome/ghostty-space.applescript" 2>"$testhome/osacompile-space.err"; then
+      print -u2 "FAIL ghostty/space-compile $(<"$testhome/osacompile-space.err") got=$(printf %q "$script")"
+      (( fails++ ))
+    fi
   fi
   script=$(ghostty_osascript_for_sessions lanjump)
   assert_ghostty_command_helper ghostty/plain-name "$script"
@@ -4314,9 +4330,11 @@ pick_selftest() {
     (( fails++ ))
   fi
   print -r -- "$script" >"$testhome/ghostty.applescript"
-  if ! /usr/bin/osacompile -o "$testhome/ghostty.scpt" "$testhome/ghostty.applescript" 2>"$testhome/osacompile.err"; then
-    print -u2 "FAIL ghostty/script-compile $(<"$testhome/osacompile.err") got=$(printf %q "$script")"
-    (( fails++ ))
+  if (( _lj_ghostty_dict )); then
+    if ! /usr/bin/osacompile -o "$testhome/ghostty.scpt" "$testhome/ghostty.applescript" 2>"$testhome/osacompile.err"; then
+      print -u2 "FAIL ghostty/script-compile $(<"$testhome/osacompile.err") got=$(printf %q "$script")"
+      (( fails++ ))
+    fi
   fi
   ghostty_close_others=0
 
@@ -4762,9 +4780,11 @@ pick_selftest() {
     (( fails++ ))
   fi
   print -r -- "$script" >"$testhome/ghostty-tab.applescript"
-  if ! /usr/bin/osacompile -o "$testhome/ghostty-tab.scpt" "$testhome/ghostty-tab.applescript" 2>"$testhome/osacompile-tab.err"; then
-    print -u2 "FAIL ghostty/tab-compile $(<"$testhome/osacompile-tab.err") got=$(printf %q "$script")"
-    (( fails++ ))
+  if (( _lj_ghostty_dict )); then
+    if ! /usr/bin/osacompile -o "$testhome/ghostty-tab.scpt" "$testhome/ghostty-tab.applescript" 2>"$testhome/osacompile-tab.err"; then
+      print -u2 "FAIL ghostty/tab-compile $(<"$testhome/osacompile-tab.err") got=$(printf %q "$script")"
+      (( fails++ ))
+    fi
   fi
   ghostty_close_others=1
   script=$(ghostty_osascript_for_sessions lanjump)

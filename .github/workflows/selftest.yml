@@ -1,0 +1,37 @@
+name: selftest
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: macos-latest
+    # brew install tmux is the slow step. The suite itself must finish in under a minute.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tmux
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install tmux
+
+      - name: Fingerprint real SSH and lanjump config
+        run: zsh selftest.zsh --fingerprint > "$RUNNER_TEMP/lanjump-config-before.txt"
+
+      - name: Run selftests
+        timeout-minutes: 3
+        run: zsh install.zsh --selftest
+
+      - name: Real SSH and lanjump config unchanged
+        if: always()
+        run: |
+          zsh selftest.zsh --fingerprint > "$RUNNER_TEMP/lanjump-config-after.txt"
+          diff -u "$RUNNER_TEMP/lanjump-config-before.txt" "$RUNNER_TEMP/lanjump-config-after.txt"
