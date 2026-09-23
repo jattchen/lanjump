@@ -6,9 +6,9 @@
 # lib/lanjump-keys-selftest.zsh; that file is the same kind of regression
 # (C helper and Python fallback) and runs here too.
 #
-# Not in this branch yet, so those issues can add their own assertions:
-#   #463 / #464 tmux call budgets inside pick-selftest
-#   #466 dns-sd early-stop inside host-selftest
+# Budgets landed in the other issues' selftests:
+#   #463 tmux call limits and #464 same-TERM terminal-features in pick-selftest
+#   #466 fake dns-sd single-host resolve under 0.5s in host-selftest
 emulate zsh
 setopt no_unset pipefail
 zmodload zsh/datetime
