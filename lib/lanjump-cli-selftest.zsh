@@ -244,6 +244,18 @@ ssh() {
   return 0
 }
 
+# Mux setup must not mkdir the real ~/.ssh (#443 / #465).
+functions -c ssh_prepare_mux _cli_ssh_prepare_mux
+ssh_prepare_mux() {
+  local saved_home=$HOME
+  HOME=$tmpdir
+  {
+    _cli_ssh_prepare_mux
+  } always {
+    HOME=$saved_home
+  }
+}
+
 read_log() {
   [[ -f $LANJUMP_CLI_TEST_LOG ]] || return
   print -r -- "$(<"$LANJUMP_CLI_TEST_LOG")"
@@ -542,6 +554,61 @@ if (( st == 0 || st == 1 )); then
   (( fails++ ))
 fi
 expect_contains has-session-login/msg '无法登录' "$err"
+
+# #465: network failure stays exit 2 (#175/#178) and is not an auth failure.
+setup_access() { return 11 }
+st=0
+err=$(cli_has_session studio demo 2>&1) || st=$?
+if (( st != 2 )); then
+  print -u2 "FAIL has-session-net/status got $st want 2"
+  (( fails++ ))
+fi
+expect_contains has-session-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$err"
+expect_absent has-session-net/no-auth '无法登录' "$err"
+st=0
+out=$(cli_dispatch go studio:demo 2>&1) || st=$?
+if (( st != 2 )); then
+  print -u2 "FAIL go-net/status got $st want 2"
+  (( fails++ ))
+fi
+expect_contains go-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$out"
+expect_absent go-net/no-prompt '要新建并打开吗' "$out"
+expect_absent go-net/no-auth '无法登录' "$out"
+st=0
+out=$(cli_dispatch last studio 2>&1) || st=$?
+if (( st != 2 )); then
+  print -u2 "FAIL last-net/status got $st want 2"
+  (( fails++ ))
+fi
+expect_contains last-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$out"
+expect_absent last-net/no-auth '无法登录' "$out"
+st=0
+out=$(cli_dispatch list studio 2>&1) || st=$?
+if (( st != 2 )); then
+  print -u2 "FAIL list-net/status got $st want 2"
+  (( fails++ ))
+fi
+expect_contains list-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$out"
+expect_absent list-net/no-auth '无法登录' "$out"
+st=0
+out=$(cli_dispatch ls studio 2>&1) || st=$?
+if (( st != 2 )); then
+  print -u2 "FAIL ls-net/status got $st want 2"
+  (( fails++ ))
+fi
+expect_contains ls-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$out"
+expect_absent ls-net/no-auth '无法登录' "$out"
+_lj_save_pick=$functions[cli_pick]
+cli_pick() { return 1 }
+st=0
+out=$(cli_dispatch list local 2>&1) || st=$?
+if (( st != 1 )); then
+  print -u2 "FAIL list-local-fail/status got $st want 1"
+  (( fails++ ))
+fi
+expect_absent list-local-fail/no-net '连不上' "$out"
+functions[cli_pick]=$_lj_save_pick
+unset _lj_save_pick
 functions[setup_access]=$_lj_save_access
 
 sync_picker() { return 1 }
