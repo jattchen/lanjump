@@ -3300,6 +3300,7 @@ pick_selftest() {
     print -r -- "$*" >>"$tmux_log"
     return 0
   }
+  hooks_installed=0
   tmux_install_snapshot_hooks
   hook_log=$(<"$tmux_log")
   if [[ $hook_log != *'set-hook -g client-detached[91]'* ]]; then
@@ -3333,12 +3334,21 @@ pick_selftest() {
     local hook file
     case $1 in
       show-hooks)
-        hook=${@[-1]}
-        file="$PICK_SELFTEST_HOOK91_DIR/$hook"
-        if [[ -f "$file" ]]; then
-          print -r -- "$hook $(<"$file")"
+        if [[ ${@[-1]} == -g ]]; then
+          local f base
+          setopt local_options nullglob
+          for f in "$PICK_SELFTEST_HOOK91_DIR"/*; do
+            base=${f:t}
+            print -r -- "$base $(<"$f")"
+          done
         else
-          print -r -- "$hook "
+          hook=${@[-1]}
+          file="$PICK_SELFTEST_HOOK91_DIR/$hook"
+          if [[ -f "$file" ]]; then
+            print -r -- "$hook $(<"$file")"
+          else
+            print -r -- "$hook "
+          fi
         fi
         ;;
       set-hook)
@@ -3353,6 +3363,7 @@ pick_selftest() {
     esac
     return 0
   }
+  hooks_installed=0
   tmux_install_snapshot_hooks
   hook91_got=
   [[ -f "$hook91_file" ]] && hook91_got=$(<"$hook91_file")
@@ -3370,12 +3381,21 @@ pick_selftest() {
     local hook file
     case $1 in
       show-hooks)
-        hook=${@[-1]}
-        file="$PICK_SELFTEST_HOOK91_DIR/$hook"
-        if [[ -f "$file" ]]; then
-          print -r -- "$hook $(<"$file")"
+        if [[ ${@[-1]} == -g ]]; then
+          local f base
+          setopt local_options nullglob
+          for f in "$PICK_SELFTEST_HOOK91_DIR"/*; do
+            base=${f:t}
+            print -r -- "$base $(<"$f")"
+          done
         else
-          print -r -- "$hook "
+          hook=${@[-1]}
+          file="$PICK_SELFTEST_HOOK91_DIR/$hook"
+          if [[ -f "$file" ]]; then
+            print -r -- "$hook $(<"$file")"
+          else
+            print -r -- "$hook "
+          fi
         fi
         ;;
       set-hook)
@@ -3390,6 +3410,7 @@ pick_selftest() {
     esac
     return 0
   }
+  hooks_installed=0
   tmux_install_snapshot_hooks
   detached91_got=
   [[ -f "$detached91_file" ]] && detached91_got=$(<"$detached91_file")
@@ -3442,6 +3463,7 @@ pick_selftest() {
     fi
     return 0
   }
+  hooks_installed=0
   tmux_install_snapshot_hooks
   hook_log=$(<"$tmux_log")
   if [[ $hook_log != *"$hook_pick"* ]]; then
@@ -4851,15 +4873,26 @@ pick_selftest() {
 
   boot_calls=()
   items_id=(keep)
+  tmux_state_invalidate
   load_items() { boot_calls+=(load_items); items_id=(keep restored) }
   picker_boot_after_first_draw
   expect boot/after-runs-changed 'maybe_restore_sessions tmux_prepare_color tmux_prepare_keys load_items draw' "${boot_calls[*]}"
 
   boot_calls=()
   items_id=(keep)
+  tmux_state_invalidate
   load_items() { boot_calls+=(load_items) }
   picker_boot_after_first_draw
   expect boot/after-runs-unchanged 'maybe_restore_sessions tmux_prepare_color tmux_prepare_keys load_items' "${boot_calls[*]}"
+
+  # #463: a clean census and no created session reuse the first paint.
+  boot_calls=()
+  items_id=(keep)
+  tm_state_dirty=0
+  (( tm_state_gen > 0 )) || tm_state_gen=1
+  load_items() { boot_calls+=(load_items) }
+  picker_boot_after_first_draw
+  expect boot/after-skips-clean-load 'maybe_restore_sessions tmux_prepare_color tmux_prepare_keys' "${boot_calls[*]}"
 
   stty_orig='saved-tty'
   maybe_restore_sessions() { boot_calls+=(maybe_restore_sessions); stty_orig=clobbered }
@@ -6360,7 +6393,7 @@ pick_selftest() {
     print -u2 "FAIL color/appearance-global missing -g LC_GROK_APPEARANCE dark got=$(printf %q "$color_got")"
     (( fails++ ))
   fi
-  if [[ $color_got != *$'\nset-environment LC_GROK_APPEARANCE dark'* && $color_got != 'set-environment LC_GROK_APPEARANCE dark'* ]]; then
+  if [[ $color_got != *'set-environment LC_GROK_APPEARANCE dark'* ]]; then
     print -u2 "FAIL color/appearance-session missing session LC_GROK_APPEARANCE dark got=$(printf %q "$color_got")"
     (( fails++ ))
   fi
@@ -6975,19 +7008,19 @@ EOF
   HOME=$pin356_saved_home
   rm -rf "$pin356_home"
 
-  # #395: n / --pin-session pin write failure must fail and not mark tmux pinned.
-  local pin395_home pin395_saved_home
-  local -i pin395_has_tmux=$HAS_TMUX pin395_tmux_set=0 pin395_st=0
+  # #395: n / --pin-session pin write failure must fail. @lanjump_pinned is gone (#463).
+  local pin395_home pin395_saved_home pin395_log
+  local -i pin395_has_tmux=$HAS_TMUX pin395_st=0
   pin395_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-395.XXXXXX") || return 1
   pin395_saved_home=$HOME
   HOME=$pin395_home
   mkdir -p "$HOME/Library/Application Support/lanjump"
+  pin395_log=$pin395_home/tmux.log
+  : >"$pin395_log"
   functions -c add_pin_record _pin395_add
-  functions -c tmux_set_pinned _pin395_tmux_set
   functions -c tmuxx _pin395_tmuxx
   add_pin_record() { return 1 }
-  tmux_set_pinned() { pin395_tmux_set=1 }
-  tmuxx() { return 0 }
+  tmuxx() { print -r -- "$*" >>"$pin395_log"; return 0 }
   HAS_TMUX=1
   pinned_names=()
   pinned_cwd=()
@@ -6995,33 +7028,32 @@ EOF
   : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
 
   pin395_st=0
-  pin395_tmux_set=0
+  : >"$pin395_log"
   prompt_new_commit_pin keep || pin395_st=$?
   if (( pin395_st == 0 )); then
     print -u2 "FAIL pin/new-write-fail commit reported success"
     (( fails++ ))
   fi
-  if (( pin395_tmux_set )); then
+  if [[ $(<"$pin395_log") == *'@lanjump_pinned'* ]]; then
     print -u2 "FAIL pin/new-write-fail commit still set tmux pinned"
     (( fails++ ))
   fi
 
   pin395_st=0
-  pin395_tmux_set=0
+  : >"$pin395_log"
   pin_named_session keep >/dev/null || pin395_st=$?
   if (( pin395_st == 0 )); then
     print -u2 "FAIL pin/cli-write-fail reported success"
     (( fails++ ))
   fi
-  if (( pin395_tmux_set )); then
+  if [[ $(<"$pin395_log") == *'@lanjump_pinned'* ]]; then
     print -u2 "FAIL pin/cli-write-fail still set tmux pinned"
     (( fails++ ))
   fi
 
   functions -c _pin395_add add_pin_record
-  functions -c _pin395_tmux_set tmux_set_pinned
   functions -c _pin395_tmuxx tmuxx
-  unset -f _pin395_add _pin395_tmux_set _pin395_tmuxx
+  unset -f _pin395_add _pin395_tmuxx
   HAS_TMUX=$pin395_has_tmux
   HOME=$pin395_saved_home
   rm -rf "$pin395_home"
@@ -7137,6 +7169,204 @@ EOF
   HAS_TMUX=$snap407_has_tmux
   HOME=$snap407_saved_home
   rm -rf "$snap407_home"
+
+  # #463: r and the shell return re-read tmux. A warm census would keep
+  # showing sessions another terminal already created or killed.
+  if [[ ${functions[refresh_external_sessions]:-} != *tmux_state_invalidate* ]]; then
+    print -u2 "FAIL refresh/external missing tmux_state_invalidate"
+    (( fails++ ))
+  fi
+  if [[ ${functions[activate]:-} != *refresh_external_sessions* ]]; then
+    print -u2 "FAIL refresh/shell-return activate still loads a warm census"
+    (( fails++ ))
+  fi
+  if ! awk '
+    /[^[:alnum:]_]r\)/ {p=1}
+    p && /refresh_external_sessions/ {found=1; exit}
+    p && /;;/ {exit}
+    END {exit found ? 0 : 1}
+  ' "$_pick_src_file"; then
+    print -u2 "FAIL refresh/key-r main loop does not drop the census"
+    (( fails++ ))
+  fi
+  {
+    local ext_home ext_saved_home ext_row
+    local -i ext_has=$HAS_TMUX
+    ext_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-463-ext.XXXXXX") || return 1
+    ext_saved_home=$HOME
+    HOME=$ext_home
+    mkdir -p "$HOME/Library/Application Support/lanjump"
+    : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    ext_row=$'100\x1fext-old\x1f1\x1f0\x1f/tmp/old\x1fold\x1fold\x1fzsh'
+    functions -c tmuxx _ext_tmuxx
+    tmuxx() {
+      case $1 in
+        list-sessions)
+          print -r -- "$ext_row"
+          return 0
+          ;;
+        *) return 0 ;;
+      esac
+    }
+    HAS_TMUX=1
+    tmux_state_invalidate
+    load_items
+    if [[ ${items_id[(Ie)ext-old]} -eq 0 ]]; then
+      print -u2 "FAIL refresh/external-old missing ext-old got=${items_id[*]}"
+      (( fails++ ))
+    fi
+    ext_row=$'200\x1fext-fresh\x1f1\x1f0\x1f/tmp/fresh\x1ffresh\x1ffresh\x1fzsh'
+    load_items
+    if [[ ${items_id[(Ie)ext-old]} -eq 0 || ${items_id[(Ie)ext-fresh]} -ne 0 ]]; then
+      print -u2 "FAIL refresh/external-warm still served the new census got=${items_id[*]}"
+      (( fails++ ))
+    fi
+    refresh_external_sessions
+    if [[ ${items_id[(Ie)ext-fresh]} -eq 0 || ${items_id[(Ie)ext-old]} -ne 0 ]]; then
+      print -u2 "FAIL refresh/external-r got=${items_id[*]}"
+      (( fails++ ))
+    fi
+    functions -c _ext_tmuxx tmuxx
+    unset -f _ext_tmuxx
+    HAS_TMUX=$ext_has
+    HOME=$ext_saved_home
+    tmux_state_invalidate
+    rm -rf "$ext_home"
+  }
+
+  # #463: steady server, no pin left to create. Cold flags, so an earlier
+  # test cannot hide calls. LINES is a normal terminal so the first paint's
+  # preview counts. Capture returns text, so the empty-pane retry does not.
+  {
+    local budget_home budget_log budget_saved_home budget_term budget_prog
+    local budget_app budget_ct
+    local -i budget_n budget_has=$HAS_TMUX
+    local -i budget_pk=$prepared_keys budget_pc=$prepared_color
+    local -i budget_hooks=$hooks_installed budget_feat=$tm_features_loaded
+    local -i budget_lines=${LINES:-0} budget_cols=${COLUMNS:-0}
+    budget_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-463-budget.XXXXXX") || return 1
+    budget_saved_home=$HOME
+    budget_term=${TERM-}
+    budget_prog=${TERM_PROGRAM-}
+    budget_app=${LANJUMP_GROK_APPEARANCE-}
+    budget_ct=${COLORTERM-}
+    HOME=$budget_home
+    mkdir -p "$HOME/Library/Application Support/lanjump"
+    : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    budget_log=$budget_home/tmux.log
+    : >"$budget_log"
+    prepared_keys=0
+    prepared_color=0
+    hooks_installed=0
+    hooks_tmuxx_src=
+    tm_features_loaded=0
+    tm_term_queue=()
+    tmux_state_invalidate
+    pin_cwd_refreshed_gen=-1
+    restore_created_names=()
+    restore_show_progress=0
+    restore_progress_on=0
+    HAS_TMUX=1
+    LINES=40
+    COLUMNS=100
+    preview_on=1
+    functions -c term_lines _budget_term_lines
+    functions -c term_cols _budget_term_cols
+    term_lines() { print -r -- 40 }
+    term_cols() { print -r -- 100 }
+    TERM=xterm-ghostty
+    TERM_PROGRAM=ghostty
+    COLORTERM=truecolor
+    LANJUMP_GROK_APPEARANCE=dark
+    tmuxx() {
+      print -r -- "$*" >>"$budget_log"
+      case $1 in
+        list-sessions)
+          print -r -- $'100\x1fkeep\x1f1\x1f0\x1f/tmp/keep\x1fkeep\x1fkeep\x1fzsh'
+          return 0
+          ;;
+        capture-pane)
+          print -r -- 'echo hello'
+          return 0
+          ;;
+        show-options)
+          case "$*" in
+            *terminal-features*) print -r -- 'xterm*:extkeys,xterm-ghostty:RGB' ;;
+            *status-left-length*) print -r -- 40 ;;
+            *default-terminal*) print -r -- tmux-256color ;;
+          esac
+          return 0
+          ;;
+        *) return 0 ;;
+      esac
+    }
+    items_id=()
+    cursor=1
+    picker_boot_before_first_draw >/dev/null
+    picker_boot_after_first_draw >/dev/null
+    budget_n=$(wc -l <"$budget_log" | tr -d ' ')
+    if (( budget_n > 15 )); then
+      print -u2 "FAIL budget/boot-tmux-calls got=$budget_n want<=15"
+      print -u2 "$(<"$budget_log")"
+      (( fails++ ))
+    fi
+
+    : >"$budget_log"
+    prepared_keys=0
+    prepared_color=0
+    hooks_installed=0
+    hooks_tmuxx_src=
+    tm_features_loaded=0
+    tm_term_queue=()
+    tmux_state_invalidate
+    pin_cwd_refreshed_gen=-1
+    print_session_list >/dev/null
+    budget_n=$(wc -l <"$budget_log" | tr -d ' ')
+    if (( budget_n > 6 )); then
+      print -u2 "FAIL budget/print-sessions got=$budget_n want<=6"
+      print -u2 "$(<"$budget_log")"
+      (( fails++ ))
+    fi
+
+    : >"$budget_log"
+    prepared_keys=0
+    prepared_color=0
+    hooks_installed=0
+    hooks_tmuxx_src=
+    tm_features_loaded=0
+    tm_term_queue=()
+    tmux_state_invalidate
+    pin_cwd_refreshed_gen=-1
+    has_named_session keep >/dev/null
+    budget_n=$(wc -l <"$budget_log" | tr -d ' ')
+    if (( budget_n > 6 )); then
+      print -u2 "FAIL budget/has-session got=$budget_n want<=6"
+      print -u2 "$(<"$budget_log")"
+      (( fails++ ))
+    fi
+    functions -c _budget_term_lines term_lines
+    functions -c _budget_term_cols term_cols
+    unset -f _budget_term_lines _budget_term_cols
+    HOME=$budget_saved_home
+    HAS_TMUX=$budget_has
+    prepared_keys=$budget_pk
+    prepared_color=$budget_pc
+    hooks_installed=$budget_hooks
+    tm_features_loaded=$budget_feat
+    if (( budget_lines > 0 )); then LINES=$budget_lines; else unset LINES; fi
+    if (( budget_cols > 0 )); then COLUMNS=$budget_cols; else unset COLUMNS; fi
+    if [[ -n $budget_term ]]; then TERM=$budget_term; else unset TERM; fi
+    if [[ -n $budget_prog ]]; then TERM_PROGRAM=$budget_prog; else unset TERM_PROGRAM; fi
+    if [[ -n $budget_app ]]; then LANJUMP_GROK_APPEARANCE=$budget_app; else unset LANJUMP_GROK_APPEARANCE; fi
+    if [[ -n $budget_ct ]]; then COLORTERM=$budget_ct; else unset COLORTERM; fi
+    tmux_state_invalidate
+    rm -rf "$budget_home"
+  }
+  unset -f tmuxx
+  tmuxx() {
+    [[ -n $TMUX_BIN ]] || return 1
+    command "$TMUX_BIN" "$@" </dev/null
+  }
 
   # #426: leftover 0/1 pin must roll tmux back if snapshot rename write fails.
   # Callers (p / n / --pin-session) must not keep pinning the new name.
