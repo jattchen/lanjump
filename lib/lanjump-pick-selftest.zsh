@@ -6461,11 +6461,388 @@ pick_selftest() {
   prepared_color=$color_prepared
   HAS_TMUX=$color_has_tmux
   rm -rf "$color_dir"
+  _tmux_arr_loaded=()
+  _tmux_arr_count=()
+  _tmux_feat_vals=()
+  _tmux_over_vals=()
+  _tmux_term_deduped=0
+  tm_term_queue=()
   unset -f tmuxx
   tmuxx() {
     [[ -n $TMUX_BIN ]] || return 1
     command "$TMUX_BIN" "$@" </dev/null
   }
+
+  # #464: whole-entry dedupe in front of the one flush. The stub keeps real
+  # slots. -gv is the raw text; -g is the indexed line used only to delete.
+  local t464_term=${TERM-} t464_prog=${TERM_PROGRAM-} t464_ct=${COLORTERM-}
+  local t464_app=${LANJUMP_GROK_APPEARANCE-} t464_lc=${LC_GROK_APPEARANCE-}
+  local t464_g=${GROK_APPEARANCE-}
+  local t464_shim=${LANJUMP_GROK_SHIM_DIR-} t464_front=${LANJUMP_GROK_FRONT_DIR-}
+  local -i t464_color=$prepared_color t464_keys=$prepared_keys
+  local -i t464_tmux=$HAS_TMUX t464_pi=$pick_interactive
+  local t464_log t464_got t464_needle
+  typeset -gA st464_feat st464_over
+  typeset -gi st464_hide_g=0
+  st464_n() {
+    local which=$1 want=$2 i n=0
+    local -a keys
+    if [[ $which == feat ]]; then
+      (( ${#st464_feat} )) || { print 0; return }
+      keys=(${(kon)st464_feat})
+      for i in "${keys[@]}"; do
+        [[ ${st464_feat[$i]} == "$want" ]] && (( n++ ))
+      done
+    else
+      (( ${#st464_over} )) || { print 0; return }
+      keys=(${(kon)st464_over})
+      for i in "${keys[@]}"; do
+        [[ ${st464_over[$i]} == "$want" ]] && (( n++ ))
+      done
+    fi
+    print -r -- "$n"
+  }
+  st464_reset_cache() {
+    _tmux_arr_loaded=()
+    _tmux_arr_count=()
+    _tmux_feat_vals=()
+    _tmux_over_vals=()
+    _tmux_term_deduped=0
+    tm_term_queue=()
+    prepared_color=0
+    prepared_keys=0
+  }
+  st464_one() {
+    local flags=$2 opt=$3 spec i entry
+    local -a keys parts
+    case $1 in
+      show-options)
+        case $opt in
+          default-terminal) print -r -- tmux-256color; return 0 ;;
+          status-left-length) print -r -- 40; return 0 ;;
+          terminal-features|terminal-overrides) ;;
+          *) return 0 ;;
+        esac
+        if [[ $opt == terminal-features ]]; then
+          (( ${#st464_feat} )) || return 0
+          keys=(${(kon)st464_feat})
+        else
+          (( ${#st464_over} )) || return 0
+          keys=(${(kon)st464_over})
+        fi
+        if (( st464_hide_g )) && [[ $flags == -g ]]; then
+          keys=("${keys[1,-2]}")
+        fi
+        for i in "${keys[@]}"; do
+          if [[ $flags == -gv ]]; then
+            if [[ $opt == terminal-features ]]; then
+              print -r -- "${st464_feat[$i]}"
+            else
+              print -r -- "${st464_over[$i]}"
+            fi
+          elif [[ $flags == -g ]]; then
+            if [[ $opt == terminal-features ]]; then
+              print -r -- "terminal-features[$i] ${st464_feat[$i]}"
+            else
+              print -r -- "terminal-overrides[$i] ${st464_over[$i]}"
+            fi
+          fi
+        done
+        return 0
+        ;;
+      set-option)
+        if [[ $2 == -gu ]]; then
+          spec=$3
+          if [[ $spec == terminal-features\[* ]]; then
+            i=${spec#"terminal-features["}
+            i=${i%%]*}
+            unset "st464_feat[$i]"
+          elif [[ $spec == terminal-overrides\[* ]]; then
+            i=${spec#"terminal-overrides["}
+            i=${i%%]*}
+            unset "st464_over[$i]"
+          fi
+          return 0
+        fi
+        if [[ $2 == -as || $2 == -ag ]]; then
+          opt=$3
+          entry=$4
+          [[ $entry == ,* ]] && entry=${entry#,}
+          parts=("${(@s:,:)entry}")
+          for entry in "${parts[@]}"; do
+            [[ -n $entry ]] || continue
+            i=0
+            if [[ $opt == terminal-features ]]; then
+              while [[ -n ${st464_feat[$i]:-} ]]; do (( i++ )); done
+              st464_feat[$i]=$entry
+            elif [[ $opt == terminal-overrides ]]; then
+              while [[ -n ${st464_over[$i]:-} ]]; do (( i++ )); done
+              st464_over[$i]=$entry
+            fi
+          done
+        fi
+        return 0
+        ;;
+    esac
+    return 0
+  }
+  t464_log=$(mktemp "${TMPDIR:-/tmp}/lanjump-464.XXXXXX") || return 1
+  HAS_TMUX=1
+  pick_interactive=0
+  unset LANJUMP_GROK_SHIM_DIR LANJUMP_GROK_FRONT_DIR
+  tmuxx() {
+    print -r -- "$*" >>"$t464_log"
+    local -a cmd
+    local a
+    cmd=()
+    for a in "$@"; do
+      if [[ $a == ';' ]]; then
+        st464_one "${cmd[@]}"
+        cmd=()
+      else
+        cmd+=("$a")
+      fi
+    done
+    (( ${#cmd} )) && st464_one "${cmd[@]}"
+    return 0
+  }
+
+  tmux_entry_is_lanjump_shape 'xterm-ghostty:RGB' && t464_got=yes || t464_got=no
+  expect 464/shape-rgb yes "$t464_got"
+  tmux_entry_is_lanjump_shape 'xterm-ghostty:Tc@' && t464_got=yes || t464_got=no
+  expect 464/shape-tc-off yes "$t464_got"
+  tmux_entry_is_lanjump_shape 'xterm*:extkeys' && t464_got=yes || t464_got=no
+  expect 464/shape-extkeys yes "$t464_got"
+  tmux_entry_is_lanjump_shape 'xterm-ghostty:RGB:extra' && t464_got=yes || t464_got=no
+  expect 464/shape-longer no "$t464_got"
+  tmux_entry_is_lanjump_shape 'other:extkeys' && t464_got=yes || t464_got=no
+  expect 464/shape-other-extkeys no "$t464_got"
+  tmux_entry_is_lanjump_shape 'mytheme:colors=256' && t464_got=yes || t464_got=no
+  expect 464/shape-colors-256 no "$t464_got"
+  if (( ${+functions[tmux_has_feature]} )); then
+    print -u2 "FAIL 464/no-substring-helper tmux_has_feature still defined"
+    (( fails++ ))
+  fi
+
+  st464_feat=()
+  st464_over=()
+  st464_hide_g=0
+  st464_feat[0]='xterm*:clipboard:ccolour:cstyle:focus:title'
+  st464_feat[1]='xterm-ghostty:RGB'
+  st464_feat[2]='screen*:title'
+  st464_feat[3]='xterm-ghostty:RGB'
+  st464_feat[4]='xterm-ghostty:RGB:extra'
+  st464_feat[5]='user custom:foo'
+  st464_feat[6]='xterm-ghostty:RGB'
+  st464_feat[7]='mytheme:colors=256'
+  st464_feat[8]='mytheme:colors=256'
+  st464_feat[9]='other:extkeys'
+  st464_feat[10]='xterm-ghostty:RGB'
+  st464_feat[12]='xterm-ghostty:RGB'
+  st464_over[0]='linux*:AX@'
+  st464_over[1]='xterm-ghostty:Tc'
+  st464_over[2]='xterm-ghostty:Tc'
+  st464_over[3]='xterm-ghostty:Tc@'
+  st464_over[4]='xterm*:colors=256'
+  st464_over[5]='xterm-256color:RGB@'
+  st464_over[6]='xterm-256color:RGB@'
+  st464_over[7]='user:colors=256'
+  st464_over[8]='user:colors=256'
+  : >"$t464_log"
+  st464_reset_cache
+  TERM=xterm-ghostty
+  TERM_PROGRAM=ghostty
+  COLORTERM=truecolor
+  tmux_prepare_color
+  tmux_prepare_keys
+  t464_got=$(<"$t464_log")
+  expect 464/dedupe-rgb 1 "$(st464_n feat xterm-ghostty:RGB)"
+  expect 464/keep-rgb-extra 1 "$(st464_n feat xterm-ghostty:RGB:extra)"
+  expect 464/keep-user-space 1 "$(st464_n feat 'user custom:foo')"
+  expect 464/keep-clipboard 1 "$(st464_n feat 'xterm*:clipboard:ccolour:cstyle:focus:title')"
+  expect 464/keep-nonshape-dup 2 "$(st464_n feat 'mytheme:colors=256')"
+  expect 464/keep-other-extkeys 1 "$(st464_n feat 'other:extkeys')"
+  expect 464/add-extkeys-once 1 "$(st464_n feat 'xterm*:extkeys')"
+  expect 464/dedupe-tc 1 "$(st464_n over xterm-ghostty:Tc)"
+  expect 464/keep-tc-off 1 "$(st464_n over xterm-ghostty:Tc@)"
+  expect 464/dedupe-rgb-off 1 "$(st464_n over xterm-256color:RGB@)"
+  expect 464/keep-linux 1 "$(st464_n over 'linux*:AX@')"
+  expect 464/keep-nonshape-over-dup 2 "$(st464_n over 'user:colors=256')"
+  t464_needle='set-option -gu terminal-features[12] ; set-option -gu terminal-features[10] ; set-option -gu terminal-features[6] ; set-option -gu terminal-features[3]'
+  if [[ $t464_got != *"$t464_needle"* ]]; then
+    print -u2 "FAIL 464/unset-order got=$(printf %q "$t464_got")"
+    (( fails++ ))
+  fi
+  t464_needle='set-option -gu terminal-overrides[6] ; set-option -gu terminal-overrides[2]'
+  if [[ $t464_got != *"$t464_needle"* ]]; then
+    print -u2 "FAIL 464/unset-over-order got=$(printf %q "$t464_got")"
+    (( fails++ ))
+  fi
+  for t464_needle in \
+    'set-option -gu terminal-features[0]' \
+    'set-option -gu terminal-features[1]' \
+    'set-option -gu terminal-features[4]' \
+    'set-option -gu terminal-features[5]' \
+    'set-option -gu terminal-features[7]' \
+    'set-option -gu terminal-features[9]' \
+    'set-option -gu terminal-overrides[0]' \
+    'set-option -gu terminal-overrides[1]' \
+    'set-option -gu terminal-overrides[3]' \
+    'set-option -as terminal-features ,xterm-ghostty:RGB' \
+    'set-option -ag terminal-overrides ,xterm-ghostty:Tc'
+  do
+    if [[ $t464_got == *"$t464_needle"* ]]; then
+      print -u2 "FAIL 464/kept-or-skipped touched $(printf %q "$t464_needle")"
+      (( fails++ ))
+    fi
+  done
+  t464_needle='set-option -as terminal-features ,xterm*:extkeys'
+  if [[ $t464_got != *"$t464_needle"* ]]; then
+    print -u2 "FAIL 464/extkeys-added missing exact xterm*:extkeys append"
+    (( fails++ ))
+  fi
+
+  : >"$t464_log"
+  local -i t464_round
+  for (( t464_round = 0; t464_round < 10; t464_round++ )); do
+    st464_reset_cache
+    TERM=xterm-ghostty
+    TERM_PROGRAM=ghostty
+    tmux_prepare_color
+    tmux_prepare_keys
+  done
+  t464_got=$(<"$t464_log")
+  if [[ $t464_got == *'set-option -as terminal-features'* || $t464_got == *'set-option -ag terminal-overrides'* || $t464_got == *'set-option -gu terminal-'* ]]; then
+    print -u2 "FAIL 464/ten-opens still wrote arrays got=$(printf %q "$t464_got")"
+    (( fails++ ))
+  fi
+  expect 464/ten-rgb 1 "$(st464_n feat xterm-ghostty:RGB)"
+  expect 464/ten-extkeys 1 "$(st464_n feat 'xterm*:extkeys')"
+  expect 464/ten-user-dup 2 "$(st464_n over 'user:colors=256')"
+
+  : >"$t464_log"
+  st464_reset_cache
+  TERM=xterm-kitty
+  TERM_PROGRAM=kitty
+  tmux_prepare_color
+  tmux_prepare_keys
+  t464_got=$(<"$t464_log")
+  expect 464/cross-kitty-rgb 1 "$(st464_n feat xterm-kitty:RGB)"
+  expect 464/cross-kitty-tc 1 "$(st464_n over xterm-kitty:Tc)"
+  expect 464/cross-ghostty-stays 1 "$(st464_n feat xterm-ghostty:RGB)"
+  expect 464/cross-extkeys-stays 1 "$(st464_n feat 'xterm*:extkeys')"
+  if [[ $t464_got != *',xterm-kitty:RGB'*',xterm-kitty:Tc'* ]]; then
+    print -u2 "FAIL 464/cross-one-flush got=$(printf %q "$t464_got")"
+    (( fails++ ))
+  fi
+
+  st464_feat=()
+  st464_over=()
+  st464_feat[0]='xterm-ghostty:RGB:extra'
+  st464_feat[1]='xterm-ghostty:RGB@'
+  st464_feat[2]='xterm-ghostty:RGB2'
+  st464_over[0]='linux*:AX@'
+  st464_over[1]='xterm-ghostty:Tc@'
+  : >"$t464_log"
+  st464_reset_cache
+  TERM=xterm-ghostty
+  TERM_PROGRAM=ghostty
+  tmux_prepare_color
+  expect 464/similar-added-rgb 1 "$(st464_n feat xterm-ghostty:RGB)"
+  expect 464/similar-keeps-extra 1 "$(st464_n feat xterm-ghostty:RGB:extra)"
+  expect 464/similar-keeps-rgb-off 1 "$(st464_n feat xterm-ghostty:RGB@)"
+  expect 464/similar-keeps-rgb2 1 "$(st464_n feat xterm-ghostty:RGB2)"
+  expect 464/similar-keeps-tc-off 1 "$(st464_n over xterm-ghostty:Tc@)"
+  expect 464/similar-added-tc 1 "$(st464_n over xterm-ghostty:Tc)"
+
+  st464_feat=()
+  st464_over=()
+  st464_feat[0]='xterm-ghostty:RGB'
+  st464_feat[1]='xterm-ghostty:RGB'
+  st464_feat[2]='user custom:foo'
+  st464_hide_g=1
+  : >"$t464_log"
+  st464_reset_cache
+  TERM=xterm-ghostty
+  TERM_PROGRAM=ghostty
+  tmux_prepare_color
+  t464_got=$(<"$t464_log")
+  expect 464/mismatch-keeps-both 2 "$(st464_n feat xterm-ghostty:RGB)"
+  expect 464/mismatch-keeps-user 1 "$(st464_n feat 'user custom:foo')"
+  if [[ $t464_got == *'set-option -gu terminal-'* ]]; then
+    print -u2 "FAIL 464/mismatch-deleted got=$(printf %q "$t464_got")"
+    (( fails++ ))
+  fi
+  st464_hide_g=0
+  : >"$t464_log"
+  st464_reset_cache
+  tmux_prepare_color
+  expect 464/mismatch-then-clean 1 "$(st464_n feat xterm-ghostty:RGB)"
+  expect 464/mismatch-user-remains 1 "$(st464_n feat 'user custom:foo')"
+
+  st464_feat=()
+  st464_over=()
+  st464_feat[0]='xterm-ghostty:RGB'
+  st464_feat[1]='user custom:foo'
+  st464_over[0]='linux*:AX@'
+  : >"$t464_log"
+  st464_reset_cache
+  TERM=xterm-256color
+  TERM_PROGRAM=Apple_Terminal
+  unset COLORTERM
+  tmux_prepare_color
+  tmux_prepare_keys
+  expect 464/apple-keeps-ghostty 1 "$(st464_n feat xterm-ghostty:RGB)"
+  expect 464/apple-keeps-user 1 "$(st464_n feat 'user custom:foo')"
+  expect 464/apple-term-rgb-off 1 "$(st464_n feat xterm-256color:RGB@)"
+  expect 464/apple-term-256 1 "$(st464_n feat xterm-256color:256)"
+  expect 464/apple-inner-rgb-off 1 "$(st464_n feat tmux-256color:RGB@)"
+  expect 464/apple-inner-256 1 "$(st464_n feat tmux-256color:256)"
+  expect 464/apple-over-rgb-off 1 "$(st464_n over xterm-256color:RGB@)"
+  expect 464/apple-over-tc-off 1 "$(st464_n over xterm-256color:Tc@)"
+  expect 464/apple-inner-over-rgb 1 "$(st464_n over tmux-256color:RGB@)"
+  expect 464/apple-inner-over-tc 1 "$(st464_n over tmux-256color:Tc@)"
+  expect 464/apple-keeps-linux 1 "$(st464_n over 'linux*:AX@')"
+  expect 464/apple-no-truecolor-rgb 0 "$(st464_n feat xterm-256color:RGB)"
+  : >"$t464_log"
+  for (( t464_round = 0; t464_round < 10; t464_round++ )); do
+    st464_reset_cache
+    tmux_prepare_color
+    tmux_prepare_keys
+  done
+  t464_got=$(<"$t464_log")
+  if [[ $t464_got == *'set-option -as terminal-features'* || $t464_got == *'set-option -ag terminal-overrides'* || $t464_got == *'set-option -gu terminal-'* ]]; then
+    print -u2 "FAIL 464/apple-ten-opens still wrote arrays got=$(printf %q "$t464_got")"
+    (( fails++ ))
+  fi
+  expect 464/apple-ten-ghostty 1 "$(st464_n feat xterm-ghostty:RGB)"
+
+  st464_reset_cache
+  prepared_color=$t464_color
+  prepared_keys=$t464_keys
+  HAS_TMUX=$t464_tmux
+  pick_interactive=$t464_pi
+  _tmux_arr_loaded=()
+  _tmux_arr_count=()
+  _tmux_feat_vals=()
+  _tmux_over_vals=()
+  _tmux_term_deduped=0
+  tm_term_queue=()
+  unset st464_feat st464_over st464_hide_g
+  unfunction st464_n st464_reset_cache st464_one tmuxx
+  tmuxx() {
+    [[ -n $TMUX_BIN ]] || return 1
+    command "$TMUX_BIN" "$@" </dev/null
+  }
+  rm -f "$t464_log"
+  if [[ -n $t464_term ]]; then TERM=$t464_term; else unset TERM; fi
+  if [[ -n $t464_prog ]]; then TERM_PROGRAM=$t464_prog; else unset TERM_PROGRAM; fi
+  if [[ -n $t464_ct ]]; then COLORTERM=$t464_ct; else unset COLORTERM; fi
+  if [[ -n $t464_app ]]; then LANJUMP_GROK_APPEARANCE=$t464_app; else unset LANJUMP_GROK_APPEARANCE; fi
+  if [[ -n $t464_lc ]]; then LC_GROK_APPEARANCE=$t464_lc; else unset LC_GROK_APPEARANCE; fi
+  if [[ -n $t464_g ]]; then GROK_APPEARANCE=$t464_g; else unset GROK_APPEARANCE; fi
+  if [[ -n $t464_shim ]]; then LANJUMP_GROK_SHIM_DIR=$t464_shim; else unset LANJUMP_GROK_SHIM_DIR; fi
+  if [[ -n $t464_front ]]; then LANJUMP_GROK_FRONT_DIR=$t464_front; else unset LANJUMP_GROK_FRONT_DIR; fi
 
   # tmux attach needs a terminfo entry. Ghostty's xterm-ghostty is missing on
   # older remotes; keep the picker TERM, attach with a stock name instead.
@@ -7261,6 +7638,11 @@ EOF
     hooks_tmuxx_src=
     tm_features_loaded=0
     tm_term_queue=()
+    _tmux_arr_loaded=()
+    _tmux_arr_count=()
+    _tmux_feat_vals=()
+    _tmux_over_vals=()
+    _tmux_term_deduped=0
     tmux_state_invalidate
     pin_cwd_refreshed_gen=-1
     restore_created_names=()
@@ -7291,7 +7673,13 @@ EOF
           ;;
         show-options)
           case "$*" in
-            *terminal-features*) print -r -- 'xterm*:extkeys,xterm-ghostty:RGB' ;;
+            *terminal-features*)
+              print -r -- 'xterm*:extkeys'
+              print -r -- 'xterm-ghostty:RGB'
+              ;;
+            *terminal-overrides*)
+              print -r -- 'xterm-ghostty:Tc'
+              ;;
             *status-left-length*) print -r -- 40 ;;
             *default-terminal*) print -r -- tmux-256color ;;
           esac
@@ -7318,6 +7706,11 @@ EOF
     hooks_tmuxx_src=
     tm_features_loaded=0
     tm_term_queue=()
+    _tmux_arr_loaded=()
+    _tmux_arr_count=()
+    _tmux_feat_vals=()
+    _tmux_over_vals=()
+    _tmux_term_deduped=0
     tmux_state_invalidate
     pin_cwd_refreshed_gen=-1
     print_session_list >/dev/null
@@ -7335,6 +7728,11 @@ EOF
     hooks_tmuxx_src=
     tm_features_loaded=0
     tm_term_queue=()
+    _tmux_arr_loaded=()
+    _tmux_arr_count=()
+    _tmux_feat_vals=()
+    _tmux_over_vals=()
+    _tmux_term_deduped=0
     tmux_state_invalidate
     pin_cwd_refreshed_gen=-1
     has_named_session keep >/dev/null

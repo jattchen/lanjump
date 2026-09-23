@@ -126,6 +126,11 @@ hooks_tmuxx_src=
 tm_features=
 typeset -a tm_names tm_term_queue
 typeset -A tm_live tm_path tm_cmd tm_att tm_activity tm_windows tm_wname tm_title tm_hook_cmd
+# #464: raw terminal-array entries for this process. A key with ':' must be a
+# parameter; zsh does not treat that colon as part of a subscript.
+typeset -A _tmux_arr_loaded _tmux_arr_count
+typeset -a _tmux_feat_vals _tmux_over_vals
+typeset -i _tmux_term_deduped=0
 
 # Same fields load_items already asks for. #{pane_current_path} is the
 # current window's current pane, matching session_pane_target (=$name:.).
@@ -259,17 +264,165 @@ tmux_session_cmd() {
   [[ -n $REPLY ]]
 }
 
-# #464: record one entry. tmux_terminal_option_flush sends the batch.
-# Do not fold these into the safe set-option chain; a later exact-match
-# read has to stay in front of the writes.
+# lanjump writes these shapes and no others. A longer or different entry stays.
+tmux_entry_is_lanjump_shape() {
+  local e=$1
+  [[ $e == 'xterm*:extkeys' ]] && return 0
+  [[ $e == [^:]##:(RGB|Tc|RGB@|256|Tc@) ]]
+}
+
+# -gv is the raw entry, one per line. show-options without -v escapes the
+# value, so an exact compare cannot use that text.
+tmux_array_load() {
+  local opt=$1 line key
+  local -a vals
+  [[ ${_tmux_arr_loaded[$opt]:-} == 1 ]] && return 0
+  vals=("${(@f)$(tmuxx show-options -gv "$opt" 2>/dev/null || true)}")
+  if (( ${#vals} == 1 )) && [[ -z ${vals[1]:-} ]]; then
+    vals=()
+  fi
+  case $opt in
+    terminal-features)
+      _tmux_feat_vals=()
+      if (( ${#vals} )); then
+        _tmux_feat_vals=("${vals[@]}")
+      fi
+      ;;
+    terminal-overrides)
+      _tmux_over_vals=()
+      if (( ${#vals} )); then
+        _tmux_over_vals=("${vals[@]}")
+      fi
+      ;;
+  esac
+  for line in "${vals[@]}"; do
+    [[ -n $line ]] || continue
+    key=${opt}$'\034'${line}
+    _tmux_arr_count[$key]=$(( ${_tmux_arr_count[$key]:-0} + 1 ))
+  done
+  _tmux_arr_loaded[$opt]=1
+}
+
+# Later copies of a lanjump shape go away, highest index first, in one
+# tmux command. A short index list is not paired: that would drop a user entry.
+tmux_array_dedupe_option() {
+  local opt=$1 line i val key
+  local -a vals idx lines drop kept args
+  local -A seen
+  local -i n dup=0 first=1
+  vals=()
+  case $opt in
+    terminal-features)
+      if (( ${#_tmux_feat_vals} )); then
+        vals=("${_tmux_feat_vals[@]}")
+      fi
+      ;;
+    terminal-overrides)
+      if (( ${#_tmux_over_vals} )); then
+        vals=("${_tmux_over_vals[@]}")
+      fi
+      ;;
+    *) return 0 ;;
+  esac
+  (( ${#vals} )) || return 0
+  for val in "${vals[@]}"; do
+    tmux_entry_is_lanjump_shape "$val" || continue
+    key=${opt}$'\034'${val}
+    if (( ${_tmux_arr_count[$key]:-0} > 1 )); then
+      dup=1
+      break
+    fi
+  done
+  (( dup )) || return 0
+  lines=("${(@f)$(tmuxx show-options -g "$opt" 2>/dev/null || true)}")
+  if (( ${#lines} == 1 )) && [[ -z ${lines[1]:-} ]]; then
+    lines=()
+  fi
+  for line in "${lines[@]}"; do
+    [[ $line == ${opt}\[* ]] || continue
+    i=${line#"${opt}["}
+    i=${i%%]*}
+    [[ $i == [0-9]## ]] || continue
+    idx+=("$i")
+  done
+  if (( ${#idx} != ${#vals} )); then
+    return 0
+  fi
+  for (( n = 1; n <= ${#vals}; n++ )); do
+    val=${vals[$n]}
+    tmux_entry_is_lanjump_shape "$val" || continue
+    if (( ${seen[$val]:-0} )); then
+      drop+=("${idx[$n]}")
+    else
+      seen[$val]=1
+    fi
+  done
+  (( ${#drop} )) || return 0
+  drop=(${(On)drop})
+  for i in "${drop[@]}"; do
+    if (( first )); then
+      args=(set-option -gu "${opt}[$i]")
+      first=0
+    else
+      args+=(\; set-option -gu "${opt}[$i]")
+    fi
+  done
+  tmuxx "${args[@]}" 2>/dev/null || true
+  seen=()
+  for val in "${vals[@]}"; do
+    if tmux_entry_is_lanjump_shape "$val" && (( ${seen[$val]:-0} )); then
+      key=${opt}$'\034'${val}
+      _tmux_arr_count[$key]=1
+      continue
+    fi
+    seen[$val]=1
+    kept+=("$val")
+  done
+  case $opt in
+    terminal-features)
+      _tmux_feat_vals=()
+      if (( ${#kept} )); then
+        _tmux_feat_vals=("${kept[@]}")
+      fi
+      ;;
+    terminal-overrides)
+      _tmux_over_vals=()
+      if (( ${#kept} )); then
+        _tmux_over_vals=("${kept[@]}")
+      fi
+      ;;
+  esac
+}
+
+tmux_terminal_arrays_dedupe() {
+  (( _tmux_term_deduped )) && return 0
+  tmux_array_load terminal-features
+  tmux_array_load terminal-overrides
+  tmux_array_dedupe_option terminal-features
+  tmux_array_dedupe_option terminal-overrides
+  _tmux_term_deduped=1
+}
+
+# #464: queue one missing entry. tmux_terminal_option_flush sends the batch.
+# Do not fold these into the safe set-option chain. The exact read stays in
+# front of the writes, and a comma would become another array element.
 tmux_array_add_once() {
-  local opt=$1 entry=$2
+  local opt=$1 entry=$2 key
   [[ -n $opt && -n $entry ]] || return 0
+  [[ $entry != *,* ]] || return 0
   case $opt in
     terminal-features|terminal-overrides) ;;
     *) return 1 ;;
   esac
+  tmux_terminal_arrays_dedupe
+  key=${opt}$'\034'${entry}
+  (( ${_tmux_arr_count[$key]:-0} > 0 )) && return 0
   tm_term_queue+=("${opt}"$'\x1f'"${entry}")
+  _tmux_arr_count[$key]=$(( ${_tmux_arr_count[$key]:-0} + 1 ))
+  case $opt in
+    terminal-features) _tmux_feat_vals+=("$entry") ;;
+    terminal-overrides) _tmux_over_vals+=("$entry") ;;
+  esac
 }
 
 tmux_terminal_option_flush() {
@@ -295,7 +448,6 @@ tmux_terminal_option_flush() {
   tm_term_queue=()
   (( ${#args} )) || return 0
   tmuxx "${args[@]}" 2>/dev/null || true
-  tm_features_loaded=0
 }
 
 keys_bin() {
@@ -363,22 +515,6 @@ tmux_apply_client_term() {
   tmux_terminal_option_flush
 }
 
-# Sets REPLY. Call it directly: capturing it with $() runs in a subshell
-# and drops tm_features_loaded. #464 can replace the read with an exact
-# entry split of the same cached string.
-tmux_terminal_features() {
-  if (( ! tm_features_loaded )); then
-    tm_features=$(tmuxx show-options -g terminal-features 2>/dev/null || true)
-    tm_features_loaded=1
-  fi
-  REPLY=$tm_features
-}
-
-tmux_has_feature() {
-  tmux_terminal_features
-  [[ $REPLY == *$1* ]]
-}
-
 tmux_prepare_keys() {
   [[ $HAS_TMUX -eq 1 ]] || return 0
   tmux_install_snapshot_hooks
@@ -406,9 +542,9 @@ tmux_prepare_keys() {
       set-option -g set-titles-string '#S' \; \
       bind-key -n S-Enter send-keys Escape Enter 2>/dev/null || true
   fi
-  tmux_has_feature extkeys || tmux_array_add_once terminal-features 'xterm*:extkeys'
+  tmux_array_add_once terminal-features 'xterm*:extkeys'
   if [[ ${TERM_PROGRAM:-} != Apple_Terminal && -n ${TERM:-} ]]; then
-    tmux_has_feature RGB || tmux_array_add_once terminal-features "${TERM}:RGB"
+    tmux_array_add_once terminal-features "${TERM}:RGB"
   fi
   tmux_terminal_option_flush
   prepared_keys=1
@@ -619,10 +755,11 @@ reset_host_grok_appearance_osc() {
 tmux_disable_truecolor_for() {
   local t=$1
   [[ -n $t ]] || return 0
-  # Queued; tmux_prepare_color flushes once. #464 replaces the flush body.
+  # Queued; tmux_prepare_color flushes once. A comma is a second entry.
   tmux_array_add_once terminal-features "${t}:RGB@"
   tmux_array_add_once terminal-features "${t}:256"
-  tmux_array_add_once terminal-overrides "${t}:RGB@,${t}:Tc@"
+  tmux_array_add_once terminal-overrides "${t}:RGB@"
+  tmux_array_add_once terminal-overrides "${t}:Tc@"
 }
 
 # PATH on this Mac puts ~/.grok/bin before ~/.local/bin, so a shim only at
@@ -752,6 +889,8 @@ tmux_prepare_color() {
       tmux_array_add_once terminal-overrides "${term}:Tc"
     fi
   fi
+  # Same flush as the color entries, so a cold server does not write extkeys later.
+  tmux_array_add_once terminal-features 'xterm*:extkeys'
   tmux_terminal_option_flush
   prepared_color=1
 }
