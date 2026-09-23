@@ -19,6 +19,8 @@ fi
 APP="$HOME/Library/Application Support/lanjump"
 APP_LAUNCHER="$APP/lanjump.command"
 DESKTOP_NAME='启动 lanjump'
+# 升级会把 $APP 里多出来的文件一并拷走。非 --upgrade 的安装会清掉它，再试一次 Finder。
+DESKTOP_FINDER_MARK="$APP/desktop-finder-failed"
 BIN_DIR="$HOME/.local/bin"
 ZSHRC="$HOME/.zshrc"
 PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
@@ -167,6 +169,8 @@ trap 'print -u2 "${mode}失败。"' ERR
 # 系统若开了「显示所有文件扩展名」，.command 的「隐藏扩展名」不会在桌面上生效。
 # 真正的脚本放进 Application Support，桌面放无后缀的访达替身，显示名就是「启动 lanjump」。
 # 只清官方启动器文件名或与官方启动器内容完全一致的副本，不删只是提到 lanjump 目录的用户脚本。
+# Finder 失败时不挪旧文件：已有官方 .command 留在原地；没有才放一个指向启动脚本的符号链接。
+# 无后缀链接的显示名仍是「启动 lanjump」，双击会在终端里执行目标 .command。
 is_official_desktop_launcher_name() {
   local name=${1:t}
   [[ $name == 'Lanjump.command' || $name == '启动 lanjump.command' ]]
@@ -208,54 +212,155 @@ remove_desktop_lanjump_scripts() {
   done
 }
 
+# file 会跟着符号链接走，不能把启动脚本的链接当成访达替身。
+desktop_has_finder_alias() {
+  local f=$1
+  [[ -e $f && ! -L $f ]] || return 1
+  [[ $(file -b -- "$f") == *Alias* ]]
+}
+
+desktop_has_official_command() {
+  local f
+  for f in "$HOME/Desktop/Lanjump.command" "$HOME/Desktop/${DESKTOP_NAME}.command"; do
+    is_lanjump_desktop_script "$f" && return 0
+  done
+  return 1
+}
+
+# 我们自己的兜底链接。同名的用户文件不算。
+desktop_launcher_symlink_ok() {
+  local dest="$HOME/Desktop/$DESKTOP_NAME"
+  [[ -L $dest ]] || return 1
+  [[ ${dest:A} == ${APP_LAUNCHER:A} ]]
+}
+
+# AppleScript 自己 10 秒超时。外层再限 15 秒：到点先 TERM，仍不退出就 KILL，
+# 避免 wait 被不响应的 osascript 拖满默认 120 秒。和 run_timed 一样先轮询再结束进程。
+run_bounded() {
+  local -i secs=$1
+  local outfile=$2
+  shift 2
+  "$@" >"$outfile" 2>&1 &
+  local pid=$!
+  local -i i j
+  local st=0
+  for (( i = 0; i < secs * 10; i++ )); do
+    if ! kill -0 $pid 2>/dev/null; then
+      wait $pid 2>/dev/null || st=$?
+      return $st
+    fi
+    sleep 0.1
+  done
+  kill $pid 2>/dev/null || true
+  for (( j = 0; j < 10; j++ )); do
+    if ! kill -0 $pid 2>/dev/null; then
+      wait $pid 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.1
+  done
+  kill -9 $pid 2>/dev/null || true
+  wait $pid 2>/dev/null || true
+  return 124
+}
+
 # 已有指向本脚本的替身就改名为「启动 lanjump」，没有则新建。不进废纸篓。
 # :A 解开 /var → /private/var，否则访达里的原件路径对不上，会再造一个同名替身。
+# 目标名若已是我们的符号链接，先把替身建在旁边，成功后再换过去。
 ensure_desktop_alias() {
   local desk=${1:A} src=${2:A} wanted=$3
-  if [[ -e "$desk/$wanted" && $(file -b "$desk/$wanted") == *Alias* ]]; then
+  local dest="$desk/$wanted" create_name=$wanted
+  local script out
+  if desktop_has_finder_alias "$dest"; then
     return 0
   fi
-  osascript - "$desk" "$src" "$wanted" <<'APPLESCRIPT'
+  if [[ -L $dest ]]; then
+    create_name=".${wanted}.new.$$"
+  fi
+  script=$(mktemp)
+  out=$(mktemp)
+  cat >"$script" <<'APPLESCRIPT'
 on run argv
   set deskPath to item 1 of argv
   set srcPath to item 2 of argv
   set wanted to item 3 of argv
   set desk to POSIX file deskPath as alias
   set src to POSIX file srcPath as alias
-  tell application "Finder"
-    set keeper to missing value
-    set itemList to every item of folder desk
-    repeat with f in itemList
-      try
-        if class of f is alias file then
-          set orig to POSIX path of (original item of f as alias)
-          if orig is srcPath or orig is (srcPath & "/") then
-            if keeper is missing value then
-              set keeper to f
-            else
-              do shell script "rm -f " & quoted form of (deskPath & "/" & name of f)
+  with timeout of 10 seconds
+    tell application "Finder"
+      set keeper to missing value
+      set itemList to every item of folder desk
+      repeat with f in itemList
+        try
+          if class of f is alias file then
+            set orig to POSIX path of (original item of f as alias)
+            if orig is srcPath or orig is (srcPath & "/") then
+              if keeper is missing value then
+                set keeper to f
+              else
+                do shell script "rm -f " & quoted form of (deskPath & "/" & name of f)
+              end if
             end if
           end if
-        end if
-      end try
-    end repeat
-    if keeper is missing value then
-      make alias file at desk to src with properties {name:wanted}
-    else if name of keeper is not wanted then
-      set name of keeper to wanted
-    end if
-  end tell
+        end try
+      end repeat
+      if keeper is missing value then
+        make alias file at desk to src with properties {name:wanted}
+      else if name of keeper is not wanted then
+        set name of keeper to wanted
+      end if
+    end tell
+  end timeout
   return "ok"
 end run
 APPLESCRIPT
+  run_bounded 15 "$out" osascript "$script" "$desk" "$src" "$create_name" || true
+  rm -f "$script" "$out"
+  if desktop_has_finder_alias "$desk/$create_name"; then
+    if [[ $create_name != "$wanted" ]]; then
+      mv -f "$desk/$create_name" "$dest" || return 1
+    fi
+    return 0
+  fi
+  [[ $create_name != "$wanted" ]] && rm -f "$desk/$create_name"
+  return 1
 }
 
-hide_finder_extension() {
-  local f=$1
-  [[ -e $f ]] || return 0
-  xattr -wx com.apple.FinderInfo \
-    0000000000000000001000000000000000000000000000000000000000000000 \
-    "$f" 2>/dev/null || true
+# 先建替身，成功后才清旧 .command。Finder 失败则记住，升级时若官方 .command 还在就不再等。
+# 重新安装（非 --upgrade）清掉标记再试。没有官方 .command、名字也没被占用时，用符号链接兜底。
+place_desktop_launcher() {
+  local desk="$HOME/Desktop"
+  local dest="$desk/$DESKTOP_NAME"
+  if [[ -n ${LANJUMP_SELFTEST_FORBID_DESKTOP:-} && ${desk:A} == ${LANJUMP_SELFTEST_FORBID_DESKTOP:A} ]]; then
+    print -u2 'selftest refused to touch the real desktop'
+    exit 1
+  fi
+  mkdir -p "$desk"
+  if [[ $mode != 升级 ]]; then
+    rm -f "$DESKTOP_FINDER_MARK"
+  fi
+  if desktop_has_finder_alias "$dest"; then
+    rm -f "$DESKTOP_FINDER_MARK"
+    remove_desktop_lanjump_scripts
+    return 0
+  fi
+  if [[ $mode == 升级 && -f $DESKTOP_FINDER_MARK ]] && desktop_has_official_command; then
+    return 0
+  fi
+  if ensure_desktop_alias "$desk" "$APP_LAUNCHER" "$DESKTOP_NAME"; then
+    rm -f "$DESKTOP_FINDER_MARK"
+    remove_desktop_lanjump_scripts
+    return 0
+  fi
+  print -r -- failed >"$DESKTOP_FINDER_MARK"
+  print '桌面快捷方式没建成（Finder 没响应），可以在终端输入 lanjump 打开'
+  if desktop_has_official_command || desktop_launcher_symlink_ok; then
+    return 0
+  fi
+  if [[ -e $dest || -L $dest ]]; then
+    return 0
+  fi
+  ln -s "${APP_LAUNCHER:A}" "$dest"
 }
 
 # 把当前这份安装脚本存下来。升级走它，而不是 GitHub 上可能更旧的 install.zsh。
@@ -488,13 +593,7 @@ fi
 
 chmod 755 "$APP_LAUNCHER"
 xattr -d com.apple.quarantine "$APP_LAUNCHER" 2>/dev/null || true
-remove_desktop_lanjump_scripts
-if ! ensure_desktop_alias "$HOME/Desktop" "$APP_LAUNCHER" "$DESKTOP_NAME" >/dev/null; then
-  cp -f "$APP_LAUNCHER" "$HOME/Desktop/${DESKTOP_NAME}.command"
-  chmod 755 "$HOME/Desktop/${DESKTOP_NAME}.command"
-  xattr -d com.apple.quarantine "$HOME/Desktop/${DESKTOP_NAME}.command" 2>/dev/null || true
-  hide_finder_extension "$HOME/Desktop/${DESKTOP_NAME}.command"
-fi
+place_desktop_launcher
 
 write_cli_launcher
 
