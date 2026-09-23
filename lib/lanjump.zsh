@@ -1288,33 +1288,44 @@ _run_timed_browse_ready() {
   REPLY=$done
 }
 
-_run_timed_ipv4_ready() {
+_run_timed_ipv4_count() {
   local line tok
   local -a lines toks
+  local -i n=0
+  REPLY=0
   lines=("${(@f)1}")
   for line in "${lines[@]}"; do
     [[ $line == *Add* ]] || continue
     toks=(${=line})
     for tok in "${toks[@]}"; do
-      [[ $tok == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]] && return 0
+      if [[ $tok == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]]; then
+        n=$(( n + 1 ))
+        break
+      fi
     done
   done
-  return 1
+  REPLY=$n
+}
+
+_run_timed_ipv4_ready() {
+  _run_timed_ipv4_count "$1"
+  (( REPLY > 0 ))
 }
 
 # run_timed SECS OUTFILE [--until reached|ipv4|browse] COMMAND...
 # --until reached: stop on "can be reached at" (-L).
-# --until ipv4: an Add line with an IPv4, then 0.2s quiet so a second
-#   A record in the same answer is still visible (#362). Hard cap stays SECS.
+# --until ipv4: keep a second IPv4 Add from the same answer (#362).
+#   Two addresses already buffered stop at once. One address waits 0.12s
+#   of quiet, then stops. Hard cap stays SECS.
 # --until browse: stop 0.5s after a finished browse batch; hard cap stays SECS.
 # A host that answers only after that quiet window is missed until the next r scan.
 # No match: kill at SECS, same as before. Poll with zselect -t 5 (0.05s), not sleep.
 run_timed() {
-  local -i secs=$1
+  local -F secs=$1
   local out=$2
   local until="" pid content prev=""
   local -F deadline now quiet_since=0
-  local -i batch_ready=0 ipv4_ready=0
+  local -i batch_ready=0 ipv4_ready=0 ipv4_n=0
   shift 2
   if [[ ${1:-} == --until ]]; then
     until=$2
@@ -1343,8 +1354,15 @@ run_timed() {
             fi
             ;;
           ipv4)
-            if _run_timed_ipv4_ready "$content"; then
+            _run_timed_ipv4_count "$content"
+            ipv4_n=$REPLY
+            if (( ipv4_n > 0 )); then
               ipv4_ready=1
+            fi
+            # The later address is already in this read. Do not keep waiting.
+            if (( ipv4_n >= 2 )); then
+              _run_timed_stop $pid
+              return 0
             fi
             ;;
           browse)
@@ -1357,7 +1375,7 @@ run_timed() {
         _run_timed_stop $pid
         return 0
       fi
-      if [[ $until == ipv4 ]] && (( ipv4_ready )) && (( quiet_since > 0 )) && (( now - quiet_since >= 0.2 )); then
+      if [[ $until == ipv4 ]] && (( ipv4_ready )) && (( quiet_since > 0 )) && (( now - quiet_since >= 0.12 )); then
         _run_timed_stop $pid
         return 0
       fi

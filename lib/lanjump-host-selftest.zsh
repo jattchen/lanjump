@@ -1187,67 +1187,171 @@ host_selftest() {
   _lj466_ssh_sum=""
   [[ -f $HOSTS_FILE ]] && _lj466_hosts_sum=$(cksum < "$HOSTS_FILE")
   [[ -f $SSH_CONFIG ]] && _lj466_ssh_sum=$(cksum < "$SSH_CONFIG")
-  cat > "$_lj466_dir/dns-sd" <<'EOF'
-#!/bin/zsh
-emulate -L zsh
-setopt no_unset
-dns_sd_main() {
-  local mode=${1:-} hold=${LJ_DNS_SD_HOLD:-4} flags name delay line host addrs a i
-  local -a arr
-  if [[ $mode == -B ]]; then
-    print -r -- 'Timestamp     A/R    Flags  if Domain               Service Type         Instance Name'
-    if [[ -n ${LJ_DNS_SD_BROWSE:-} && -f ${LJ_DNS_SD_BROWSE} ]]; then
-      while IFS=$'\t' read -r flags name || [[ -n ${flags:-}${name:-} ]]; do
-        [[ -n ${name:-} ]] || continue
-        printf ' 9:00:00.000  Add        %s  1 local.               _ssh._tcp.           %s\n' "$flags" "$name"
-      done < "${LJ_DNS_SD_BROWSE}"
-    fi
-    sleep "$hold"
-    exit 0
-  fi
-  if [[ $mode == -L ]]; then
-    local inst=$2
-    [[ -n ${LJ_DNS_SD_RESOLVE:-} && -f ${LJ_DNS_SD_RESOLVE} ]] || exit 0
-    while IFS=$'\t' read -r name delay line || [[ -n ${name:-} ]]; do
-      [[ $name == "$inst" ]] || continue
-      [[ -z $delay || $delay == 0 ]] || sleep "$delay"
-      if [[ $line != '-' && -n $line ]]; then
-        print -r -- "$line"
-        sleep "$hold"
-      fi
-      exit 0
-    done < "${LJ_DNS_SD_RESOLVE}"
-    exit 0
-  fi
-  if [[ $mode == -G ]]; then
-    host=$3
-    [[ -n ${LJ_DNS_SD_ADDR:-} && -f ${LJ_DNS_SD_ADDR} ]] || exit 0
-    while IFS=$'\t' read -r name delay addrs || [[ -n ${name:-} ]]; do
-      [[ $name == "$host" ]] || continue
-      [[ -z $delay || $delay == 0 ]] || sleep "$delay"
-      print -r -- 'Timestamp     A/R  if Hostname      Address         TTL'
-      arr=("${(@s:,:)addrs}")
-      i=0
-      for a in "${arr[@]}"; do
-        [[ -n $a ]] || continue
-        i=$(( i + 1 ))
-        printf ' 9:00:01.%03d  Add   %d %s     %s    120\n' "$i" "$i" "$name" "$a"
-      done
-      sleep "$hold"
-      exit 0
-    done < "${LJ_DNS_SD_ADDR}"
-    exit 0
-  fi
-  sleep "$hold"
-  exit 0
+  # Compiled fake: a zsh dns-sd paid ~50ms warm and ~400ms cold before
+  # printing, which blew the #461 "< 0.5s" resolve budget by itself.
+  # Lines are unbuffered. The process holds after output, like real dns-sd.
+  cat > "$_lj466_dir/dns-sd.c" <<'EOF'
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+static void hold(void) {
+  for (;;) pause();
 }
-dns_sd_main "$@"
+
+static void chomp(char *s) {
+  size_t n = strlen(s);
+  while (n && (s[n - 1] == '\n' || s[n - 1] == '\r')) s[--n] = 0;
+}
+
+static int is_uint(const char *s) {
+  if (!s || !*s) return 0;
+  for (; *s; s++) if (!isdigit((unsigned char)*s)) return 0;
+  return 1;
+}
+
+static void sleep_ms(const char *ms) {
+  unsigned v;
+  if (!ms || !is_uint(ms)) return;
+  v = (unsigned)atoi(ms);
+  if (v) usleep(v * 1000u);
+}
+
+static void browse(void) {
+  const char *path = getenv("LJ_DNS_SD_BROWSE");
+  FILE *f;
+  char buf[1024];
+  puts("Timestamp     A/R    Flags  if Domain               Service Type         Instance Name");
+  fflush(stdout);
+  f = (path && *path) ? fopen(path, "r") : NULL;
+  if (f) {
+    while (fgets(buf, sizeof buf, f)) {
+      char *flags, *name, *tab;
+      chomp(buf);
+      if (!buf[0]) continue;
+      tab = strchr(buf, '\t');
+      if (!tab) continue;
+      *tab = 0;
+      flags = buf;
+      name = tab + 1;
+      if (is_uint(flags) && strchr(name, '\t')) {
+        char *tab2 = strchr(name, '\t');
+        sleep_ms(flags);
+        *tab2 = 0;
+        flags = name;
+        name = tab2 + 1;
+      }
+      printf(" 9:00:00.000  Add        %s  1 local.               _ssh._tcp.           %s\n", flags, name);
+      fflush(stdout);
+    }
+    fclose(f);
+  }
+  hold();
+}
+
+/* Return 1 if a resolve line was printed (caller must hold). */
+static int resolve_one(const char *inst) {
+  const char *path = getenv("LJ_DNS_SD_RESOLVE");
+  FILE *f;
+  char buf[2048];
+  if (!path || !(f = fopen(path, "r"))) return 0;
+  while (fgets(buf, sizeof buf, f)) {
+    char *name, *delay, *line, *tab, *tab2;
+    chomp(buf);
+    tab = strchr(buf, '\t');
+    if (!tab) continue;
+    *tab = 0;
+    name = buf;
+    delay = tab + 1;
+    tab2 = strchr(delay, '\t');
+    if (!tab2) continue;
+    *tab2 = 0;
+    line = tab2 + 1;
+    if (strcmp(name, inst) != 0) continue;
+    fclose(f);
+    sleep_ms(delay);
+    if (line[0] && strcmp(line, "-") != 0) {
+      puts(line);
+      fflush(stdout);
+      return 1;
+    }
+    return 0;
+  }
+  fclose(f);
+  return 0;
+}
+
+static void emit_addrs(const char *host, const char *spec) {
+  char *copy = strdup(spec ? spec : "");
+  char *save = NULL;
+  char *tok;
+  int n = 0;
+  int saw = 0;
+  if (!copy) return;
+  tok = strtok_r(copy, "|,", &save);
+  while (tok) {
+    while (*tok == ' ') tok++;
+    if (saw && is_uint(tok)) {
+      sleep_ms(tok);
+    } else if (tok[0]) {
+      n++;
+      printf(" 9:00:01.%03d  Add   %d %s     %s    120\n", n, n, host, tok);
+      fflush(stdout);
+      saw = 1;
+    }
+    tok = strtok_r(NULL, "|,", &save);
+  }
+  free(copy);
+}
+
+static void addrs(const char *host) {
+  const char *path = getenv("LJ_DNS_SD_ADDR");
+  FILE *f;
+  char buf[2048];
+  if (!path || !(f = fopen(path, "r"))) { hold(); return; }
+  while (fgets(buf, sizeof buf, f)) {
+    char *name, *delay, *spec, *tab, *tab2;
+    chomp(buf);
+    tab = strchr(buf, '\t');
+    if (!tab) continue;
+    *tab = 0;
+    name = buf;
+    delay = tab + 1;
+    tab2 = strchr(delay, '\t');
+    if (!tab2) continue;
+    *tab2 = 0;
+    spec = tab2 + 1;
+    if (strcmp(name, host) != 0) continue;
+    fclose(f);
+    sleep_ms(delay);
+    emit_addrs(host, spec);
+    hold();
+    return;
+  }
+  fclose(f);
+  hold();
+}
+
+int main(int argc, char **argv) {
+  setvbuf(stdout, NULL, _IONBF, 0);
+  if (argc >= 2 && strcmp(argv[1], "-B") == 0) browse();
+  else if (argc >= 3 && strcmp(argv[1], "-L") == 0) {
+    if (resolve_one(argv[2])) hold();
+    return 0;
+  } else if (argc >= 4 && strcmp(argv[1], "-G") == 0) addrs(argv[3]);
+  hold();
+  return 0;
+}
 EOF
-  chmod +x "$_lj466_dir/dns-sd"
+  if ! cc -O2 -o "$_lj466_dir/dns-sd" "$_lj466_dir/dns-sd.c" >"$_lj466_dir/cc.out" 2>&1; then
+    print -u2 "FAIL host/dns-sd/cc $(<"$_lj466_dir/cc.out")"
+    (( fails++ ))
+  fi
   _lj466_path=$PATH
   PATH="$_lj466_dir:$PATH"
   hash -r
-  export LJ_DNS_SD_HOLD=3
   _lj466_save_get_mac=$functions[get_mac]
   _lj466_save_detect=$functions[detect_lan]
   _lj466_save_port=$functions[scan_port22]
@@ -1263,151 +1367,170 @@ EOF
   setup_tty() { : }
 
   _lj466_out="$_lj466_dir/out"
-  cat > "$_lj466_dir/reached.zsh" <<'EOF'
-#!/bin/zsh
-sleep 0.08
-print -r -- ' x can be reached at box.local.:22'
-sleep 5
-EOF
-  cat > "$_lj466_dir/ipv4.zsh" <<'EOF'
-#!/bin/zsh
-sleep 0.08
-print -r -- ' 9:00:01.000  Add   1 box.local.     192.168.1.50    120'
-sleep 5
-EOF
-  cat > "$_lj466_dir/browse-done.zsh" <<'EOF'
-#!/bin/zsh
-print -r -- ' 9:00:00.000  Add        3  1 local.               _ssh._tcp.           early'
-sleep 0.12
-print -r -- ' 9:00:00.120  Add        2  1 local.               _ssh._tcp.           late'
-sleep 5
-EOF
-  cat > "$_lj466_dir/browse-more.zsh" <<'EOF'
-#!/bin/zsh
-print -r -- ' 9:00:00.000  Add        3  1 local.               _ssh._tcp.           early'
-sleep 5
-EOF
-  chmod +x "$_lj466_dir/reached.zsh" "$_lj466_dir/ipv4.zsh" "$_lj466_dir/browse-done.zsh" "$_lj466_dir/browse-more.zsh"
-
-  _lj466_t0=$EPOCHREALTIME
-  run_timed 1 "$_lj466_out" --until reached "$_lj466_dir/reached.zsh"
-  _lj466_t1=$EPOCHREALTIME
-  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
-  if (( _lj466_ms >= 850 )); then
-    printf -v _lj466_show '%.0f' $_lj466_ms
-    print -u2 "FAIL host/dns-sd/reached-early ${_lj466_show}ms (full timeout is 1000)"
-    (( fails++ ))
-  fi
-  if [[ $(<"$_lj466_out") != *'can be reached at box.local.:22'* ]]; then
-    print -u2 "FAIL host/dns-sd/reached-early lost the resolve line"
-    (( fails++ ))
-  fi
-
-  _lj466_t0=$EPOCHREALTIME
-  run_timed 1 "$_lj466_out" --until ipv4 "$_lj466_dir/ipv4.zsh"
-  _lj466_t1=$EPOCHREALTIME
-  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
-  if (( _lj466_ms >= 950 )); then
-    printf -v _lj466_show '%.0f' $_lj466_ms
-    print -u2 "FAIL host/dns-sd/ipv4-early ${_lj466_show}ms (full timeout is 1000)"
-    (( fails++ ))
-  fi
-  if [[ $(<"$_lj466_out") != *192.168.1.50* ]]; then
-    print -u2 "FAIL host/dns-sd/ipv4-early lost the address"
-    (( fails++ ))
-  fi
-
-  _lj466_t0=$EPOCHREALTIME
-  run_timed 2 "$_lj466_out" --until browse "$_lj466_dir/browse-done.zsh"
-  _lj466_t1=$EPOCHREALTIME
-  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
-  if (( _lj466_ms < 500 || _lj466_ms >= 1500 )); then
-    printf -v _lj466_show '%.0f' $_lj466_ms
-    print -u2 "FAIL host/dns-sd/browse-quiet ${_lj466_show}ms want 500..1499"
-    (( fails++ ))
-  fi
-  if [[ $(<"$_lj466_out") != *'Add        2'* || $(<"$_lj466_out") != *late* ]]; then
-    print -u2 "FAIL host/dns-sd/browse-quiet stopped before the batch-end line"
-    (( fails++ ))
-  fi
-
-  _lj466_t0=$EPOCHREALTIME
-  run_timed 1 "$_lj466_out" --until browse "$_lj466_dir/browse-more.zsh"
-  _lj466_t1=$EPOCHREALTIME
-  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
-  if (( _lj466_ms < 850 )); then
-    printf -v _lj466_show '%.0f' $_lj466_ms
-    print -u2 "FAIL host/dns-sd/browse-more stopped early at ${_lj466_show}ms"
-    (( fails++ ))
-  fi
-
-  print -r -- $'2\tonly' > "$_lj466_dir/browse"
-  print -r -- $'only\t0.02\t only._ssh._tcp.local. can be reached at only.local.:2222' > "$_lj466_dir/resolve"
-  print -r -- $'only.local\t0\t192.168.1.40' > "$_lj466_dir/addr"
+  _lj466_bin="$_lj466_dir/dns-sd"
+  _lj466_l_ms=0
+  _lj466_g_ms=0
   export LJ_DNS_SD_BROWSE="$_lj466_dir/browse" LJ_DNS_SD_RESOLVE="$_lj466_dir/resolve" LJ_DNS_SD_ADDR="$_lj466_dir/addr"
   MYIP=192.168.1.10
   MASK=255.255.255.0
   MYIPS=(127.0.0.1 192.168.1.10)
-  _lj466_t0=$EPOCHREALTIME
-  _lj466_one=$(scan_bonjour)
-  _lj466_t1=$EPOCHREALTIME
-  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
-  if (( _lj466_ms >= 1500 )); then
-    printf -v _lj466_show '%.0f' $_lj466_ms
-    print -u2 "FAIL host/dns-sd/one-host ${_lj466_show}ms want <=1500"
-    (( fails++ ))
-  fi
-  expect host/dns-sd/one-host-line $'only\tonly.local\t192.168.1.40\taa:bb:cc:dd:ee:40\t2222' "$_lj466_one"
+  if [[ -x $_lj466_bin ]]; then
+    # First exec pays dyld. Keep it out of the timed window.
+    "$_lj466_bin" -L __warmup >/dev/null 2>&1 || true
+    # Batch end is immediate. The 0.5s is the product quiet window, not a script sleep.
+    print -r -- $'3\tearly\n2\tlate' > "$_lj466_dir/browse"
+    _lj466_t0=$EPOCHREALTIME
+    run_timed 2 "$_lj466_out" --until browse "$_lj466_bin" -B _ssh._tcp local.
+    _lj466_t1=$EPOCHREALTIME
+    _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+    [[ -n ${LJ466_TIME:-} ]] && print -u2 "TIME browse-quiet ${_lj466_ms}"
+    if (( _lj466_ms < 450 || _lj466_ms >= 800 )); then
+      printf -v _lj466_show '%.0f' $_lj466_ms
+      print -u2 "FAIL host/dns-sd/browse-quiet ${_lj466_show}ms want 450..799"
+      (( fails++ ))
+    fi
+    if [[ $(<"$_lj466_out") != *'Add        2'* || $(<"$_lj466_out") != *late* ]]; then
+      print -u2 "FAIL host/dns-sd/browse-quiet stopped before the batch-end line"
+      (( fails++ ))
+    fi
 
-  {
-    print -r -- $'3\th10'
-    print -r -- $'3\th09'
-    print -r -- $'3\th08'
-    print -r -- $'3\th07'
-    print -r -- $'3\th06'
-    print -r -- $'3\th05'
-    print -r -- $'3\th04'
-    print -r -- $'3\th03'
-    print -r -- $'3\th02'
-    print -r -- $'2\th01'
-  } > "$_lj466_dir/browse"
-  {
-    print -r -- $'h01\t0.20\t h01._ssh._tcp.local. can be reached at h01.local.:22'
-    print -r -- $'h02\t0.02\t h02._ssh._tcp.local. can be reached at h02.local.:22'
-    print -r -- $'h03\t0.02\t h03._ssh._tcp.local. can be reached at h03.local.:22'
-    print -r -- $'h04\t0\t-'
-    print -r -- $'h05\t0.01\t h05._ssh._tcp.local. can be reached at h05.local.:22'
-    print -r -- $'h06\t0.01\t h06._ssh._tcp.local. can be reached at h06.local.:2206'
-    print -r -- $'h07\t0.01\t h07._ssh._tcp.local. can be reached at h07.local.:22'
-    print -r -- $'h08\t0.01\t h08._ssh._tcp.local. can be reached at h08.local.:22'
-    print -r -- $'h09\t0.01\t h09._ssh._tcp.local. can be reached at h09.local.:22'
-    print -r -- $'h10\t0.01\t h10._ssh._tcp.local. can be reached at h10.local.:22'
-  } > "$_lj466_dir/resolve"
-  {
-    print -r -- $'h01.local\t0\t192.168.1.11'
-    print -r -- $'h02.local\t0\t10.9.9.9,192.168.1.31'
-    print -r -- $'h03.local\t0\t192.168.1.13'
-    print -r -- $'h05.local\t0\t192.168.1.10'
-    print -r -- $'h06.local\t0\t192.168.1.16'
-    print -r -- $'h07.local\t0\t192.168.1.17'
-    print -r -- $'h08.local\t0\t192.168.1.18'
-    print -r -- $'h09.local\t0\t192.168.1.19'
-    print -r -- $'h10.local\t0\t192.168.1.20'
-  } > "$_lj466_dir/addr"
-  _lj466_t0=$EPOCHREALTIME
-  _lj466_many=$(scan_bonjour)
-  _lj466_t1=$EPOCHREALTIME
-  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
-  if (( _lj466_ms >= 3000 )); then
-    printf -v _lj466_show '%.0f' $_lj466_ms
-    print -u2 "FAIL host/dns-sd/ten-host ${_lj466_show}ms want <=3000"
-    (( fails++ ))
-  fi
-  expect host/dns-sd/ten-order $'h01\th01.local\t192.168.1.11\taa:bb:cc:dd:ee:11\t22\nh02\th02.local\t192.168.1.31\taa:bb:cc:dd:ee:31\t22\nh03\th03.local\t192.168.1.13\taa:bb:cc:dd:ee:13\t22\nh06\th06.local\t192.168.1.16\taa:bb:cc:dd:ee:16\t2206\nh07\th07.local\t192.168.1.17\taa:bb:cc:dd:ee:17\t22\nh08\th08.local\t192.168.1.18\taa:bb:cc:dd:ee:18\t22\nh09\th09.local\t192.168.1.19\taa:bb:cc:dd:ee:19\t22\nh10\th10.local\t192.168.1.20\taa:bb:cc:dd:ee:20\t22' "$_lj466_many"
+    # Add 3 alone must not stop at 0.5s. Cap 0.7s so a false batch-end (~0.5s) fails.
+    print -r -- $'3\tearly' > "$_lj466_dir/browse"
+    _lj466_t0=$EPOCHREALTIME
+    run_timed 0.7 "$_lj466_out" --until browse "$_lj466_bin" -B _ssh._tcp local.
+    _lj466_t1=$EPOCHREALTIME
+    _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+    [[ -n ${LJ466_TIME:-} ]] && print -u2 "TIME browse-more ${_lj466_ms}"
+    if (( _lj466_ms < 620 || _lj466_ms >= 900 )); then
+      printf -v _lj466_show '%.0f' $_lj466_ms
+      print -u2 "FAIL host/dns-sd/browse-more ${_lj466_show}ms want 620..899"
+      (( fails++ ))
+    fi
 
-  print -r -- $'3\tbeta\n2\talpha' > "$_lj466_dir/browse"
-  print -r -- $'alpha\t0.05\t alpha._ssh._tcp.local. can be reached at alpha.local.:22\nbeta\t0.01\t beta._ssh._tcp.local. can be reached at beta.local.:22' > "$_lj466_dir/resolve"
-  print -r -- $'alpha.local\t0\t192.168.1.41\nbeta.local\t0\t192.168.1.42' > "$_lj466_dir/addr"
+    # #461: one host's -L then -G, fake prints at once and does not exit.
+    print -r -- $'solo\t0\t solo._ssh._tcp.local. can be reached at solo.local.:22' > "$_lj466_dir/resolve"
+    print -r -- $'solo.local\t0\t192.168.1.40' > "$_lj466_dir/addr"
+    _lj466_t0=$EPOCHREALTIME
+    run_timed 1 "$_lj466_out" --until reached "$_lj466_bin" -L solo _ssh._tcp local.
+    _lj466_t1=$EPOCHREALTIME
+    _lj466_l_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+    [[ -n ${LJ466_TIME:-} ]] && print -u2 "TIME resolve-L ${_lj466_l_ms}"
+    if (( _lj466_l_ms >= 250 )); then
+      printf -v _lj466_show '%.0f' $_lj466_l_ms
+      print -u2 "FAIL host/dns-sd/resolve-L ${_lj466_show}ms want <250"
+      (( fails++ ))
+    fi
+    if [[ $(<"$_lj466_out") != *'can be reached at solo.local.:22'* ]]; then
+      print -u2 "FAIL host/dns-sd/resolve-L lost the resolve line"
+      (( fails++ ))
+    fi
+
+    # Second A record 80ms after the first. Stopping on the first line misses it.
+    print -r -- $'pair.local\t0\t10.1.1.1|80|192.168.1.77' > "$_lj466_dir/addr"
+    _lj466_t0=$EPOCHREALTIME
+    run_timed 1 "$_lj466_out" --until ipv4 "$_lj466_bin" -G v4 pair.local
+    _lj466_t1=$EPOCHREALTIME
+    _lj466_g_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+    [[ -n ${LJ466_TIME:-} ]] && print -u2 "TIME resolve-G ${_lj466_g_ms}"
+    if (( _lj466_g_ms >= 400 )); then
+      printf -v _lj466_show '%.0f' $_lj466_g_ms
+      print -u2 "FAIL host/dns-sd/resolve-G ${_lj466_show}ms want <400"
+      (( fails++ ))
+    fi
+    if [[ $(<"$_lj466_out") != *10.1.1.1* || $(<"$_lj466_out") != *192.168.1.77* ]]; then
+      print -u2 "FAIL host/dns-sd/resolve-G dropped an address body=$(<"$_lj466_out")"
+      (( fails++ ))
+    fi
+    if (( _lj466_l_ms + _lj466_g_ms >= 500 )); then
+      printf -v _lj466_show '%.0f' $(( _lj466_l_ms + _lj466_g_ms ))
+      print -u2 "FAIL host/dns-sd/resolve-sum ${_lj466_show}ms want <500 (#461 -L plus -G)"
+      (( fails++ ))
+    fi
+
+    print -r -- $'solo\t0\t solo._ssh._tcp.local. can be reached at solo.local.:22' > "$_lj466_dir/resolve"
+    print -r -- $'solo.local\t0\t192.168.1.40' > "$_lj466_dir/addr"
+    _lj466_t0=$EPOCHREALTIME
+    _bonjour_resolve_one solo "$_lj466_dir/solo"
+    _lj466_t1=$EPOCHREALTIME
+    _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+    [[ -n ${LJ466_TIME:-} ]] && print -u2 "TIME resolve-one ${_lj466_ms}"
+    if (( _lj466_ms >= 500 )); then
+      printf -v _lj466_show '%.0f' $_lj466_ms
+      print -u2 "FAIL host/dns-sd/resolve-one ${_lj466_show}ms want <500"
+      (( fails++ ))
+    fi
+    _lj466_line=$(<"$_lj466_dir/solo")
+    expect host/dns-sd/resolve-one-line $'solo\tsolo.local\t192.168.1.40\t22' "$_lj466_line"
+
+    print -r -- $'pair\t0\t pair._ssh._tcp.local. can be reached at pair.local.:22' > "$_lj466_dir/resolve"
+    print -r -- $'pair.local\t0\t10.1.1.1|80|192.168.1.77' > "$_lj466_dir/addr"
+    _lj466_t0=$EPOCHREALTIME
+    _bonjour_resolve_one pair "$_lj466_dir/pair"
+    _lj466_t1=$EPOCHREALTIME
+    _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+    [[ -n ${LJ466_TIME:-} ]] && print -u2 "TIME resolve-pair ${_lj466_ms}"
+    if (( _lj466_ms >= 500 )); then
+      printf -v _lj466_show '%.0f' $_lj466_ms
+      print -u2 "FAIL host/dns-sd/resolve-pair ${_lj466_show}ms want <500"
+      (( fails++ ))
+    fi
+    _lj466_line=$(<"$_lj466_dir/pair")
+    expect host/dns-sd/resolve-pair-ip $'pair\tpair.local\t192.168.1.77\t22' "$_lj466_line"
+
+    {
+      print -r -- $'3\th10'
+      print -r -- $'3\th09'
+      print -r -- $'3\th08'
+      print -r -- $'3\th07'
+      print -r -- $'3\th06'
+      print -r -- $'3\th05'
+      print -r -- $'3\th04'
+      print -r -- $'3\th03'
+      print -r -- $'3\th02'
+      print -r -- $'2\th01'
+    } > "$_lj466_dir/browse"
+    {
+      print -r -- $'h01\t50\t h01._ssh._tcp.local. can be reached at h01.local.:22'
+      print -r -- $'h02\t0\t h02._ssh._tcp.local. can be reached at h02.local.:22'
+      print -r -- $'h03\t0\t h03._ssh._tcp.local. can be reached at h03.local.:22'
+      print -r -- $'h04\t0\t-'
+      print -r -- $'h05\t0\t h05._ssh._tcp.local. can be reached at h05.local.:22'
+      print -r -- $'h06\t0\t h06._ssh._tcp.local. can be reached at h06.local.:2206'
+      print -r -- $'h07\t0\t h07._ssh._tcp.local. can be reached at h07.local.:22'
+      print -r -- $'h08\t0\t h08._ssh._tcp.local. can be reached at h08.local.:22'
+      print -r -- $'h09\t0\t h09._ssh._tcp.local. can be reached at h09.local.:22'
+      print -r -- $'h10\t0\t h10._ssh._tcp.local. can be reached at h10.local.:22'
+    } > "$_lj466_dir/resolve"
+    {
+      print -r -- $'h01.local\t0\t192.168.1.11'
+      print -r -- $'h02.local\t0\t10.9.9.9,192.168.1.31'
+      print -r -- $'h03.local\t0\t192.168.1.13'
+      print -r -- $'h05.local\t0\t192.168.1.10'
+      print -r -- $'h06.local\t0\t192.168.1.16'
+      print -r -- $'h07.local\t0\t192.168.1.17'
+      print -r -- $'h08.local\t0\t192.168.1.18'
+      print -r -- $'h09.local\t0\t192.168.1.19'
+      print -r -- $'h10.local\t0\t192.168.1.20'
+    } > "$_lj466_dir/addr"
+    _lj466_t0=$EPOCHREALTIME
+    _lj466_many=$(scan_bonjour)
+    _lj466_t1=$EPOCHREALTIME
+    _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+    [[ -n ${LJ466_TIME:-} ]] && print -u2 "TIME ten-host ${_lj466_ms}"
+    if (( _lj466_ms >= 1500 )); then
+      printf -v _lj466_show '%.0f' $_lj466_ms
+      print -u2 "FAIL host/dns-sd/ten-host ${_lj466_show}ms want <1500"
+      (( fails++ ))
+    fi
+    expect host/dns-sd/ten-order $'h01\th01.local\t192.168.1.11\taa:bb:cc:dd:ee:11\t22\nh02\th02.local\t192.168.1.31\taa:bb:cc:dd:ee:31\t22\nh03\th03.local\t192.168.1.13\taa:bb:cc:dd:ee:13\t22\nh06\th06.local\t192.168.1.16\taa:bb:cc:dd:ee:16\t2206\nh07\th07.local\t192.168.1.17\taa:bb:cc:dd:ee:17\t22\nh08\th08.local\t192.168.1.18\taa:bb:cc:dd:ee:18\t22\nh09\th09.local\t192.168.1.19\taa:bb:cc:dd:ee:19\t22\nh10\th10.local\t192.168.1.20\taa:bb:cc:dd:ee:20\t22' "$_lj466_many"
+  fi
+
+  _lj466_save_bj=$functions[scan_bonjour]
+  scan_bonjour() {
+    sleep 0.03
+    print -r -- $'alpha\talpha.local\t192.168.1.41\taa:bb:cc:dd:ee:41\t22'
+    print -r -- $'beta\tbeta.local\t192.168.1.42\taa:bb:cc:dd:ee:42\t22'
+  }
   mkdir -p "$_lj466_dir/home/Library/Application Support/lanjump" "$_lj466_dir/home/.ssh"
   HOSTS_FILE="$_lj466_dir/home/Library/Application Support/lanjump/hosts"
   SSH_CONFIG="$_lj466_dir/home/.ssh/config"
@@ -1430,10 +1553,11 @@ EOF
     print -u2 "FAIL host/scan/parallel-order wrote an SSH block into the temp config"
     (( fails++ ))
   fi
+  functions[scan_bonjour]=$_lj466_save_bj
 
   PATH=$_lj466_path
   hash -r
-  unset LJ_DNS_SD_HOLD LJ_DNS_SD_BROWSE LJ_DNS_SD_RESOLVE LJ_DNS_SD_ADDR
+  unset LJ_DNS_SD_BROWSE LJ_DNS_SD_RESOLVE LJ_DNS_SD_ADDR
   functions[get_mac]=$_lj466_save_get_mac
   functions[detect_lan]=$_lj466_save_detect
   functions[scan_port22]=$_lj466_save_port
