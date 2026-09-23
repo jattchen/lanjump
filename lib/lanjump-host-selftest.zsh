@@ -1064,6 +1064,494 @@ host_selftest() {
   functions[setup_tty]=$_lj_save_setup
   unset _lj_save_restore _lj_save_setup
 
+  # #466: dns-sd returns as soon as the line we need is there; parallel
+  # resolve keeps sort -u order; Bonjour rows are still recorded before
+  # port-22 rows. Fake dns-sd only — no live scan, no user SSH/hosts writes.
+  expect host/dw/ascii 5 "$(dw hello)"
+  expect host/dw/cjk 4 "$(dw 中文)"
+  expect host/padw/ascii 'ab   ' "$(padw ab 5)"
+  expect host/fit/ascii 'hel…' "$(fit_right hello 4)"
+  if [[ ${functions[do_scan]} != *'没找到家里的网（默认路由可能是 VPN）。仍可进入本机。'* ]]; then
+    print -u2 "FAIL host/scan/offline-copy lost the VPN/offline notice"
+    (( fails++ ))
+  fi
+  if [[ ${functions[scan_lan_label]} != *'（网段更大，只扫本 /24）'* ]]; then
+    print -u2 "FAIL host/scan/wide-lan-copy changed"
+    (( fails++ ))
+  fi
+  if [[ ${functions[detect_lan]} != *'route -n get default'* || ${functions[detect_lan]} != *'en[0-9]'* ]]; then
+    print -u2 "FAIL host/scan/detect-lan no longer prefers the default route then en*"
+    (( fails++ ))
+  fi
+  if [[ ${functions[run_timed]} != *'zselect -t 5'* || ${functions[run_timed]} == *'sleep 0.1'* ]]; then
+    print -u2 "FAIL host/scan/run_timed still polls with sleep 0.1"
+    (( fails++ ))
+  fi
+  if [[ ${functions[scan_bonjour]} != *'&'* || ${functions[scan_bonjour]} != *wait* || ${functions[scan_bonjour]} != *'sort -u'* ]]; then
+    print -u2 "FAIL host/scan/parallel scan_bonjour missing batched &/wait or sort -u"
+    (( fails++ ))
+  fi
+  _lj466_scan_body=${functions[do_scan]}
+  _lj466_before_port=${_lj466_scan_body%%scan_port22*}
+  if [[ $_lj466_before_port != *scan_bonjour* || ${functions[do_scan]} != *'&'* ]]; then
+    print -u2 "FAIL host/scan/parallel do_scan does not run Bonjour ahead of port results"
+    (( fails++ ))
+  fi
+  unset _lj466_scan_body _lj466_before_port
+  _lj466_src=${funcsourcetrace[1]%:*}
+  _lj466_lib=${_lj466_src:A:h}
+  _lj466_boot=$(awk '
+    $0 == "START_HOST_ALIAS=\"\"" { p = 1 }
+    p { print }
+    p && $0 == "draw" { exit }
+  ' "$_lj466_lib/lanjump.zsh")
+  if print -r -- "$_lj466_boot" | grep -E -q '^detect_lan$'; then
+    print -u2 "FAIL host/boot/detect-lan still runs before the first scan"
+    (( fails++ ))
+  fi
+  if [[ $_lj466_boot != *$'\n''switch_ime_async'$'\n'* ]]; then
+    print -u2 "FAIL host/boot/ime startup does not background the input-method switch"
+    (( fails++ ))
+  fi
+  # zsh stores the disown operator as &|
+  if [[ ${functions[switch_ime_async]} != *'&!'* && ${functions[switch_ime_async]} != *'&|'* ]]; then
+    print -u2 "FAIL host/boot/ime switch_ime_async missing &!"
+    (( fails++ ))
+  fi
+  if ! awk '
+    $0 == "if [[ ${1:-} == --print-lan ]]; then" { p = 1 }
+    p { print }
+    p && $0 == "fi" { exit }
+  ' "$_lj466_lib/lanjump.zsh" | grep -q '^  detect_lan$'; then
+    print -u2 "FAIL host/boot/print-lan dropped detect_lan"
+    (( fails++ ))
+  fi
+  unset _lj466_boot
+
+  _lj466_arp_loaded=$arp_loaded
+  _lj466_arp_keys=("${(k)arp_by_ip[@]}")
+  _lj466_arp_vals=("${(v)arp_by_ip[@]}")
+  arp_by_ip=()
+  _arp_table_load $'? (10.9.9.1) at AA:BB:CC:DD:EE:01 on en0 ifscope [ethernet]\n? (10.9.9.2) at (incomplete) on en0 ifscope [ethernet]\n? (10.9.9.3) at ff:ff:ff:ff:ff:ff on en0 ifscope [ethernet]\n? (10.9.9.4) at 11:22:33:44:55:66 on en1 ifscope permanent [ethernet]'
+  arp_loaded=1
+  expect host/arp/hit 'aa:bb:cc:dd:ee:01' "$(get_mac 10.9.9.1)"
+  expect host/arp/permanent '11:22:33:44:55:66' "$(get_mac 10.9.9.4)"
+  if [[ -n ${arp_by_ip[10.9.9.2]:-} || -n ${arp_by_ip[10.9.9.3]:-} ]]; then
+    print -u2 "FAIL host/arp/skip stored incomplete or broadcast"
+    (( fails++ ))
+  fi
+  arp_by_ip=()
+  if (( ${#_lj466_arp_keys} )); then
+    for i in {1..${#_lj466_arp_keys}}; do
+      arp_by_ip[${_lj466_arp_keys[$i]}]=${_lj466_arp_vals[$i]}
+    done
+  fi
+  arp_loaded=$_lj466_arp_loaded
+  unset _lj466_arp_loaded _lj466_arp_keys _lj466_arp_vals
+
+  _lj466_myips=("${MYIPS[@]}")
+  _collect_self_ips_from $'lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\nen0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n\tinet 192.168.7.20 netmask 0xffffff00 broadcast 192.168.7.255\n\tinet6 fe80::1 prefixlen 64\nutun3: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380\n\tinet 10.8.0.2 --> 10.8.0.2 netmask 0xffffffff\n'
+  expect host/self-ips/count 3 "${#MYIPS}"
+  expect host/self-ips/lo 127.0.0.1 "${MYIPS[1]}"
+  expect host/self-ips/lan 192.168.7.20 "${MYIPS[2]}"
+  expect host/self-ips/vpn 10.8.0.2 "${MYIPS[3]}"
+  MYIPS=("${_lj466_myips[@]}")
+
+  _run_timed_browse_ready $'Timestamp\n 9:00:00.000  Add        3  1 local.               _ssh._tcp.           a\n 9:00:00.100  Add        2  1 local.               _ssh._tcp.           b'
+  expect host/dns-sd/batch-end 1 "$REPLY"
+  _run_timed_browse_ready $' 9:00:00.000  Add        2  1 local.               _ssh._tcp.           a\n 9:00:00.100  Add        3  1 local.               _ssh._tcp.           b'
+  expect host/dns-sd/more-coming 0 "$REPLY"
+  _run_timed_browse_ready $' 9:00:00.000  Add        6  1 local.               _ssh._tcp.           a'
+  expect host/dns-sd/flags-6-done 1 "$REPLY"
+  _run_timed_browse_ready $' 9:00:00.000  Add        7  1 local.               _ssh._tcp.           a'
+  expect host/dns-sd/flags-7-more 0 "$REPLY"
+  if _run_timed_ipv4_ready $'Timestamp\n 9:00:01.000  Add   1 box.local.     192.168.1.50    120'; then
+    :
+  else
+    print -u2 "FAIL host/dns-sd/ipv4-ready missed the Add address"
+    (( fails++ ))
+  fi
+  if _run_timed_ipv4_ready $' 9:00:01.000  Add   1 box.local.     pending    120'; then
+    print -u2 "FAIL host/dns-sd/ipv4-ready treated a bare Add as an address"
+    (( fails++ ))
+  fi
+
+  _lj466_dir=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-466.XXXXXX") || return 1
+  _lj466_user_hosts=$HOSTS_FILE
+  _lj466_user_ssh=$SSH_CONFIG
+  _lj466_user_key=$KEY
+  _lj466_user_myip=$MYIP
+  _lj466_user_mask=$MASK
+  _lj466_user_prefix=$PREFIX
+  _lj466_hosts_sum=""
+  _lj466_ssh_sum=""
+  [[ -f $HOSTS_FILE ]] && _lj466_hosts_sum=$(cksum < "$HOSTS_FILE")
+  [[ -f $SSH_CONFIG ]] && _lj466_ssh_sum=$(cksum < "$SSH_CONFIG")
+  cat > "$_lj466_dir/dns-sd" <<'EOF'
+#!/bin/zsh
+emulate -L zsh
+setopt no_unset
+dns_sd_main() {
+  local mode=${1:-} hold=${LJ_DNS_SD_HOLD:-4} flags name delay line host addrs a i
+  local -a arr
+  if [[ $mode == -B ]]; then
+    print -r -- 'Timestamp     A/R    Flags  if Domain               Service Type         Instance Name'
+    if [[ -n ${LJ_DNS_SD_BROWSE:-} && -f ${LJ_DNS_SD_BROWSE} ]]; then
+      while IFS=$'\t' read -r flags name || [[ -n ${flags:-}${name:-} ]]; do
+        [[ -n ${name:-} ]] || continue
+        printf ' 9:00:00.000  Add        %s  1 local.               _ssh._tcp.           %s\n' "$flags" "$name"
+      done < "${LJ_DNS_SD_BROWSE}"
+    fi
+    sleep "$hold"
+    exit 0
+  fi
+  if [[ $mode == -L ]]; then
+    local inst=$2
+    [[ -n ${LJ_DNS_SD_RESOLVE:-} && -f ${LJ_DNS_SD_RESOLVE} ]] || exit 0
+    while IFS=$'\t' read -r name delay line || [[ -n ${name:-} ]]; do
+      [[ $name == "$inst" ]] || continue
+      [[ -z $delay || $delay == 0 ]] || sleep "$delay"
+      if [[ $line != '-' && -n $line ]]; then
+        print -r -- "$line"
+        sleep "$hold"
+      fi
+      exit 0
+    done < "${LJ_DNS_SD_RESOLVE}"
+    exit 0
+  fi
+  if [[ $mode == -G ]]; then
+    host=$3
+    [[ -n ${LJ_DNS_SD_ADDR:-} && -f ${LJ_DNS_SD_ADDR} ]] || exit 0
+    while IFS=$'\t' read -r name delay addrs || [[ -n ${name:-} ]]; do
+      [[ $name == "$host" ]] || continue
+      [[ -z $delay || $delay == 0 ]] || sleep "$delay"
+      print -r -- 'Timestamp     A/R  if Hostname      Address         TTL'
+      arr=("${(@s:,:)addrs}")
+      i=0
+      for a in "${arr[@]}"; do
+        [[ -n $a ]] || continue
+        i=$(( i + 1 ))
+        printf ' 9:00:01.%03d  Add   %d %s     %s    120\n' "$i" "$i" "$name" "$a"
+      done
+      sleep "$hold"
+      exit 0
+    done < "${LJ_DNS_SD_ADDR}"
+    exit 0
+  fi
+  sleep "$hold"
+  exit 0
+}
+dns_sd_main "$@"
+EOF
+  chmod +x "$_lj466_dir/dns-sd"
+  _lj466_path=$PATH
+  PATH="$_lj466_dir:$PATH"
+  hash -r
+  export LJ_DNS_SD_HOLD=3
+  _lj466_save_get_mac=$functions[get_mac]
+  _lj466_save_detect=$functions[detect_lan]
+  _lj466_save_port=$functions[scan_port22]
+  _lj466_save_ssh_fp=$functions[ssh_fp]
+  _lj466_save_restore=$functions[restore_tty]
+  _lj466_save_setup=$functions[setup_tty]
+  get_mac() {
+    local oct=${1##*.}
+    [[ $oct == [0-9]## ]] || return 0
+    print -r -- "aa:bb:cc:dd:ee:${oct}"
+  }
+  restore_tty() { : }
+  setup_tty() { : }
+
+  _lj466_out="$_lj466_dir/out"
+  cat > "$_lj466_dir/reached.zsh" <<'EOF'
+#!/bin/zsh
+sleep 0.08
+print -r -- ' x can be reached at box.local.:22'
+sleep 5
+EOF
+  cat > "$_lj466_dir/ipv4.zsh" <<'EOF'
+#!/bin/zsh
+sleep 0.08
+print -r -- ' 9:00:01.000  Add   1 box.local.     192.168.1.50    120'
+sleep 5
+EOF
+  cat > "$_lj466_dir/browse-done.zsh" <<'EOF'
+#!/bin/zsh
+print -r -- ' 9:00:00.000  Add        3  1 local.               _ssh._tcp.           early'
+sleep 0.12
+print -r -- ' 9:00:00.120  Add        2  1 local.               _ssh._tcp.           late'
+sleep 5
+EOF
+  cat > "$_lj466_dir/browse-more.zsh" <<'EOF'
+#!/bin/zsh
+print -r -- ' 9:00:00.000  Add        3  1 local.               _ssh._tcp.           early'
+sleep 5
+EOF
+  chmod +x "$_lj466_dir/reached.zsh" "$_lj466_dir/ipv4.zsh" "$_lj466_dir/browse-done.zsh" "$_lj466_dir/browse-more.zsh"
+
+  _lj466_t0=$EPOCHREALTIME
+  run_timed 1 "$_lj466_out" --until reached "$_lj466_dir/reached.zsh"
+  _lj466_t1=$EPOCHREALTIME
+  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+  if (( _lj466_ms >= 850 )); then
+    printf -v _lj466_show '%.0f' $_lj466_ms
+    print -u2 "FAIL host/dns-sd/reached-early ${_lj466_show}ms (full timeout is 1000)"
+    (( fails++ ))
+  fi
+  if [[ $(<"$_lj466_out") != *'can be reached at box.local.:22'* ]]; then
+    print -u2 "FAIL host/dns-sd/reached-early lost the resolve line"
+    (( fails++ ))
+  fi
+
+  _lj466_t0=$EPOCHREALTIME
+  run_timed 1 "$_lj466_out" --until ipv4 "$_lj466_dir/ipv4.zsh"
+  _lj466_t1=$EPOCHREALTIME
+  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+  if (( _lj466_ms >= 950 )); then
+    printf -v _lj466_show '%.0f' $_lj466_ms
+    print -u2 "FAIL host/dns-sd/ipv4-early ${_lj466_show}ms (full timeout is 1000)"
+    (( fails++ ))
+  fi
+  if [[ $(<"$_lj466_out") != *192.168.1.50* ]]; then
+    print -u2 "FAIL host/dns-sd/ipv4-early lost the address"
+    (( fails++ ))
+  fi
+
+  _lj466_t0=$EPOCHREALTIME
+  run_timed 2 "$_lj466_out" --until browse "$_lj466_dir/browse-done.zsh"
+  _lj466_t1=$EPOCHREALTIME
+  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+  if (( _lj466_ms < 500 || _lj466_ms >= 1500 )); then
+    printf -v _lj466_show '%.0f' $_lj466_ms
+    print -u2 "FAIL host/dns-sd/browse-quiet ${_lj466_show}ms want 500..1499"
+    (( fails++ ))
+  fi
+  if [[ $(<"$_lj466_out") != *'Add        2'* || $(<"$_lj466_out") != *late* ]]; then
+    print -u2 "FAIL host/dns-sd/browse-quiet stopped before the batch-end line"
+    (( fails++ ))
+  fi
+
+  _lj466_t0=$EPOCHREALTIME
+  run_timed 1 "$_lj466_out" --until browse "$_lj466_dir/browse-more.zsh"
+  _lj466_t1=$EPOCHREALTIME
+  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+  if (( _lj466_ms < 850 )); then
+    printf -v _lj466_show '%.0f' $_lj466_ms
+    print -u2 "FAIL host/dns-sd/browse-more stopped early at ${_lj466_show}ms"
+    (( fails++ ))
+  fi
+
+  print -r -- $'2\tonly' > "$_lj466_dir/browse"
+  print -r -- $'only\t0.02\t only._ssh._tcp.local. can be reached at only.local.:2222' > "$_lj466_dir/resolve"
+  print -r -- $'only.local\t0\t192.168.1.40' > "$_lj466_dir/addr"
+  export LJ_DNS_SD_BROWSE="$_lj466_dir/browse" LJ_DNS_SD_RESOLVE="$_lj466_dir/resolve" LJ_DNS_SD_ADDR="$_lj466_dir/addr"
+  MYIP=192.168.1.10
+  MASK=255.255.255.0
+  MYIPS=(127.0.0.1 192.168.1.10)
+  _lj466_t0=$EPOCHREALTIME
+  _lj466_one=$(scan_bonjour)
+  _lj466_t1=$EPOCHREALTIME
+  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+  if (( _lj466_ms >= 1500 )); then
+    printf -v _lj466_show '%.0f' $_lj466_ms
+    print -u2 "FAIL host/dns-sd/one-host ${_lj466_show}ms want <=1500"
+    (( fails++ ))
+  fi
+  expect host/dns-sd/one-host-line $'only\tonly.local\t192.168.1.40\taa:bb:cc:dd:ee:40\t2222' "$_lj466_one"
+
+  {
+    print -r -- $'3\th10'
+    print -r -- $'3\th09'
+    print -r -- $'3\th08'
+    print -r -- $'3\th07'
+    print -r -- $'3\th06'
+    print -r -- $'3\th05'
+    print -r -- $'3\th04'
+    print -r -- $'3\th03'
+    print -r -- $'3\th02'
+    print -r -- $'2\th01'
+  } > "$_lj466_dir/browse"
+  {
+    print -r -- $'h01\t0.20\t h01._ssh._tcp.local. can be reached at h01.local.:22'
+    print -r -- $'h02\t0.02\t h02._ssh._tcp.local. can be reached at h02.local.:22'
+    print -r -- $'h03\t0.02\t h03._ssh._tcp.local. can be reached at h03.local.:22'
+    print -r -- $'h04\t0\t-'
+    print -r -- $'h05\t0.01\t h05._ssh._tcp.local. can be reached at h05.local.:22'
+    print -r -- $'h06\t0.01\t h06._ssh._tcp.local. can be reached at h06.local.:2206'
+    print -r -- $'h07\t0.01\t h07._ssh._tcp.local. can be reached at h07.local.:22'
+    print -r -- $'h08\t0.01\t h08._ssh._tcp.local. can be reached at h08.local.:22'
+    print -r -- $'h09\t0.01\t h09._ssh._tcp.local. can be reached at h09.local.:22'
+    print -r -- $'h10\t0.01\t h10._ssh._tcp.local. can be reached at h10.local.:22'
+  } > "$_lj466_dir/resolve"
+  {
+    print -r -- $'h01.local\t0\t192.168.1.11'
+    print -r -- $'h02.local\t0\t10.9.9.9,192.168.1.31'
+    print -r -- $'h03.local\t0\t192.168.1.13'
+    print -r -- $'h05.local\t0\t192.168.1.10'
+    print -r -- $'h06.local\t0\t192.168.1.16'
+    print -r -- $'h07.local\t0\t192.168.1.17'
+    print -r -- $'h08.local\t0\t192.168.1.18'
+    print -r -- $'h09.local\t0\t192.168.1.19'
+    print -r -- $'h10.local\t0\t192.168.1.20'
+  } > "$_lj466_dir/addr"
+  _lj466_t0=$EPOCHREALTIME
+  _lj466_many=$(scan_bonjour)
+  _lj466_t1=$EPOCHREALTIME
+  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+  if (( _lj466_ms >= 3000 )); then
+    printf -v _lj466_show '%.0f' $_lj466_ms
+    print -u2 "FAIL host/dns-sd/ten-host ${_lj466_show}ms want <=3000"
+    (( fails++ ))
+  fi
+  expect host/dns-sd/ten-order $'h01\th01.local\t192.168.1.11\taa:bb:cc:dd:ee:11\t22\nh02\th02.local\t192.168.1.31\taa:bb:cc:dd:ee:31\t22\nh03\th03.local\t192.168.1.13\taa:bb:cc:dd:ee:13\t22\nh06\th06.local\t192.168.1.16\taa:bb:cc:dd:ee:16\t2206\nh07\th07.local\t192.168.1.17\taa:bb:cc:dd:ee:17\t22\nh08\th08.local\t192.168.1.18\taa:bb:cc:dd:ee:18\t22\nh09\th09.local\t192.168.1.19\taa:bb:cc:dd:ee:19\t22\nh10\th10.local\t192.168.1.20\taa:bb:cc:dd:ee:20\t22' "$_lj466_many"
+
+  print -r -- $'3\tbeta\n2\talpha' > "$_lj466_dir/browse"
+  print -r -- $'alpha\t0.05\t alpha._ssh._tcp.local. can be reached at alpha.local.:22\nbeta\t0.01\t beta._ssh._tcp.local. can be reached at beta.local.:22' > "$_lj466_dir/resolve"
+  print -r -- $'alpha.local\t0\t192.168.1.41\nbeta.local\t0\t192.168.1.42' > "$_lj466_dir/addr"
+  mkdir -p "$_lj466_dir/home/Library/Application Support/lanjump" "$_lj466_dir/home/.ssh"
+  HOSTS_FILE="$_lj466_dir/home/Library/Application Support/lanjump/hosts"
+  SSH_CONFIG="$_lj466_dir/home/.ssh/config"
+  KEY="$_lj466_dir/home/.ssh/id_ed25519_lanjump"
+  : >"$HOSTS_FILE"
+  : >"$SSH_CONFIG"
+  detect_lan() { PREFIX=192.168.1 MYIP=192.168.1.10 MASK=255.255.255.0 IFACE=en0; MYIPS=(127.0.0.1 192.168.1.10); }
+  scan_port22() { print -r -- 192.168.9.1; print -r -- 192.168.9.2; }
+  ssh_fp() { return 0; }
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  cursor=1
+  build_items
+  do_scan >/dev/null
+  expect host/scan/parallel-order-1 alpha "${s_alias[1]:-}"
+  expect host/scan/parallel-order-2 beta "${s_alias[2]:-}"
+  expect host/scan/parallel-order-3 192.168.9.1 "${s_alias[3]:-}"
+  expect host/scan/parallel-order-4 192.168.9.2 "${s_alias[4]:-}"
+  expect host/scan/parallel-order-count 4 "${#s_alias}"
+  if [[ -s $SSH_CONFIG ]]; then
+    print -u2 "FAIL host/scan/parallel-order wrote an SSH block into the temp config"
+    (( fails++ ))
+  fi
+
+  PATH=$_lj466_path
+  hash -r
+  unset LJ_DNS_SD_HOLD LJ_DNS_SD_BROWSE LJ_DNS_SD_RESOLVE LJ_DNS_SD_ADDR
+  functions[get_mac]=$_lj466_save_get_mac
+  functions[detect_lan]=$_lj466_save_detect
+  functions[scan_port22]=$_lj466_save_port
+  functions[ssh_fp]=$_lj466_save_ssh_fp
+  functions[restore_tty]=$_lj466_save_restore
+  functions[setup_tty]=$_lj466_save_setup
+  HOSTS_FILE=$_lj466_user_hosts
+  SSH_CONFIG=$_lj466_user_ssh
+  KEY=$_lj466_user_key
+  MYIP=$_lj466_user_myip
+  MASK=$_lj466_user_mask
+  PREFIX=$_lj466_user_prefix
+  MYIPS=("${_lj466_myips[@]-}")
+  _lj466_hosts_after=""
+  _lj466_ssh_after=""
+  [[ -f $HOSTS_FILE ]] && _lj466_hosts_after=$(cksum < "$HOSTS_FILE")
+  [[ -f $SSH_CONFIG ]] && _lj466_ssh_after=$(cksum < "$SSH_CONFIG")
+  if [[ $_lj466_hosts_after != "$_lj466_hosts_sum" || $_lj466_ssh_after != "$_lj466_ssh_sum" ]]; then
+    print -u2 "FAIL host/scan/user-config hosts or ssh config changed"
+    (( fails++ ))
+  fi
+  rm -rf "$_lj466_dir"
+
+  host_layout_sig=""
+  host_w_avail=-1
+  items_kind=() items_alias=() items_user=() items_hostname=()
+  items_ip=() items_mac=() items_port=() items_status=() items_saved=()
+  for i in {1..20}; do
+    items_kind+=(host)
+    items_alias+=("机器-$i")
+    items_user+=(mac)
+    items_hostname+=("box-$i.local")
+    items_ip+=("192.168.1.$i")
+    items_mac+=("")
+    items_port+=(22)
+    items_status+=("已保存")
+    items_saved+=("$i")
+  done
+  items_kind+=(local scan quit)
+  items_alias+=(进入本机 '扫描局域网…' 退出)
+  items_user+=("" "" "")
+  items_hostname+=("" "" "")
+  items_ip+=("" "" "")
+  items_mac+=("" "" "")
+  items_port+=("" "" "")
+  items_status+=("" "" "")
+  items_saved+=("" "" "")
+  cursor=1
+  notice=""
+  COLUMNS=100
+  LINES=24
+  functions -c display_width _lj466_display_width
+  typeset -i _lj466_dw_calls=0
+  display_width() { (( _lj466_dw_calls++ )); _lj466_display_width "$@"; }
+  _lj466_dw_calls=0
+  draw >/dev/null
+  _lj466_dw_first=$_lj466_dw_calls
+  _lj466_dw_calls=0
+  cursor=2
+  draw >/dev/null
+  _lj466_dw_second=$_lj466_dw_calls
+  functions -c _lj466_display_width display_width
+  unfunction _lj466_display_width
+  if (( _lj466_dw_first < 20 )); then
+    print -u2 "FAIL host/draw/widths first draw measured ${_lj466_dw_first} cells"
+    (( fails++ ))
+  fi
+  if (( _lj466_dw_second != 0 )); then
+    print -u2 "FAIL host/draw/widths redraw measured ${_lj466_dw_second} cells"
+    (( fails++ ))
+  fi
+  local -a _lj466_samples
+  local -F _lj466_a _lj466_b
+  local -i _lj466_k
+  _lj466_samples=()
+  for _lj466_k in {1..9}; do
+    cursor=$(( (_lj466_k % 20) + 1 ))
+    _lj466_a=$EPOCHREALTIME
+    draw >/dev/null
+    _lj466_b=$EPOCHREALTIME
+    _lj466_samples+=($(( (_lj466_b - _lj466_a) * 1000 )))
+  done
+  _lj466_samples=("${(n)_lj466_samples}")
+  if (( _lj466_samples[5] > 20 )); then
+    printf -v _lj466_show '%.1f' ${_lj466_samples[5]}
+    print -u2 "FAIL host/draw/redraw-median ${_lj466_show}ms want <=20"
+    (( fails++ ))
+  fi
+
+  _lj466_hosts20=$(mktemp) || return 1
+  _lj466_saved_hosts=$HOSTS_FILE
+  HOSTS_FILE=$_lj466_hosts20
+  : >"$HOSTS_FILE"
+  for i in {1..20}; do
+    print -r -- "box-$i|mac|box-$i.local|192.168.1.$i||22" >>"$HOSTS_FILE"
+  done
+  _lj466_t0=$EPOCHREALTIME
+  collect_self_ips
+  load_hosts
+  build_items
+  draw >/dev/null
+  _lj466_t1=$EPOCHREALTIME
+  _lj466_ms=$(( (_lj466_t1 - _lj466_t0) * 1000 ))
+  if (( _lj466_ms >= 120 )); then
+    printf -v _lj466_show '%.0f' $_lj466_ms
+    print -u2 "FAIL host/boot/first-screen ${_lj466_show}ms want <=120"
+    (( fails++ ))
+  fi
+  HOSTS_FILE=$_lj466_saved_hosts
+  rm -f "$_lj466_hosts20"
+  unset _lj466_dir _lj466_path _lj466_one _lj466_many _lj466_out _lj466_ms _lj466_show \
+    _lj466_t0 _lj466_t1 _lj466_save_get_mac _lj466_save_detect _lj466_save_port \
+    _lj466_save_ssh_fp _lj466_save_restore _lj466_save_setup _lj466_user_hosts \
+    _lj466_user_ssh _lj466_user_key _lj466_user_myip _lj466_user_mask _lj466_user_prefix \
+    _lj466_hosts_sum _lj466_ssh_sum _lj466_hosts_after _lj466_ssh_after _lj466_myips \
+    _lj466_dw_calls _lj466_dw_first _lj466_dw_second _lj466_samples _lj466_a _lj466_b \
+    _lj466_k _lj466_hosts20 _lj466_saved_hosts
+
   if (( fails )); then
     print -u2 "host-selftest: $fails failed"
     return 1

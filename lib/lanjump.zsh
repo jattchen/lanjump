@@ -2,6 +2,7 @@
 emulate -L zsh
 setopt no_unset extendedglob typesetsilent
 zmodload zsh/datetime
+zmodload zsh/zselect
 
 APP="$HOME/Library/Application Support/lanjump"
 
@@ -45,6 +46,12 @@ IFACE=""
 LANJUMP_KEYS=""
 IME_PY="${0:A:h}/lanjump-ime.py"
 ime_switched=0
+typeset -A arp_by_ip
+typeset -i arp_loaded=0
+typeset -i host_raw_name=4 host_raw_addr=8 host_raw_user=4 host_raw_stat=4
+typeset -i host_w_name=4 host_w_addr=8 host_w_user=4 host_w_stat=4
+typeset -i host_w_avail=-1
+host_layout_sig=""
 
 if [[ -z ${NO_COLOR:-} ]]; then
   c_reset=$'\e[0m'
@@ -89,77 +96,105 @@ on_exit() {
 trap on_exit EXIT
 trap 'restore_tty; exit 130' INT
 
-term_cols() {
-  local c=${COLUMNS:-0}
+_term_cols() {
+  local c=${COLUMNS:-0} size
   if (( c < 20 )); then
-    c=$(stty size 2>/dev/null | awk '{print $2}')
+    size=$(stty size 2>/dev/null) || size=""
+    c=${size##* }
+    [[ $c == [0-9]## ]] || c=0
   fi
   (( c < 40 )) && c=40
-  print -r -- $c
+  REPLY=$c
+}
+
+term_cols() {
+  _term_cols
+  print -r -- $REPLY
+}
+
+_term_lines() {
+  local r=${LINES:-0} size
+  if (( r < 1 )); then
+    size=$(stty size 2>/dev/null) || size=""
+    r=${size%% *}
+    [[ $r == [0-9]## ]] || r=0
+  fi
+  (( r < 1 )) && r=1
+  REPLY=$r
 }
 
 term_lines() {
-  local r=${LINES:-0}
-  if (( r < 1 )); then
-    r=$(stty size 2>/dev/null | awk '{print $1}')
-  fi
-  (( r < 1 )) && r=1
-  print -r -- $r
+  _term_lines
+  print -r -- $REPLY
+}
+
+# ASCII 0x00-0x7e → width 1; anything else → width 2.
+# Same REPLY helper as the picker so the host list does not fork per cell.
+display_width() {
+  local stripped=${1//[$'\x00'-$'\x7e']/}
+  REPLY=$(( ${#1} + ${#stripped} ))
 }
 
 dw() {
-  local s=$1 c
-  local -i w=0 i
-  for (( i = 1; i <= ${#s}; i++ )); do
-    c=$s[i]
-    if [[ $c < $'\x7f' ]]; then
-      (( w++ ))
-    else
-      (( w += 2 ))
-    fi
-  done
-  print -r -- $w
+  display_width "$1"
+  print -r -- $REPLY
 }
 
 fit_right() {
+  _fit_right "$1" $2
+  print -r -- "$REPLY"
+}
+
+_fit_right() {
   local s=$1
-  local -i max=$2 w=0 i cw
-  local c out=
-  if (( max <= 0 )); then
-    return
-  fi
-  if (( $(dw "$s") <= max )); then
-    print -r -- "$s"
+  local -i max=$2 w=0 i cw lim
+  local c out= stripped
+  REPLY=
+  (( max <= 0 )) && return
+  stripped=${s//[$'\x00'-$'\x7e']/}
+  if (( ${#s} + ${#stripped} <= max )); then
+    REPLY=$s
     return
   fi
   if (( max <= 1 )); then
-    print -r -- '…'
+    REPLY='…'
     return
   fi
-  for (( i = 1; i <= ${#s}; i++ )); do
+  lim=${#s}
+  (( lim > max )) && lim=max
+  for (( i = 1; i <= lim; i++ )); do
     c=$s[i]
-    cw=$(dw "$c")
+    if [[ $c < $'\x7f' ]]; then
+      cw=1
+    else
+      cw=2
+    fi
     if (( w + cw > max - 1 )); then
       break
     fi
     out+="$c"
     (( w += cw ))
   done
-  print -r -- "${out}…"
+  REPLY="${out}…"
 }
 
 padw() {
+  _padw "$1" $2
+  print -r -- "$REPLY"
+}
+
+_padw() {
   local s=$1
   local -i width=$2 d
-  d=$(dw "$s")
-  if (( width <= 0 )); then
-    return
-  fi
+  local stripped=${s//[$'\x00'-$'\x7e']/}
+  REPLY=
+  d=$(( ${#s} + ${#stripped} ))
+  (( width <= 0 )) && return
   if (( d > width )); then
-    fit_right "$s" $width
+    _fit_right "$s" $width
     return
   fi
-  printf '%s%*s' "$s" $(( width - d )) ''
+  printf -v REPLY '%s%*s' "$s" $(( width - d )) ''
 }
 
 trim() {
@@ -207,6 +242,17 @@ maybe_switch_ime() {
   local py=${IME_PY:-}
   [[ -n $py && -f $py ]] || return 0
   command python3 "$py" >/dev/null 2>&1 || true
+}
+
+# Startup only. The flag is set here so a later toggle does not fire twice;
+# python3 itself must not sit on the first paint (#466).
+switch_ime_async() {
+  should_switch_ime || return 0
+  (( ime_switched )) && return 0
+  local py=${IME_PY:-}
+  [[ -n $py && -f $py ]] || return 0
+  ime_switched=1
+  command python3 "$py" >/dev/null 2>&1 &!
 }
 
 toggle_ime() {
@@ -431,11 +477,25 @@ is_ignored_iface() {
 }
 
 collect_self_ips() {
+  _collect_self_ips_from "$(ifconfig 2>/dev/null || true)"
+}
+
+# One ifconfig pass. Membership is what is_self_ip needs; order is not.
+_collect_self_ips_from() {
+  local blob=$1 line ip
+  local -a lines
+  local -A have
   MYIPS=(127.0.0.1)
-  local i ip
-  for i in $(ifconfig -l); do
-    ip=$(iface_ipv4 "$i")
-    [[ -n $ip ]] && MYIPS+=("$ip")
+  have[127.0.0.1]=1
+  lines=("${(@f)blob}")
+  for line in "${lines[@]}"; do
+    [[ $line == [[:space:]]#'inet '[[:alnum:]]* ]] || continue
+    ip=${line##[[:space:]]#inet }
+    ip=${ip%% *}
+    [[ $ip == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]] || continue
+    [[ -n ${have[$ip]:-} ]] && continue
+    have[$ip]=1
+    MYIPS+=("$ip")
   done
 }
 
@@ -489,8 +549,38 @@ norm_mac() {
   print -r -- "${1:l}"
 }
 
+_arp_table_load() {
+  local blob=$1 line ip mac
+  local -a lines
+  lines=("${(@f)blob}")
+  for line in "${lines[@]}"; do
+    [[ $line == *'('*')'*' at '* ]] || continue
+    ip=${line#*\(}
+    ip=${ip%%\)*}
+    [[ $ip == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]] || continue
+    mac=${line#* at }
+    mac=${mac%% *}
+    [[ $mac == '('* || $mac == *incomplete* ]] && continue
+    [[ -n $mac && $mac != *ff:ff:ff:ff:ff:ff* ]] || continue
+    arp_by_ip[$ip]=${mac:l}
+  done
+}
+
+load_arp_table() {
+  arp_by_ip=()
+  _arp_table_load "$(arp -an 2>/dev/null || true)"
+  arp_loaded=1
+}
+
 get_mac() {
   local ip=$1 line mac
+  if (( arp_loaded )); then
+    mac=${arp_by_ip[$ip]:-}
+    if [[ -n $mac ]]; then
+      print -r -- "$mac"
+      return 0
+    fi
+  fi
   line=$(arp -n "$ip" 2>/dev/null) || return
   [[ $line == *incomplete* ]] && return
   mac=$(print -r -- "$line" | awk '{for (i = 1; i <= NF; i++) if ($i == "at") { print $(i + 1); exit }}')
@@ -1169,30 +1259,171 @@ upsert_ssh_config() {
   replace_ssh_config "$tmp"
 }
 
-run_timed() {
-  local -i secs=$1
-  local out=$2
-  shift 2
-  "$@" >"$out" 2>&1 &
-  local pid=$!
-  local -i i
-  for (( i = 0; i < secs * 10; i++ )); do
-    if ! kill -0 $pid 2>/dev/null; then
-      wait $pid 2>/dev/null || true
-      return
-    fi
-    sleep 0.1
-  done
+_run_timed_stop() {
+  local pid=$1
   kill $pid 2>/dev/null || true
   wait $pid 2>/dev/null || true
 }
 
-scan_bonjour() {
-  local tmp inst_file inst resolve_tmp line host port ip cand pfx
+# Last Add whose flags do not include MoreComing (bit 0, usually "Add 2")
+# means this browse batch is finished. "Add 3" still has more coming.
+_run_timed_browse_ready() {
+  local line rest flags
+  local -i done=0
+  local -a lines
+  REPLY=0
+  lines=("${(@f)1}")
+  for line in "${lines[@]}"; do
+    [[ $line == *Add* ]] || continue
+    rest=${line#*Add}
+    rest=${rest##[[:space:]]#}
+    flags=${rest%%[[:space:]]*}
+    [[ $flags == [0-9]## ]] || continue
+    if (( flags & 1 )); then
+      done=0
+    else
+      done=1
+    fi
+  done
+  REPLY=$done
+}
+
+_run_timed_ipv4_ready() {
+  local line tok
+  local -a lines toks
+  lines=("${(@f)1}")
+  for line in "${lines[@]}"; do
+    [[ $line == *Add* ]] || continue
+    toks=(${=line})
+    for tok in "${toks[@]}"; do
+      [[ $tok == [0-9]##.[0-9]##.[0-9]##.[0-9]## ]] && return 0
+    done
+  done
+  return 1
+}
+
+# run_timed SECS OUTFILE [--until reached|ipv4|browse] COMMAND...
+# --until reached: stop on "can be reached at" (-L).
+# --until ipv4: an Add line with an IPv4, then 0.2s quiet so a second
+#   A record in the same answer is still visible (#362). Hard cap stays SECS.
+# --until browse: stop 0.5s after a finished browse batch; hard cap stays SECS.
+# A host that answers only after that quiet window is missed until the next r scan.
+# No match: kill at SECS, same as before. Poll with zselect -t 5 (0.05s), not sleep.
+run_timed() {
+  local -i secs=$1
+  local out=$2
+  local until="" pid content prev=""
+  local -F deadline now quiet_since=0
+  local -i batch_ready=0 ipv4_ready=0
+  shift 2
+  if [[ ${1:-} == --until ]]; then
+    until=$2
+    shift 2
+  fi
+  : >"$out"
+  "$@" >"$out" 2>&1 &
+  pid=$!
+  deadline=$(( EPOCHREALTIME + secs ))
+  while true; do
+    now=$EPOCHREALTIME
+    if ! kill -0 $pid 2>/dev/null; then
+      wait $pid 2>/dev/null || true
+      return 0
+    fi
+    if [[ -n $until ]]; then
+      content=$(<"$out")
+      if [[ $content != "$prev" ]]; then
+        prev=$content
+        quiet_since=$now
+        case $until in
+          reached)
+            if [[ $content == *"can be reached at"* ]]; then
+              _run_timed_stop $pid
+              return 0
+            fi
+            ;;
+          ipv4)
+            if _run_timed_ipv4_ready "$content"; then
+              ipv4_ready=1
+            fi
+            ;;
+          browse)
+            _run_timed_browse_ready "$content"
+            batch_ready=$REPLY
+            ;;
+        esac
+      fi
+      if [[ $until == browse ]] && (( batch_ready )) && (( quiet_since > 0 )) && (( now - quiet_since >= 0.5 )); then
+        _run_timed_stop $pid
+        return 0
+      fi
+      if [[ $until == ipv4 ]] && (( ipv4_ready )) && (( quiet_since > 0 )) && (( now - quiet_since >= 0.2 )); then
+        _run_timed_stop $pid
+        return 0
+      fi
+    fi
+    if (( now >= deadline )); then
+      break
+    fi
+    zselect -t 5 || true
+  done
+  _run_timed_stop $pid
+}
+
+# One instance. Writes inst, host, ip, port to $2, or nothing when -L has no host.
+# stdout stays empty so parallel jobs cannot scramble scan_bonjour's list.
+_bonjour_resolve_one() {
+  local inst=$1 dest=$2
+  local resolve_tmp line host port ip cand pfx l
   local -a resolved_ips scan_prefixes
+  resolve_tmp=$(mktemp) || return 0
+  run_timed 1 "$resolve_tmp" --until reached dns-sd -L "$inst" _ssh._tcp local.
+  host=""
+  port="22"
+  line=""
+  for l in "${(@f)$( <"$resolve_tmp" )}"; do
+    [[ $l == *"can be reached at"* ]] && line=$l
+  done
+  if [[ -n $line ]]; then
+    host=${line##*can be reached at }
+    host=${host%% *}
+    port=${host##*:}
+    host=${host%:*}
+    host=${host%.}
+    port=${port%%[^0-9]*}
+  fi
+  rm -f "$resolve_tmp"
+  [[ -n $host ]] || return 0
+  ip=""
+  resolve_tmp=$(mktemp) || return 0
+  run_timed 1 "$resolve_tmp" --until ipv4 dns-sd -G v4 "$host"
+  resolved_ips=("${(@f)$(awk '/Add/ && /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {
+    for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $i
+  }' "$resolve_tmp")}")
+  rm -f "$resolve_tmp"
+  scan_prefixes=("${(@f)$(scan_lan_prefixes "$MYIP" "$MASK")}")
+  for cand in "${resolved_ips[@]}"; do
+    for pfx in "${scan_prefixes[@]}"; do
+      if [[ -n $pfx && $cand == ${pfx}.* ]]; then
+        ip=$cand
+        break 2
+      fi
+    done
+  done
+  [[ -n $ip ]] || ip=${resolved_ips[1]:-}
+  print -r -- "${inst}"$'\t'"${host}"$'\t'"${ip}"$'\t'"${port:-22}" >"$dest"
+}
+
+scan_bonjour() {
+  local tmp inst_file inst dir line mac host ip port
+  local -i n=0 j
+  local -a pids f
   tmp=$(mktemp)
   inst_file=$(mktemp)
-  run_timed 2 "$tmp" dns-sd -B _ssh._tcp local.
+  dir=$(mktemp -d)
+  pids=()
+  # Quiet 0.5s after the browse batch ends; hard cap is still 2s (#466).
+  run_timed 2 "$tmp" --until browse dns-sd -B _ssh._tcp local.
   awk '
     /Add/ && /_ssh\._tcp\./ {
       sub(/.*_ssh\._tcp\.[[:space:]]+/, "")
@@ -1200,43 +1431,36 @@ scan_bonjour() {
       if ($0 != "") print
     }
   ' "$tmp" | sort -u >"$inst_file"
+  # Cap 16, then read back in this sort -u order so record_seen stays stable.
   while IFS= read -r inst; do
     [[ -n $inst ]] || continue
-    resolve_tmp=$(mktemp)
-    run_timed 1 "$resolve_tmp" dns-sd -L "$inst" _ssh._tcp local.
-    host=""
-    port="22"
-    line=$(grep -F "can be reached at" "$resolve_tmp" | tail -1)
-    if [[ -n $line ]]; then
-      host=${line##*can be reached at }
-      host=${host%% *}
-      port=${host##*:}
-      host=${host%:*}
-      host=${host%.}
-      port=${port%%[^0-9]*}
+    n=$(( n + 1 ))
+    _bonjour_resolve_one "$inst" "$dir/$n" >/dev/null &
+    pids+=($!)
+    if (( ${#pids} >= 16 )); then
+      wait "${pids[@]}" || true
+      pids=()
     fi
-    rm -f "$resolve_tmp"
-    [[ -n $host ]] || continue
-    ip=""
-    resolve_tmp=$(mktemp)
-    run_timed 1 "$resolve_tmp" dns-sd -G v4 "$host"
-    resolved_ips=("${(@f)$(awk '/Add/ && /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {
-      for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) print $i
-    }' "$resolve_tmp")}")
-    rm -f "$resolve_tmp"
-    scan_prefixes=("${(@f)$(scan_lan_prefixes "$MYIP" "$MASK")}")
-    for cand in "${resolved_ips[@]}"; do
-      for pfx in "${scan_prefixes[@]}"; do
-        if [[ -n $pfx && $cand == ${pfx}.* ]]; then
-          ip=$cand
-          break 2
-        fi
-      done
-    done
-    [[ -n $ip ]] || ip=${resolved_ips[1]:-}
-    is_self_ip "$ip" && continue
-    print -r -- "${inst}"$'\t'"${host}"$'\t'"${ip}"$'\t'"$(get_mac "$ip")"$'\t'"${port:-22}"
   done <"$inst_file"
+  if (( ${#pids} )); then
+    wait "${pids[@]}" || true
+  fi
+  if (( n > 0 )); then
+    load_arp_table
+  fi
+  for (( j = 1; j <= n; j++ )); do
+    [[ -s $dir/$j ]] || continue
+    line=$(<"$dir/$j")
+    f=("${(@s:	:)line}")
+    inst=${f[1]:-}
+    host=${f[2]:-}
+    ip=${f[3]:-}
+    port=${f[4]:-22}
+    is_self_ip "$ip" && continue
+    mac=$(get_mac "$ip")
+    print -r -- "${inst}"$'\t'"${host}"$'\t'"${ip}"$'\t'"${mac}"$'\t'"${port:-22}"
+  done
+  [[ -n $dir && -d $dir ]] && rm -rf "$dir"
   rm -f "$tmp" "$inst_file"
 }
 
@@ -1533,7 +1757,7 @@ merge_seen_by_hostkey() {
 
 do_scan() {
   local keep alias hostname ip mac
-  local i n
+  local i n bj_file port_file bj_pid port_pid
   local -i extra=0 persist_st=0
   keep=$(list_item_key $cursor) || keep=
   loading=1
@@ -1548,16 +1772,31 @@ do_scan() {
   fi
   print "正在扫描 Bonjour SSH 和 $(scan_lan_label "$MYIP" "$MASK") 的 22 端口…"
   s_alias=() s_host=() s_ip=() s_mac=() s_port=()
+  # Run together. Record Bonjour first, then port 22, so a later scan-LAN
+  # address still wins the host-key merge (#425, #435).
+  bj_file=$(mktemp)
+  port_file=$(mktemp)
+  scan_bonjour >"$bj_file" &
+  bj_pid=$!
+  scan_port22 "$MYIP" "$MASK" >"$port_file" &
+  port_pid=$!
+  wait $bj_pid || true
+  wait $port_pid || true
+  load_arp_table
   while IFS=$'\t' read -r alias hostname ip mac port; do
     [[ -n $alias || -n $ip ]] || continue
     [[ -z $alias ]] && alias=${hostname:-$ip}
+    if [[ -z $mac && -n $ip ]]; then
+      mac=$(get_mac "$ip")
+    fi
     record_seen "$alias" "$hostname" "$ip" "$mac" "$port"
-  done < <(scan_bonjour)
+  done <"$bj_file"
   while IFS= read -r ip; do
     [[ -n $ip ]] || continue
     mac=$(get_mac "$ip")
     record_seen "$ip" "" "$ip" "$mac"
-  done < <(scan_port22 "$MYIP" "$MASK")
+  done <"$port_file"
+  rm -f "$bj_file" "$port_file"
   merge_seen_by_hostkey
   persist_scan_hosts || persist_st=$?
   load_hosts
@@ -1666,35 +1905,78 @@ draw_emit() {
   return 0
 }
 
-draw() {
-  local -i cols rows i n w_name=4 w_addr=8 w_user=4 w_stat=4
-  local mark line sep addr ime_key
-  cols=$(term_cols)
-  rows=$(term_lines)
+# Raw column maxima follow the host rows. Shrink uses the current width.
+# A second draw with the same rows does not measure them again.
+host_list_layout() {
+  local -i avail=$1 i n needed extra
+  local addr sig piece
   n=${#items_kind}
+  # Length-prefixed so a name that contains the separator cannot alias two rows.
+  sig=$n
   for (( i = 1; i <= n; i++ )); do
     [[ ${items_kind[$i]} == host ]] || continue
-    (( $(dw "${items_alias[$i]}") > w_name )) && w_name=$(dw "${items_alias[$i]}")
     addr=${items_ip[$i]:-${items_hostname[$i]}}
-    (( $(dw "$addr") > w_addr )) && w_addr=$(dw "$addr")
-    (( $(dw "${items_user[$i]}") > w_user )) && w_user=$(dw "${items_user[$i]}")
-    (( $(dw "${items_status[$i]}") > w_stat )) && w_stat=$(dw "${items_status[$i]}")
+    piece=${items_alias[$i]}
+    sig+=$'\n'"${#piece}:$piece"
+    piece=$addr
+    sig+=$'\n'"${#piece}:$piece"
+    piece=${items_user[$i]}
+    sig+=$'\n'"${#piece}:$piece"
+    piece=${items_status[$i]}
+    sig+=$'\n'"${#piece}:$piece"
   done
-  (( w_name < 4 )) && w_name=4
-  (( w_user < 4 )) && w_user=4
-  local -i avail needed extra
-  avail=$(( cols - 10 ))
-  needed=$(( w_name + w_addr + w_user + w_stat + 6 ))
+  if [[ $sig != "$host_layout_sig" ]]; then
+    host_layout_sig=$sig
+    host_raw_name=4
+    host_raw_addr=8
+    host_raw_user=4
+    host_raw_stat=4
+    for (( i = 1; i <= n; i++ )); do
+      [[ ${items_kind[$i]} == host ]] || continue
+      display_width "${items_alias[$i]}"
+      (( REPLY > host_raw_name )) && host_raw_name=$REPLY
+      addr=${items_ip[$i]:-${items_hostname[$i]}}
+      display_width "$addr"
+      (( REPLY > host_raw_addr )) && host_raw_addr=$REPLY
+      display_width "${items_user[$i]}"
+      (( REPLY > host_raw_user )) && host_raw_user=$REPLY
+      display_width "${items_status[$i]}"
+      (( REPLY > host_raw_stat )) && host_raw_stat=$REPLY
+    done
+    (( host_raw_name < 4 )) && host_raw_name=4
+    (( host_raw_user < 4 )) && host_raw_user=4
+    host_w_avail=-1
+  fi
+  if (( avail == host_w_avail )); then
+    return
+  fi
+  host_w_avail=$avail
+  host_w_name=$host_raw_name
+  host_w_addr=$host_raw_addr
+  host_w_user=$host_raw_user
+  host_w_stat=$host_raw_stat
+  needed=$(( host_w_name + host_w_addr + host_w_user + host_w_stat + 6 ))
   if (( needed > avail )); then
     extra=$(( needed - avail ))
-    if (( w_addr - extra >= 12 )); then
-      (( w_addr -= extra ))
+    if (( host_w_addr - extra >= 12 )); then
+      (( host_w_addr -= extra ))
     else
-      extra=$(( extra - (w_addr - 12) ))
-      w_addr=12
-      (( w_name - extra >= 8 )) && (( w_name -= extra )) || w_name=8
+      extra=$(( extra - (host_w_addr - 12) ))
+      host_w_addr=12
+      (( host_w_name - extra >= 8 )) && (( host_w_name -= extra )) || host_w_name=8
     fi
   fi
+}
+
+draw() {
+  local -i cols rows i n host_end=0
+  local mark line sep addr ime_key h_name h_addr h_user h_stat
+  _term_cols
+  cols=$REPLY
+  _term_lines
+  rows=$REPLY
+  n=${#items_kind}
+  host_list_layout $(( cols - 10 ))
 
   draw_remain=$(( rows > 1 ? rows - 1 : 1 ))
   print -n $'\e[H\e[J'
@@ -1708,12 +1990,19 @@ draw() {
     draw_emit "" || return
   fi
 
-  draw_emit "  ${c_dim}    #  $(padw 名称 $w_name)  $(padw 地址 $w_addr)  $(padw 用户 $w_user)  $(padw 状态 $w_stat)${c_reset}" || return
-  sep=$(printf '%*s' $(( cols - 4 )) '')
+  _padw 名称 $host_w_name
+  h_name=$REPLY
+  _padw 地址 $host_w_addr
+  h_addr=$REPLY
+  _padw 用户 $host_w_user
+  h_user=$REPLY
+  _padw 状态 $host_w_stat
+  h_stat=$REPLY
+  draw_emit "  ${c_dim}    #  ${h_name}  ${h_addr}  ${h_user}  ${h_stat}${c_reset}" || return
+  printf -v sep '%*s' $(( cols - 4 )) ''
   sep=${sep// /─}
   draw_emit "  ${c_dim}${sep}${c_reset}" || return
 
-  local host_end=0
   for (( i = 1; i <= n; i++ )); do
     [[ ${items_kind[$i]} == host ]] && host_end=$i
   done
@@ -1726,7 +2015,14 @@ draw() {
     fi
     if [[ ${items_kind[$i]} == host ]]; then
       addr=${items_ip[$i]:-${items_hostname[$i]}}
-      line="$(padw "${items_alias[$i]}" $w_name)  $(padw "$addr" $w_addr)  $(padw "${items_user[$i]:--}" $w_user)  $(padw "${items_status[$i]}" $w_stat)"
+      _padw "${items_alias[$i]}" $host_w_name
+      line=$REPLY
+      _padw "$addr" $host_w_addr
+      line+="  $REPLY"
+      _padw "${items_user[$i]:--}" $host_w_user
+      line+="  $REPLY"
+      _padw "${items_status[$i]}" $host_w_stat
+      line+="  $REPLY"
     else
       line=${items_alias[$i]}
     fi
@@ -3076,7 +3372,6 @@ if [[ -n ${1:-} ]]; then
 fi
 
 ensure_setup
-detect_lan
 load_hosts
 build_items
 if [[ -n $START_HOST_ALIAS ]]; then
@@ -3098,7 +3393,7 @@ if [[ ! -t 0 || ! -t 1 ]]; then
 fi
 
 setup_tty
-maybe_switch_ime
+switch_ime_async
 # No saved remotes: auto-scan unless last used this Mac.
 if [[ -z $START_HOST_ALIAS ]] && (( ${#h_alias} == 0 )) && [[ $(read_last) != local ]]; then
   do_scan
