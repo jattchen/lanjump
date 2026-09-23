@@ -1676,10 +1676,15 @@ EOF
     print -u2 "FAIL ssh/mux-dir/home selftest HOME is not the temp dir"
     (( fails++ ))
   fi
+  rm -rf "$HOME/.ssh/lanjump-cm"
   LANJUMP_NO_SSH_MUX=1
   ssh_prepare_mux
   if (( ${#SSH_MUX_OPTS} )); then
     print -u2 "FAIL ssh/mux-off/opts LANJUMP_NO_SSH_MUX still set mux options"
+    (( fails++ ))
+  fi
+  if [[ -d $HOME/.ssh/lanjump-cm ]]; then
+    print -u2 "FAIL ssh/mux-off/dir LANJUMP_NO_SSH_MUX created ${HOME}/.ssh/lanjump-cm"
     (( fails++ ))
   fi
   unset LANJUMP_NO_SSH_MUX
@@ -1704,6 +1709,8 @@ EOF
     rm -f "$tmpdir/ssh465_master" "$tmpdir/ssh465_pw" "$tmpdir/ssh465_pw_done" \
       "$tmpdir/ssh465_verify_fail" "$tmpdir/ssh465_err" "$tmpdir/ssh465_remote_ver" \
       "$tmpdir/ssh465_mode"
+    SSH_MUX_DISABLED=0
+    SSH_MUX_OPTS=()
   }
   ssh465_n() {
     local n
@@ -1733,13 +1740,15 @@ else
   print -r -- direct >>"$tmpdir/ssh465_kind"
 fi
 cmd=\${@[-1]}
-if [[ \$mode == path-long ]]; then
+if [[ \$mode == path-long || \$mode == path-long-ok ]]; then
   if [[ \$* == *ControlMaster* ]]; then
     print -u2 "ControlPath too long (test)"
     exit 255
   fi
-  print -u2 "ssh: connect to host 10.0.0.8 port 22: Operation timed out"
-  exit 255
+  if [[ \$mode == path-long ]]; then
+    print -u2 "ssh: connect to host 10.0.0.8 port 22: Operation timed out"
+    exit 255
+  fi
 fi
 if [[ \$mode == net ]]; then
   [[ -f "$tmpdir/ssh465_err" ]] && cat "$tmpdir/ssh465_err" >&2
@@ -1813,13 +1822,57 @@ EOF
   ssh465_reset
   print -r -- path-long >"$tmpdir/ssh465_mode"
   st=0
-  out=$(setup_access mac longhome.local) || st=$?
+  # Not a command substitution: that subshell would drop SSH_MUX_DISABLED.
+  setup_access mac longhome.local >"$tmpdir/ssh465_out" || st=$?
+  out=$(<"$tmpdir/ssh465_out")
   if (( st != 11 )) || [[ $(ssh465_args_n) != 2 || $out == *请输入* || $(<"$tmpdir/ssh465_args") == *id_rsa* ]]; then
     print -u2 "FAIL ssh/mux-path-long/stop st=$st calls=$(ssh465_args_n) out=$(printf %q "$out") args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
     (( fails++ ))
   fi
   if [[ $(sed -n '1p' "$tmpdir/ssh465_args") != *ControlMaster=auto* || $(sed -n '2p' "$tmpdir/ssh465_args") == *ControlMaster* || $(sed -n '2p' "$tmpdir/ssh465_args") != *" -i ${KEY} "* ]]; then
     print -u2 "FAIL ssh/mux-path-long/retry got1=$(printf %q "$(sed -n '1p' "$tmpdir/ssh465_args")") got2=$(printf %q "$(sed -n '2p' "$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  if (( SSH_MUX_DISABLED != 1 )); then
+    print -u2 "FAIL ssh/mux-path-long/sticky SSH_MUX_DISABLED=$SSH_MUX_DISABLED"
+    (( fails++ ))
+  fi
+
+  # After the long path is remembered, the rest of a ready-host connect
+  # (version probe and interactive ssh) must stay plain.
+  print -r -- '# lanjump-pick-version 200 abc' >"$PICKER"
+  ssh465_reset
+  print -r -- path-long-ok >"$tmpdir/ssh465_mode"
+  print -r -- 200 >"$tmpdir/ssh465_remote_ver"
+  st=0
+  ssh_access_ready mac host.local >/dev/null || st=$?
+  (( st == 0 )) && sync_picker host.local mac || st=$?
+  (( st == 0 )) && ssh_lanjump_tty mac@host.local true || st=$?
+  ssh465_mux_n=$(grep -c ControlMaster "$tmpdir/ssh465_args" || true)
+  if (( st != 0 )) || [[ $(ssh465_args_n) != 4 || $ssh465_mux_n != 1 || -s $tmpdir/ssh465_upload ]]; then
+    print -u2 "FAIL ssh/mux-path-long/flow st=$st calls=$(ssh465_args_n) mux=$ssh465_mux_n upload=$(<"$tmpdir/ssh465_upload") args=$(printf %q "$(<"$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  if [[ $(sed -n '1p' "$tmpdir/ssh465_args") != *ControlMaster=auto* ]]; then
+    print -u2 "FAIL ssh/mux-path-long/flow-first got=$(printf %q "$(sed -n '1p' "$tmpdir/ssh465_args")")"
+    (( fails++ ))
+  fi
+  ssh465_i=2
+  while (( ssh465_i <= 4 )); do
+    if [[ $(sed -n "${ssh465_i}p" "$tmpdir/ssh465_args") == *ControlMaster* ]]; then
+      print -u2 "FAIL ssh/mux-path-long/flow-later line=$ssh465_i got=$(printf %q "$(sed -n "${ssh465_i}p" "$tmpdir/ssh465_args")")"
+      (( fails++ ))
+    fi
+    (( ssh465_i++ ))
+  done
+  if (( SSH_MUX_DISABLED != 1 )); then
+    print -u2 "FAIL ssh/mux-path-long/flow-sticky SSH_MUX_DISABLED=$SSH_MUX_DISABLED"
+    (( fails++ ))
+  fi
+  rm -rf "$HOME/.ssh/lanjump-cm"
+  ssh_lanjump mac@host.local true
+  if [[ $(sed -n '$p' "$tmpdir/ssh465_args") == *ControlMaster* || -d $HOME/.ssh/lanjump-cm ]]; then
+    print -u2 "FAIL ssh/mux-path-long/later-plain dir=$([[ -d $HOME/.ssh/lanjump-cm ]] && print yes || print no) got=$(printf %q "$(sed -n '$p' "$tmpdir/ssh465_args")")"
     (( fails++ ))
   fi
 
@@ -1953,6 +2006,7 @@ EOF
 
   ssh465_reset
   print -r -- 200 >"$tmpdir/ssh465_remote_ver"
+  rm -rf "$HOME/.ssh/lanjump-cm"
   LANJUMP_NO_SSH_MUX=1
   st=0
   ssh_access_ready mac host.local || st=$?
@@ -1962,8 +2016,8 @@ EOF
   (( st == 0 )) && sync_picker host.local mac || st=$?
   (( st == 0 )) && ssh_lanjump_tty mac@host.local true || st=$?
   unset LANJUMP_NO_SSH_MUX
-  if (( st != 0 )) || [[ $(ssh465_n master) != 0 || $(ssh465_n reuse) != 0 || $(ssh465_n direct) != 6 || $(<"$tmpdir/ssh465_args") == *ControlMaster* ]]; then
-    print -u2 "FAIL ssh/mux-off/kinds st=$st master=$(ssh465_n master) reuse=$(ssh465_n reuse) direct=$(ssh465_n direct)"
+  if (( st != 0 )) || [[ $(ssh465_n master) != 0 || $(ssh465_n reuse) != 0 || $(ssh465_n direct) != 6 || $(<"$tmpdir/ssh465_args") == *ControlMaster* || -d $HOME/.ssh/lanjump-cm ]]; then
+    print -u2 "FAIL ssh/mux-off/kinds st=$st master=$(ssh465_n master) reuse=$(ssh465_n reuse) direct=$(ssh465_n direct) dir=$([[ -d $HOME/.ssh/lanjump-cm ]] && print yes || print no)"
     (( fails++ ))
   fi
 

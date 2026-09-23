@@ -582,6 +582,33 @@ if (( st != 2 )); then
 fi
 expect_contains last-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$out"
 expect_absent last-net/no-auth '无法登录' "$out"
+st=0
+out=$(cli_dispatch list studio 2>&1) || st=$?
+if (( st != 2 )); then
+  print -u2 "FAIL list-net/status got $st want 2"
+  (( fails++ ))
+fi
+expect_contains list-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$out"
+expect_absent list-net/no-auth '无法登录' "$out"
+st=0
+out=$(cli_dispatch ls studio 2>&1) || st=$?
+if (( st != 2 )); then
+  print -u2 "FAIL ls-net/status got $st want 2"
+  (( fails++ ))
+fi
+expect_contains ls-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$out"
+expect_absent ls-net/no-auth '无法登录' "$out"
+_lj_save_pick=$functions[cli_pick]
+cli_pick() { return 1 }
+st=0
+out=$(cli_dispatch list local 2>&1) || st=$?
+if (( st != 1 )); then
+  print -u2 "FAIL list-local-fail/status got $st want 1"
+  (( fails++ ))
+fi
+expect_absent list-local-fail/no-net '连不上' "$out"
+functions[cli_pick]=$_lj_save_pick
+unset _lj_save_pick
 functions[setup_access]=$_lj_save_access
 
 sync_picker() { return 1 }

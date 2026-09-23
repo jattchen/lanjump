@@ -2363,6 +2363,8 @@ SSH_OPTS=(-o AddressFamily=inet -o StrictHostKeyChecking=accept-new -o ConnectTi
 SSH_MUX_OPTS=()
 # ssh_probe sets this when ssh exits 255 and stderr is a network failure.
 typeset -i SSH_LAST_NET=0
+# Sticky for this process: a too-long ControlPath must not be tried again.
+typeset -i SSH_MUX_DISABLED=0
 
 # #280: advertised _ssh._tcp port must reach later ssh (default 22 is a no-op).
 apply_ssh_port() {
@@ -2391,7 +2393,9 @@ apply_ssh_port() {
 # LANJUMP_NO_SSH_MUX=1 leaves every ssh as its own handshake.
 ssh_prepare_mux() {
   SSH_MUX_OPTS=()
+  # Both opt-outs return before mkdir, so a disabled mux creates no socket dir.
   [[ -z ${LANJUMP_NO_SSH_MUX:-} ]] || return 0
+  (( SSH_MUX_DISABLED )) && return 0
   local dir="$HOME/.ssh/lanjump-cm"
   mkdir -p "$dir" 2>/dev/null || return 0
   chmod 700 "$dir" 2>/dev/null || true
@@ -2432,9 +2436,12 @@ ssh_probe() {
   errf=$(mktemp "${TMPDIR:-/tmp}/lanjump-ssherr.XXXXXX") || return 1
   ssh -o BatchMode=yes -o ConnectTimeout=3 "${mux[@]}" "${SSH_OPTS[@]}" "$@" true >/dev/null 2>"$errf"
   st=$?
-  # A too-long socket path fails before the network is tried. Retry once
-  # without mux so that local error is not treated as a bad key (#465).
+  # A too-long socket path fails before the network is tried. Remember
+  # that for this process and retry plain, so later picker and tty ssh
+  # do not rebuild the same ControlPath (#465).
   if (( st == 255 )) && [[ $mode == mux ]] && [[ $(<"$errf") == *'ControlPath too long'* ]]; then
+    SSH_MUX_DISABLED=1
+    SSH_MUX_OPTS=()
     rm -f "$errf"
     ssh_probe plain "$@"
     return $?
@@ -3581,7 +3588,16 @@ cli_dispatch() {
       mark_last "$host"
       ;;
     list|ls)
-      cli_list_names "$host" --print-sessions || return 1
+      has_st=0
+      cli_list_names "$host" --print-sessions || has_st=$?
+      # #178/#465: remote connect/login/sync/unknown is 2. A local picker
+      # failure, including an empty list that exits 1, stays 1.
+      if (( has_st == 2 )); then
+        return 2
+      fi
+      if (( has_st )); then
+        return 1
+      fi
       ;;
     last)
       has_st=0
