@@ -12,6 +12,8 @@
 emulate zsh
 setopt no_unset pipefail
 zmodload zsh/datetime
+# ime imports lib/lanjump-ime.py. Keep bytecode out of lib/ so upgrade can copy it.
+export PYTHONDONTWRITEBYTECODE=1
 
 ROOT=${0:A:h}
 typeset -a SUITES

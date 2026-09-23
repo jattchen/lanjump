@@ -84,7 +84,15 @@ if ! (( ${+functions[cli_dispatch]} )); then
   expect_absent list-h/host "没有保存的机器「-h」" "$out"
 
   st=0
-  err=$(/bin/zsh "$MAIN" nosuch 2>&1) || st=$?
+  # ensure_setup runs before the unknown-command rejection and creates
+  # ~/.ssh plus Application Support/lanjump. Keep that off the real home.
+  _lj_home=$(mktemp -d) || exit 1
+  _lj_bin=$(mktemp -d) || exit 1
+  print '#!/bin/zsh\nexit 0' >"$_lj_bin/ssh-add"
+  chmod 755 "$_lj_bin/ssh-add"
+  err=$(HOME=$_lj_home PATH="$_lj_bin:$PATH" /bin/zsh "$MAIN" nosuch 2>&1) || st=$?
+  rm -rf "$_lj_home" "$_lj_bin"
+  unset _lj_home _lj_bin
   if (( st == 0 )); then
     print -u2 "FAIL help/unknown-exit got 0 want nonzero"
     (( fails++ ))
@@ -1796,7 +1804,14 @@ if cli_is_command office || cli_is_command o; then
 fi
 
 st=0
-err=$(/bin/zsh "${0:A:h}/lanjump.zsh" new 2>&1) || st=$?
+# Same ensure_setup side effect as the nosuch case above.
+_lj_home=$(mktemp -d) || exit 1
+_lj_bin=$(mktemp -d) || exit 1
+print '#!/bin/zsh\nexit 0' >"$_lj_bin/ssh-add"
+chmod 755 "$_lj_bin/ssh-add"
+err=$(HOME=$_lj_home PATH="$_lj_bin:$PATH" /bin/zsh "${0:A:h}/lanjump.zsh" new 2>&1) || st=$?
+rm -rf "$_lj_home" "$_lj_bin"
+unset _lj_home _lj_bin
 if (( st == 0 )); then
   print -u2 "FAIL new-removed/status got 0 want nonzero"
   (( fails++ ))

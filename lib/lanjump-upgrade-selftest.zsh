@@ -15,6 +15,17 @@ fail() {
   fails=1
 }
 
+# lib/ can contain __pycache__ after another suite imports Python.
+copy_pkg_files() {
+  local src=$1 dest=$2 f
+  mkdir -p "$dest"
+  setopt localoptions nullglob
+  for f in "$src"/*; do
+    [[ -d $f && ! -L $f ]] && continue
+    cp -f "$f" "$dest/"
+  done
+}
+
 desktop_names() {
   local f
   for f in "$1/"*(N); do
@@ -180,7 +191,7 @@ repairpkg=$(mktemp -d)
 mkdir -p "$repairpkg/lanjump-main"/{bin,lib,src}
 cp "$ROOT/bin/lanjump.command" "$repairpkg/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$repairpkg/lanjump-main/bin/"
-cp "$ROOT/lib/"* "$repairpkg/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$repairpkg/lanjump-main/lib/"
 cp "$ROOT/src/lanjump-keys.c" "$repairpkg/lanjump-main/src/"
 cp "$ROOT/install.zsh" "$repairpkg/lanjump-main/install.zsh"
 print -r -- '# REPAIR-PICKER-355' >>"$repairpkg/lanjump-main/lib/lanjump-pick.zsh"
@@ -219,7 +230,7 @@ oldpkg=$(mktemp -d)
 mkdir -p "$oldpkg/lanjump-main"/{bin,lib,src}
 cp "$ROOT/bin/lanjump.command" "$oldpkg/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$oldpkg/lanjump-main/bin/"
-cp "$ROOT/lib/"* "$oldpkg/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$oldpkg/lanjump-main/lib/"
 cp "$ROOT/src/lanjump-keys.c" "$oldpkg/lanjump-main/src/"
 cat >"$oldpkg/lanjump-main/bin/lanjump" <<'EOF'
 #!/bin/zsh
@@ -289,7 +300,7 @@ newpkg=$(mktemp -d)
 mkdir -p "$newpkg/lanjump-main"/{bin,lib,src}
 cp "$ROOT/bin/lanjump.command" "$newpkg/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$newpkg/lanjump-main/bin/"
-cp "$ROOT/lib/"* "$newpkg/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$newpkg/lanjump-main/lib/"
 cp "$ROOT/src/lanjump-keys.c" "$newpkg/lanjump-main/src/"
 {
   print '# FETCHED-INSTALLER-MARKER'
@@ -320,8 +331,8 @@ cp "$ROOT/bin/lanjump.command" "$mainpkg/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump.command" "$shapkg/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$mainpkg/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$shapkg/lanjump-main/bin/"
-cp "$ROOT/lib/"* "$mainpkg/lanjump-main/lib/"
-cp "$ROOT/lib/"* "$shapkg/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$mainpkg/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$shapkg/lanjump-main/lib/"
 cp "$ROOT/src/lanjump-keys.c" "$mainpkg/lanjump-main/src/"
 cp "$ROOT/src/lanjump-keys.c" "$shapkg/lanjump-main/src/"
 print -r -- '# HEADS-MAIN-TREE' >>"$mainpkg/lanjump-main/lib/lanjump.zsh"
@@ -379,8 +390,8 @@ cp "$ROOT/bin/lanjump.command" "$mainpkg311/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump.command" "$shapkg311/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$mainpkg311/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$shapkg311/lanjump-main/bin/"
-cp "$ROOT/lib/"* "$mainpkg311/lanjump-main/lib/"
-cp "$ROOT/lib/"* "$shapkg311/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$mainpkg311/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$shapkg311/lanjump-main/lib/"
 cp "$ROOT/src/lanjump-keys.c" "$mainpkg311/lanjump-main/src/"
 cp "$ROOT/src/lanjump-keys.c" "$shapkg311/lanjump-main/src/"
 cp "$ROOT/install.zsh" "$mainpkg311/lanjump-main/install.zsh"
@@ -522,7 +533,7 @@ pipepkg=$(mktemp -d)
 mkdir -p "$pipepkg/lanjump-main"/{bin,lib,src}
 cp "$ROOT/bin/lanjump.command" "$pipepkg/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$pipepkg/lanjump-main/bin/"
-cp "$ROOT/lib/"* "$pipepkg/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$pipepkg/lanjump-main/lib/"
 cp "$ROOT/src/lanjump-keys.c" "$pipepkg/lanjump-main/src/"
 cp "$ROOT/install.zsh" "$pipepkg/lanjump-main/install.zsh"
 pipetar=$(mktemp)
@@ -1003,7 +1014,7 @@ pkg338=$(mktemp -d)
 mkdir -p "$pkg338/lanjump-main"/{bin,lib,src}
 cp "$ROOT/bin/lanjump.command" "$pkg338/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$pkg338/lanjump-main/bin/"
-cp "$ROOT/lib/"* "$pkg338/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$pkg338/lanjump-main/lib/"
 cp "$ROOT/src/lanjump-keys.c" "$pkg338/lanjump-main/src/"
 cp "$ROOT/install.zsh" "$pkg338/lanjump-main/install.zsh"
 tar338=$(mktemp)
@@ -1030,7 +1041,7 @@ pkg339=$(mktemp -d)
 mkdir -p "$pkg339/lanjump-main"/{bin,lib,src}
 cp "$ROOT/bin/lanjump.command" "$pkg339/lanjump-main/bin/"
 cp "$ROOT/bin/lanjump-ghostty-attach" "$pkg339/lanjump-main/bin/"
-cp "$ROOT/lib/"* "$pkg339/lanjump-main/lib/"
+copy_pkg_files "$ROOT/lib" "$pkg339/lanjump-main/lib/"
 cp "$ROOT/src/lanjump-keys.c" "$pkg339/lanjump-main/src/"
 cp "$ROOT/install.zsh" "$pkg339/lanjump-main/install.zsh"
 print -r -- '# HEADS-MAIN-TREE' >>"$pkg339/lanjump-main/lib/lanjump.zsh"
@@ -1116,7 +1127,7 @@ else
   mkdir -p "$pkg462/lanjump-main"/{bin,lib,src}
   cp "$ROOT/bin/lanjump.command" "$pkg462/lanjump-main/bin/"
   cp "$ROOT/bin/lanjump-ghostty-attach" "$pkg462/lanjump-main/bin/"
-  cp "$ROOT/lib/"* "$pkg462/lanjump-main/lib/"
+  copy_pkg_files "$ROOT/lib" "$pkg462/lanjump-main/lib/"
   cp "$ROOT/src/lanjump-keys.c" "$pkg462/lanjump-main/src/"
   cp "$ROOT/install.zsh" "$pkg462/lanjump-main/install.zsh"
   tar462=$(mktemp)
