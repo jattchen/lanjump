@@ -761,7 +761,7 @@ with_data_file_lock() {
   }
   {
     if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
-      zsystem flock -t "$wait_s" -f fd "$lock" 2>/dev/null
+      zsystem flock -t "$wait_s" -i 0.05 -f fd "$lock" 2>/dev/null
       st=$?
       if (( st != 0 )); then
         if (( st == 2 || wait_s == 0 )); then

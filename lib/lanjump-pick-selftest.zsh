@@ -7984,6 +7984,12 @@ EOF
   rm -rf "$lock467_snap"
 
   local lock467_dir lock467_dest lock467_holder lock467_ready
+  # Product default stays 5s (LANJUMP_LOCK_WAIT:-5). The suite times the same
+  # flock -t path at 0.5s so install.zsh --selftest stays under #461's minute.
+  if [[ ${functions[with_data_file_lock]} != *'LANJUMP_LOCK_WAIT:-5'* ]]; then
+    print -u2 "FAIL lock/default-wait product timeout is not 5s"
+    (( fails++ ))
+  fi
   lock467_dir=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-467-flock.XXXXXX") || return 1
   lock467_dest=$lock467_dir/pinned-sessions
   lock467_ready=$lock467_dir/ready
@@ -7993,7 +7999,7 @@ zmodload zsh/system
 zsystem flock -f fd $(printf %q "${lock467_dest}.lock") || exit 9
 ( builtin print -r -- HOLDER > $(printf %q "$lock467_dest") )
 builtin print -r -- ready > $(printf %q "$lock467_ready")
-sleep 9
+sleep 3
 zsystem flock -u fd
 " &
   lock467_holder=$!
@@ -8014,6 +8020,7 @@ zsystem flock -u fd
       functions with_data_file_lock
       print -r -- "dest=$(printf %q "$lock467_dest")"
       print -r -- 'write_body() { builtin print -r -- "$1" >"$dest.try" }'
+      print -r -- 'LANJUMP_LOCK_WAIT=0.5'
       print -r -- 'start=$EPOCHREALTIME'
       print -r -- 'with_data_file_lock "$dest" write_body WAITER'
       print -r -- 'st1=$?'
@@ -8033,6 +8040,7 @@ zsystem flock -u fd
       functions with_data_file_lock
       print -r -- "dest=$(printf %q "$lock467_dest")"
       print -r -- 'pick_interactive=1'
+      print -r -- 'LANJUMP_LOCK_WAIT=0.5'
       print -r -- 'start=$EPOCHREALTIME'
       print -r -- 'with_data_file_lock "$dest" builtin print -r -- UI_BODY'
       print -r -- 'st=$?'
@@ -8082,7 +8090,7 @@ zsystem flock -u fd
       print -u2 "FAIL lock/flock-timeout status st1=$lock467_st1 st2=$lock467_st2"
       (( fails++ ))
     fi
-    if (( lock467_first < 4.5 || lock467_first > 6 )); then
+    if (( lock467_first < 0.4 || lock467_first > 1.0 )); then
       print -u2 "FAIL lock/flock-timeout first wait ${lock467_first}s"
       (( fails++ ))
     fi
@@ -8114,7 +8122,7 @@ zsystem flock -u fd
       print -u2 "FAIL lock/interactive-notice st=$lock467_ust notice=$(printf %q "$lock467_unotice")"
       (( fails++ ))
     fi
-    if (( lock467_uelapsed > 6 )); then
+    if (( lock467_uelapsed < 0.4 || lock467_uelapsed > 1.2 )); then
       print -u2 "FAIL lock/interactive-notice waited ${lock467_uelapsed}s"
       (( fails++ ))
     fi
@@ -8249,8 +8257,8 @@ zsystem flock -u fd
     print -r -- ': >"$dest.lock"'
     print -r -- "zsh -c 'zmodload zsh/system; zsystem flock -f fd $(printf %q "$lock467_se/hosts.lock") || exit 9; sleep 3; zsystem flock -u fd' &"
     print -r -- 'hp=$!'
-    print -r -- 'sleep 0.2'
-    print -r -- 'LANJUMP_LOCK_WAIT=1'
+    print -r -- 'sleep 0.05'
+    print -r -- 'LANJUMP_LOCK_WAIT=0.5'
     print -r -- 'st=0'
     print -r -- 'with_data_file_lock "$dest" builtin print -r -- RAN || st=$?'
     print -r -- 'print -r -- "continued st=$st"'
