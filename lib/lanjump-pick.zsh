@@ -3768,6 +3768,14 @@ toggle_session_pin() {
   done
 }
 
+# r, and the return from a normal shell, must see sessions another
+# terminal created or killed. Those paths do not run new-session,
+# kill-session, or rename-session, so the census stays warm until dropped.
+refresh_external_sessions() {
+  tmux_state_invalidate
+  load_items "$@"
+}
+
 load_items() {
   loading=1
   local keep="${1-}" line when title cmd wname pin
@@ -4829,7 +4837,9 @@ activate() {
       print
       run_interactive /bin/zsh -l
       setup_tty
-      load_items
+      # The shell is outside tmux. Another terminal may have created or
+      # killed a session while it was up.
+      refresh_external_sessions
       draw
       ;;
     hosts)
@@ -5502,7 +5512,7 @@ while true; do
       exit 0
       ;;
     r)
-      load_items
+      refresh_external_sessions
       draw
       ;;
     o)

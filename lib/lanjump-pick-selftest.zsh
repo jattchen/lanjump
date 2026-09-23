@@ -7170,6 +7170,70 @@ EOF
   HOME=$snap407_saved_home
   rm -rf "$snap407_home"
 
+  # #463: r and the shell return re-read tmux. A warm census would keep
+  # showing sessions another terminal already created or killed.
+  if [[ ${functions[refresh_external_sessions]:-} != *tmux_state_invalidate* ]]; then
+    print -u2 "FAIL refresh/external missing tmux_state_invalidate"
+    (( fails++ ))
+  fi
+  if [[ ${functions[activate]:-} != *refresh_external_sessions* ]]; then
+    print -u2 "FAIL refresh/shell-return activate still loads a warm census"
+    (( fails++ ))
+  fi
+  if ! awk '
+    /[^[:alnum:]_]r\)/ {p=1}
+    p && /refresh_external_sessions/ {found=1; exit}
+    p && /;;/ {exit}
+    END {exit found ? 0 : 1}
+  ' "$_pick_src_file"; then
+    print -u2 "FAIL refresh/key-r main loop does not drop the census"
+    (( fails++ ))
+  fi
+  {
+    local ext_home ext_saved_home ext_row
+    local -i ext_has=$HAS_TMUX
+    ext_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-463-ext.XXXXXX") || return 1
+    ext_saved_home=$HOME
+    HOME=$ext_home
+    mkdir -p "$HOME/Library/Application Support/lanjump"
+    : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    ext_row=$'100\x1fext-old\x1f1\x1f0\x1f/tmp/old\x1fold\x1fold\x1fzsh'
+    functions -c tmuxx _ext_tmuxx
+    tmuxx() {
+      case $1 in
+        list-sessions)
+          print -r -- "$ext_row"
+          return 0
+          ;;
+        *) return 0 ;;
+      esac
+    }
+    HAS_TMUX=1
+    tmux_state_invalidate
+    load_items
+    if [[ ${items_id[(Ie)ext-old]} -eq 0 ]]; then
+      print -u2 "FAIL refresh/external-old missing ext-old got=${items_id[*]}"
+      (( fails++ ))
+    fi
+    ext_row=$'200\x1fext-fresh\x1f1\x1f0\x1f/tmp/fresh\x1ffresh\x1ffresh\x1fzsh'
+    load_items
+    if [[ ${items_id[(Ie)ext-old]} -eq 0 || ${items_id[(Ie)ext-fresh]} -ne 0 ]]; then
+      print -u2 "FAIL refresh/external-warm still served the new census got=${items_id[*]}"
+      (( fails++ ))
+    fi
+    refresh_external_sessions
+    if [[ ${items_id[(Ie)ext-fresh]} -eq 0 || ${items_id[(Ie)ext-old]} -ne 0 ]]; then
+      print -u2 "FAIL refresh/external-r got=${items_id[*]}"
+      (( fails++ ))
+    fi
+    functions -c _ext_tmuxx tmuxx
+    unset -f _ext_tmuxx
+    HAS_TMUX=$ext_has
+    HOME=$ext_saved_home
+    tmux_state_invalidate
+    rm -rf "$ext_home"
+  }
+
   # #463: steady server, no pin left to create. Cold flags, so an earlier
   # test cannot hide calls. LINES is a normal terminal so the first paint's
   # preview counts. Capture returns text, so the empty-pane retry does not.
