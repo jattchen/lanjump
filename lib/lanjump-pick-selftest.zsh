@@ -15,7 +15,7 @@
 # terminal_osascript_for_sessions,
 # attaching_remote_host, attach_spec_for, attach_command_for, open_named_tabs,
 # workspace_restore_prompt_text, short_command_name, useful_summary,
-# load_settings, save_settings, cycle_setting, effective_open_target,
+# load_settings, save_settings, cycle_setting, toggle_preview, effective_open_target,
 # picker_open_mode, restore_pick_finish,
 # resolve_session_cwd, picker_boot_before_first_draw, picker_boot_after_first_draw,
 # preview_is_grok, preview_line_is_tool, preview_line_is_model,
@@ -4399,6 +4399,43 @@ pick_selftest() {
   expect settings/bad-target auto "$open_target"
   expect settings/bad-placement window "$open_placement"
 
+  # Missing preview key is off. v remembers on/off. Another picker's
+  # placement change must not clobber a preview this process did not touch.
+  preview_on=1
+  print -r -- $'open_target auto\nopen_placement window\n' >"$HOME/Library/Application Support/lanjump/settings"
+  load_settings
+  expect settings/preview-missing-off 0 "$preview_on"
+  preview_on=1
+  save_settings
+  preview_on=0
+  load_settings
+  expect settings/preview-roundtrip-on 1 "$preview_on"
+  toggle_preview
+  expect settings/preview-toggle-off 0 "$preview_on"
+  preview_on=1
+  load_settings
+  expect settings/preview-stays-off 0 "$preview_on"
+  toggle_preview
+  expect settings/preview-toggle-on 1 "$preview_on"
+  preview_on=0
+  load_settings
+  expect settings/preview-stays-on 1 "$preview_on"
+  print -r -- $'preview maybe\n' >"$HOME/Library/Application Support/lanjump/settings"
+  load_settings
+  expect settings/preview-bad-off 0 "$preview_on"
+  print -r -- $'open_target auto\nopen_placement window\npreview off\nproject_root /opt/keep\n' >"$HOME/Library/Application Support/lanjump/settings"
+  load_settings
+  open_target=terminal
+  print -r -- $'open_target auto\nopen_placement tab\npreview on\nproject_root /opt/keep\n' >"$HOME/Library/Application Support/lanjump/settings"
+  save_settings
+  load_settings
+  expect settings/preview-merge-target terminal "$open_target"
+  expect settings/preview-merge-placement tab "$open_placement"
+  expect settings/preview-merge-kept 1 "$preview_on"
+  expect settings/preview-merge-root /opt/keep "${project_roots[*]}"
+  open_target=auto
+  open_placement=window
+
   expect settings/label-auto '自动（Ghostty 优先）' "$(settings_value_label target)"
   open_target=ghostty
   expect settings/label-ghostty Ghostty "$(settings_value_label target)"
@@ -7613,7 +7650,8 @@ EOF
 
   # #463: steady server, no pin left to create. Cold flags, so an earlier
   # test cannot hide calls. LINES is a normal terminal so the first paint's
-  # preview counts. Capture returns text, so the empty-pane retry does not.
+  # preview counts. Boot reloads settings, so preview on is in the file.
+  # Capture returns text, so the empty-pane retry does not.
   {
     local budget_home budget_log budget_saved_home budget_term budget_prog
     local budget_app budget_ct
@@ -7651,6 +7689,8 @@ EOF
     HAS_TMUX=1
     LINES=40
     COLUMNS=100
+    print -r -- $'open_target auto\nopen_placement window\npreview on\n' \
+      >"$HOME/Library/Application Support/lanjump/settings"
     preview_on=1
     functions -c term_lines _budget_term_lines
     functions -c term_cols _budget_term_cols
