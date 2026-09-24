@@ -82,6 +82,7 @@ typeset -a project_roots
 typeset -i _settings_have_loaded=0
 _settings_loaded_open_target=
 _settings_loaded_open_placement=
+typeset -i _settings_loaded_preview=0
 typeset -a _settings_loaded_project_roots
 settings_on=0
 settings_cursor=1
@@ -97,7 +98,8 @@ digit_wait=0.5
 preview_defer=0
 preview_wait=0.08
 preview_max_lines=12
-typeset -i preview_on=1 preview_band=8
+# No settings key means off. `v` stores preview on|off for the next launch.
+typeset -i preview_on=0 preview_band=8
 w_name=4 w_status=6 w_time=11 w_summary=4 w_path=4
 show_summary=1
 show_path=1
@@ -3123,6 +3125,7 @@ _remember_loaded_settings() {
   _settings_have_loaded=1
   _settings_loaded_open_target=$open_target
   _settings_loaded_open_placement=$open_placement
+  _settings_loaded_preview=$preview_on
   _settings_loaded_project_roots=("${project_roots[@]}")
 }
 
@@ -3140,6 +3143,7 @@ load_settings() {
   local -i saw_project_root=0
   open_target=auto
   open_placement=window
+  preview_on=0
   project_roots=()
   settings_file
   file=$REPLY
@@ -3163,6 +3167,12 @@ load_settings() {
             window|tab) open_placement=$val ;;
           esac
           ;;
+        preview)
+          case $val in
+            on|1) preview_on=1 ;;
+            off|0) preview_on=0 ;;
+          esac
+          ;;
         project_root)
           val=${val##[[:space:]]#}
           val=${val%%[[:space:]]#}
@@ -3180,7 +3190,8 @@ load_settings() {
 save_settings() {
   local file root st=0 my_target my_placement
   local -a my_roots
-  local -i dirty_target=1 dirty_placement=1 dirty_roots=1
+  local -i dirty_target=1 dirty_placement=1 dirty_preview=1 dirty_roots=1
+  local -i my_preview
   settings_file
   file=$REPLY
   if [[ -z ${_LANJUMP_SETTINGS_LOCKED:-} ]]; then
@@ -3192,24 +3203,33 @@ save_settings() {
   fi
   my_target=$open_target
   my_placement=$open_placement
+  my_preview=$preview_on
   my_roots=("${project_roots[@]}")
   if (( _settings_have_loaded )); then
     dirty_target=0
     dirty_placement=0
+    dirty_preview=0
     dirty_roots=0
     [[ $my_target == "$_settings_loaded_open_target" ]] || dirty_target=1
     [[ $my_placement == "$_settings_loaded_open_placement" ]] || dirty_placement=1
+    (( my_preview == _settings_loaded_preview )) || dirty_preview=1
     _settings_roots_match_loaded "${my_roots[@]}" || dirty_roots=1
   fi
   load_settings
   (( dirty_target )) && open_target=$my_target
   (( dirty_placement )) && open_placement=$my_placement
+  (( dirty_preview )) && preview_on=$my_preview
   if (( dirty_roots )); then
     project_roots=("${my_roots[@]}")
   fi
   {
     print -r -- "open_target ${open_target}"
     print -r -- "open_placement ${open_placement}"
+    if (( preview_on )); then
+      print -r -- "preview on"
+    else
+      print -r -- "preview off"
+    fi
     if (( ${#project_roots} )); then
       for root in "${project_roots[@]}"; do
         print -r -- "project_root ${root}"
@@ -3219,6 +3239,12 @@ save_settings() {
     fi
   } | replace_file_atomic "$file"
   _remember_loaded_settings
+}
+
+toggle_preview() {
+  preview_on=$(( 1 - preview_on ))
+  preview_defer=0
+  save_settings
 }
 
 settings_value_label() {
@@ -5788,8 +5814,7 @@ while true; do
       draw
       ;;
     v)
-      preview_on=$(( 1 - preview_on ))
-      preview_defer=0
+      toggle_preview
       draw
       ;;
     settings)
