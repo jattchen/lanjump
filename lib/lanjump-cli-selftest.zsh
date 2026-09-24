@@ -117,6 +117,9 @@ tmpdir=$(mktemp -d) || exit 1
 log=$tmpdir/log
 fake_picker=$tmpdir/pick
 export LANJUMP_CLI_TEST_LOG=$log
+# cli_remote_pick records the host before SSH. Do that in this temp dir,
+# or the first remote call creates a real Application Support/lanjump.
+LAST_FILE=$tmpdir/last_target
 trap 'rm -rf "$tmpdir"; restore_tty 2>/dev/null || true' EXIT
 
 # #153: WINCH at file load must not host-draw. last/help/list/confirm
