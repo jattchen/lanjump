@@ -3551,6 +3551,11 @@ cli_tty_read() {
   printf -v $_cli_tty_name '%s' "$_cli_tty_val"
 }
 
+# h in the session list exits 10. The host list treats that as "back".
+cli_keep_host_list() {
+  [[ ${1:-0} -eq 10 ]]
+}
+
 # Same picker as lanjump <机器>. --view only narrows rows for this launch.
 # Local is the interactive list (full-screen pin restore). Remote is cli_remote_pick.
 cli_open_session_list() {
@@ -3746,6 +3751,7 @@ fi
 # CLI entry: no LAN scan (#226).
 START_HOST_ALIAS=""
 START_LOCAL_LIST=""
+CLI_BACK_TO_HOSTS=0
 if (( $# )); then
   ensure_setup
   load_hosts
@@ -3754,7 +3760,12 @@ if (( $# )); then
   case $CLI_ROUTE in
     dispatch)
       cli_dispatch "$@"
-      exit $?
+      _lj_st=$?
+      # h from last/pin/on: stay for the host list, same as connect_local.
+      if ! cli_keep_host_list $_lj_st; then
+        exit $_lj_st
+      fi
+      CLI_BACK_TO_HOSTS=1
       ;;
     local-list)
       START_LOCAL_LIST=1
@@ -3805,6 +3816,9 @@ fi
 trap draw_on_winch WINCH
 if [[ -n $START_HOST_ALIAS || -n $START_LOCAL_LIST ]]; then
   activate $cursor
+fi
+if (( CLI_BACK_TO_HOSTS )); then
+  notice="已回到机器列表。"
 fi
 draw
 

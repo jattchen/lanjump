@@ -2055,6 +2055,24 @@ if (( st != 0 )); then
 fi
 expect_contains on-host/pick 'REMOTE_PICK host=office argv=--view occupied' "$hay"
 expect_absent on-host/no-print --print- "$hay"
+# h exits 10. That status is what the host list already treats as "back".
+_lj_save_pick=$functions[cli_pick]
+cli_pick() { return 10 }
+st=0
+cli_open_session_list local recent:5 0 || st=$?
+functions[cli_pick]=$_lj_save_pick
+if (( st != 10 )); then
+  print -u2 "FAIL list-h/status got $st want 10"
+  (( fails++ ))
+fi
+if ! cli_keep_host_list 10; then
+  print -u2 "FAIL list-h/keep rejected 10"
+  (( fails++ ))
+fi
+if cli_keep_host_list 0 || cli_keep_host_list 1; then
+  print -u2 "FAIL list-h/keep accepted a non-10 status"
+  (( fails++ ))
+fi
 st=0
 err=$(cli_dispatch on foo 2>&1) || st=$?
 if (( st == 0 )); then
