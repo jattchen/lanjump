@@ -167,18 +167,6 @@ else
   unset _lj_save_draw _lj_winch_draws
 fi
 
-if ! (( ${+functions[cli_recent_draw]} )); then
-  print -u2 "FAIL last-winch/cli_recent_draw missing"
-  (( fails++ ))
-else
-  cli_recent_names=(alpha beta)
-  cli_recent_cur=2
-  out=$(cli_recent_draw)
-  expect_contains last-winch/recent-title '最近 session' "$out"
-  expect_contains last-winch/recent-sel '> beta' "$out"
-  expect_absent last-winch/recent-host '局域网 SSH' "$out"
-fi
-
 cat >"$fake_picker" <<'EOF'
 emulate -L zsh
 log=${LANJUMP_CLI_TEST_LOG:?}
@@ -627,14 +615,11 @@ functions[sync_picker]=$_lj_save_sync
 unset _lj_save_access _lj_save_sync
 
 : >"$log"
-_lj_save_recent=$functions[cli_recent_select]
-cli_recent_select() { print -r -- "$1"; }
 cli_dispatch studio pin
-functions[cli_recent_select]=$_lj_save_recent
-unset _lj_save_recent
 hay=$(read_log)
-expect_contains remote/pin-print --print-pinned "$hay"
-expect_contains remote/pin-session lanjump "$hay"
+expect_contains remote/pin-view '--view pinned' "$hay"
+expect_absent remote/pin-no-print --print-pinned "$hay"
+expect_absent remote/pin-no-attach '--attach' "$hay"
 if [[ $hay == *--open-tabs* ]]; then
   print -u2 "FAIL remote/pin opened every pin got=$(printf %q "$hay")"
   (( fails++ ))
@@ -658,14 +643,11 @@ cli_open_tabs studio a b
 assert_remote_local_tabs remote-ghostty/open-tabs "$(read_log)" a b
 
 : >"$log"
-_lj_save_recent=$functions[cli_recent_select]
-cli_recent_select() { print -r -- "$1"; }
 cli_dispatch studio pin
-functions[cli_recent_select]=$_lj_save_recent
-unset _lj_save_recent
 hay=$(read_log)
-expect_contains remote-ghostty/pin-print --print-pinned "$hay"
-expect_contains remote-ghostty/pin-session lanjump "$hay"
+expect_contains remote-ghostty/pin-view '--view pinned' "$hay"
+expect_absent remote-ghostty/pin-no-print --print-pinned "$hay"
+expect_absent remote-ghostty/pin-no-attach '--attach' "$hay"
 if [[ $hay == *--open-tabs* ]]; then
   print -u2 "FAIL remote-ghostty/pin opened every pin got=$(printf %q "$hay")"
   (( fails++ ))
@@ -689,15 +671,14 @@ cli_dispatch go lanjump
 assert_local_attach local/go "$(read_log)" lanjump
 
 : >"$log"
-_lj_save_recent=$functions[cli_recent_select]
-cli_recent_select() { print -r -- "$1"; }
 cli_dispatch pin
-functions[cli_recent_select]=$_lj_save_recent
-unset _lj_save_recent
 hay=$(read_log)
-assert_local_attach local/pin "$hay" lanjump
-expect_contains local/pin-print --print-pinned "$hay"
+expect_contains local/pin-pick LOCAL_PICK "$hay"
+expect_contains local/pin-view '--view pinned' "$hay"
+expect_absent local/pin-no-print --print-pinned "$hay"
+expect_absent local/pin-no-attach --attach "$hay"
 expect_absent local/pin-no-tabs --open-tabs "$hay"
+expect_absent local/pin-no-ssh REMOTE_SSH "$hay"
 
 # Host routing for work/pins (issue 44): stub list/open so the chosen
 # machine is visible without going through SSH.
@@ -760,6 +741,11 @@ cli_open_tabs() {
 }
 
 cli_remote_pick() {
+  if [[ $1 != local ]] && (( ${CLI_HAS_CONNECT:-1} == 0 )); then
+    print -u2 "无法登录 ${1}."
+    return 2
+  fi
+  mark_last "$1"
   print -r -- "REMOTE_PICK host=$1 argv=${(j: :)${@[2,-1]}}" >>"$log"
 }
 
@@ -816,19 +802,55 @@ fi
 expect_contains has-session/restore-gate should_restore_sessions "$has_src"
 expect_contains has-session/restore-saved restore_saved_sessions "$has_src"
 
-# #122: last/--print-recent must restore like work/go before listing.
-recent_src=
+# #122/#137/#480: last/pin/on open the interactive picker. Restore is the
+# same boot as lanjump <机器>, not a silent print before a small list.
+open_src=${functions[cli_open_session_list]:-}
+if [[ -z $open_src ]]; then
+  print -u2 "FAIL view/open missing cli_open_session_list"
+  (( fails++ ))
+else
+  expect_contains view/open-local cli_pick "$open_src"
+  expect_contains view/open-remote cli_remote_pick "$open_src"
+  expect_contains view/open-flag --view "$open_src"
+  if [[ $open_src == *--print-recent* || $open_src == *--print-pinned* || $open_src == *--print-last* ]]; then
+    print -u2 "FAIL view/open still uses a silent print list"
+    (( fails++ ))
+  fi
+fi
+dispatch_view=${functions[cli_dispatch]}
+expect_contains view/last-recent 'recent:' "$dispatch_view"
+expect_contains view/pin-pinned 'pinned' "$dispatch_view"
+expect_contains view/on-occupied 'occupied' "$dispatch_view"
+remote_pick_src=$(awk '
+  /^cli_remote_pick\(\)/ {p=1}
+  p {print}
+  p && /^}/ {exit}
+' "${0:A:h}/lanjump.zsh")
+if [[ $remote_pick_src != *'cli_ensure_access'*'mark_last'*'ssh_lanjump_tty'* ]]; then
+  print -u2 "FAIL view/remote-mark mark_last is not after access and before ssh got=$(printf %q "$remote_pick_src")"
+  (( fails++ ))
+fi
+boot_src=
+restore_src=
 if [[ -f $pick_file ]]; then
-  recent_src=$(awk '
-    /^print_recent_names\(\)/ {p=1}
+  boot_src=$(awk '
+    /^picker_boot_after_first_draw_steps=/ {print; exit}
+    /^picker_boot_after_first_draw\(\)/ {p=1}
+    p {print}
+    p && /^}/ {exit}
+  ' "$pick_file")
+  restore_src=$(awk '
+    /^maybe_restore_sessions\(\)/ {p=1}
     p {print}
     p && /^}/ {exit}
   ' "$pick_file")
 fi
-expect_contains last/restore-gate should_restore_sessions "$recent_src"
-expect_contains last/restore-saved restore_saved_sessions "$recent_src"
+expect_contains view/boot-restore maybe_restore_sessions "$boot_src"
+expect_contains view/restore-gate should_restore_sessions "$restore_src"
+expect_contains view/restore-saved restore_saved_sessions "$restore_src"
+unset open_src dispatch_view remote_pick_src boot_src restore_src
 
-# #134: list/--print-sessions must restore like last/work before listing.
+# #134: list/--print-sessions must restore like work before listing.
 list_src=
 if [[ -f $pick_file ]]; then
   list_src=$(awk '
@@ -839,18 +861,6 @@ if [[ -f $pick_file ]]; then
 fi
 expect_contains list/restore-gate should_restore_sessions "$list_src"
 expect_contains list/restore-saved restore_saved_sessions "$list_src"
-
-# #137: pins/--print-pinned must restore like work/list before listing pins.
-pins_src=
-if [[ -f $pick_file ]]; then
-  pins_src=$(awk '
-    /^print_pinned_names\(\)/ {p=1}
-    p {print}
-    p && /^}/ {exit}
-  ' "$pick_file")
-fi
-expect_contains pins/restore-gate should_restore_sessions "$pins_src"
-expect_contains pins/restore-saved restore_saved_sessions "$pins_src"
 
 # #124: --attach must restore like go/--has-session before attaching.
 attach_src=
@@ -954,9 +964,10 @@ if (( st != 0 )); then
   print -u2 "FAIL pin-office/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains pin-office/list 'LIST host=office flag=--print-pinned' "$hay"
-expect_contains pin-office/select 'SELECT office-pin' "$hay"
+expect_contains pin-office/pick 'REMOTE_PICK host=office argv=--view pinned' "$hay"
 expect_contains pin-office/last 'LAST host=office' "$hay"
+expect_contains pin-office/last-before-pick $'LAST host=office\nREMOTE_PICK' "$hay"
+expect_absent pin-office/not-print --print-pinned "$hay"
 expect_absent pin-office/not-open 'OPEN host=office' "$hay"
 expect_absent pin-office/not-local-list 'LIST host=local' "$hay"
 
@@ -992,9 +1003,10 @@ if (( st != 0 )); then
   print -u2 "FAIL pin-omit-local/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains pin-omit-local/list 'LIST host=local flag=--print-pinned' "$hay"
-expect_contains pin-omit-local/select 'SELECT local-pin' "$hay"
-expect_absent pin-omit-local/not-office 'LIST host=office' "$hay"
+expect_contains pin-omit-local/pick 'PICK --view pinned' "$hay"
+expect_contains pin-omit-local/last 'LAST host=local' "$hay"
+expect_absent pin-omit-local/not-office 'REMOTE_PICK host=office' "$hay"
+expect_absent pin-omit-local/not-print --print-pinned "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
@@ -1336,10 +1348,10 @@ if (( st != 0 )); then
   print -u2 "FAIL last-menu/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-menu/list 'LIST host=local flag=--print-recent' "$hay"
-expect_contains last-menu/select 'SELECT local-recent1 local-recent2' "$hay"
-expect_contains last-menu/attach 'PICK_EXEC --attach local-recent1' "$hay"
+expect_contains last-menu/pick 'PICK --view recent:5' "$hay"
 expect_contains last-menu/last 'LAST host=local' "$hay"
+expect_absent last-menu/no-print --print-recent "$hay"
+expect_absent last-menu/no-attach 'PICK_EXEC' "$hay"
 
 # #75: last <host> enters that host; last/default host must become it, not the previous local.
 TEST_LAST_HOST=local
@@ -1351,15 +1363,12 @@ if (( st != 0 )); then
   print -u2 "FAIL last-host/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-host/list 'LIST host=office flag=--print-recent' "$hay"
-expect_contains last-host/select 'SELECT office-recent1 office-recent2' "$hay"
-expect_contains last-host/attach 'REMOTE_PICK host=office' "$hay"
-expect_contains last-host/attach-flag '--attach' "$hay"
-expect_contains last-host/session office-recent1 "$hay"
+expect_contains last-host/pick 'REMOTE_PICK host=office argv=--view recent:5' "$hay"
 expect_contains last-host/last 'LAST host=office' "$hay"
-expect_contains last-host/last-before-attach $'LAST host=office\nREMOTE_PICK' "$hay"
+expect_contains last-host/last-before-pick $'LAST host=office\nREMOTE_PICK' "$hay"
 expect_absent last-host/not-local 'LAST host=local' "$hay"
-expect_absent last-host/not-local-list 'LIST host=local' "$hay"
+expect_absent last-host/not-attach '--attach' "$hay"
+expect_absent last-host/not-print --print-recent "$hay"
 TEST_LAST_HOST=local
 
 # #202: last --shell must skip resume, same as go name --shell.
@@ -1371,11 +1380,10 @@ if (( st != 0 )); then
   print -u2 "FAIL last-shell/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-shell/list 'LIST host=local flag=--print-recent' "$hay"
-expect_contains last-shell/select 'SELECT local-recent1 local-recent2' "$hay"
-expect_contains last-shell/attach 'PICK_EXEC --attach --shell local-recent1' "$hay"
-expect_absent last-shell/no-resume 'PICK_EXEC --attach local-recent1' "$hay"
+expect_contains last-shell/pick 'PICK --view recent:5 --shell' "$hay"
 expect_contains last-shell/last 'LAST host=local' "$hay"
+expect_absent last-shell/no-print --print-recent "$hay"
+expect_absent last-shell/no-unknown '未知选项' "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
@@ -1386,11 +1394,10 @@ if (( st != 0 )); then
   print -u2 "FAIL last-host-shell/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-host-shell/list 'LIST host=office flag=--print-recent' "$hay"
-expect_contains last-host-shell/attach 'REMOTE_PICK host=office' "$hay"
-expect_contains last-host-shell/shell '--attach --shell office-recent1' "$hay"
-expect_absent last-host-shell/no-resume 'argv=--attach office-recent1' "$hay"
+expect_contains last-host-shell/pick 'REMOTE_PICK host=office argv=--view recent:5 --shell' "$hay"
 expect_contains last-host-shell/last 'LAST host=office' "$hay"
+expect_absent last-host-shell/no-print --print-recent "$hay"
+expect_absent last-host-shell/no-unknown '未知选项' "$hay"
 TEST_LAST_HOST=local
 
 # #178: last must not treat connect failure as an empty recent list.
@@ -1425,34 +1432,28 @@ expect_absent last-login-fail/no-last 'LAST ' "$hay"
 expect_absent last-login-fail/no-select 'SELECT ' "$hay"
 CLI_HAS_CONNECT=1
 
-# #182: product --print-recent exits 1 on a successful empty list.
-CLI_RECENT_EMPTY=1
+# Empty ranges stay inside the picker. The CLI still opens the list.
 : >"$log"
 st=0
 out=$(cli_dispatch office last 2>&1) || st=$?
-if (( st == 0 )); then
-  print -u2 "FAIL last-empty-recent/status got 0 want nonzero"
+if (( st != 0 )); then
+  print -u2 "FAIL last-empty-recent/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-empty-recent/msg '没有最近的 session。' "$out"
+expect_absent last-empty-recent/no-msg '没有最近的 session。' "$out"
 hay=$(read_log)
-expect_contains last-empty-recent/list 'LIST host=office flag=--print-recent' "$hay"
-expect_absent last-empty-recent/no-last 'LAST ' "$hay"
-expect_absent last-empty-recent/no-select 'SELECT ' "$hay"
+expect_contains last-empty-recent/pick 'REMOTE_PICK host=office argv=--view recent:5' "$hay"
 
 : >"$log"
 st=0
 out=$(cli_dispatch last 2>&1) || st=$?
-if (( st == 0 )); then
-  print -u2 "FAIL last-empty-recent-local/status got 0 want nonzero"
+if (( st != 0 )); then
+  print -u2 "FAIL last-empty-recent-local/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-empty-recent-local/msg '没有最近的 session。' "$out"
+expect_absent last-empty-recent-local/no-msg '没有最近的 session。' "$out"
 hay=$(read_log)
-expect_contains last-empty-recent-local/list 'LIST host=local flag=--print-recent' "$hay"
-expect_absent last-empty-recent-local/no-last 'LAST ' "$hay"
-expect_absent last-empty-recent-local/no-select 'SELECT ' "$hay"
-CLI_RECENT_EMPTY=0
+expect_contains last-empty-recent-local/pick 'PICK --view recent:5' "$hay"
 
 : >"$log"
 st=0
@@ -1776,10 +1777,11 @@ if (( st != 0 )); then
   print -u2 "FAIL last-remote-mark-before-attach/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=studio-recent1' "$hay"
+expect_contains last-remote-mark-before-attach/pick 'REMOTE_PICK host=studio argv=--view recent:5' "$hay"
+expect_contains last-remote-mark-before-attach/order $'LAST host=studio\nREMOTE_PICK' "$hay"
 expect_eq last-remote-mark-before-attach/last-file studio "$(read_last)"
 
-# pin attaches the chosen session and marks the host first, same as last.
+# pin opens the local list and marks this Mac first, same as last.
 print -r -- office >"$LAST_FILE"
 : >"$log"
 st=0
@@ -1789,7 +1791,8 @@ if (( st != 0 )); then
   print -u2 "FAIL pin-local-mark-before-attach/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains pin-local-mark-before-attach/during 'ATTACH_DURING last=local host=local session=local-pin' "$hay"
+expect_contains pin-local-mark-before-attach/pick 'PICK --view pinned' "$hay"
+expect_contains pin-local-mark-before-attach/order $'LAST host=local\nPICK' "$hay"
 expect_eq pin-local-mark-before-attach/last-file local "$(read_last)"
 
 # #192: list/ls is not entering. LAST_FILE stays the previously entered host.
@@ -1981,8 +1984,39 @@ if (( st != 0 )); then
   print -u2 "FAIL last-n/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-n/list 'LIST host=local flag=--print-recent' "$hay"
-expect_contains last-n/select 'SELECT local-recent1 local-recent2' "$hay"
+expect_contains last-n/pick 'PICK --view recent:20' "$hay"
+expect_absent last-n/no-print --print-recent "$hay"
+
+: >"$log"
+st=0
+cli_dispatch office last 8 >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL last-n-host/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains last-n-host/pick 'REMOTE_PICK host=office argv=--view recent:8' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch pin --shell >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL pin-shell/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains pin-shell/pick 'PICK --view pinned --shell' "$hay"
+expect_absent pin-shell/no-unknown '未知选项' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch office pin --shell >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL pin-host-shell/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains pin-host-shell/pick 'REMOTE_PICK host=office argv=--view pinned --shell' "$hay"
 
 for bad in 0 abc 01; do
   st=0
@@ -2009,21 +2043,18 @@ if (( st != 0 )); then
   print -u2 "FAIL on/status got $st want 0"
   (( fails++ ))
 fi
-if [[ -n $out ]]; then
-  print -u2 "FAIL on/quiet got=$(printf %q "$out")"
-  (( fails++ ))
-fi
-expect_absent on/no-list 'LIST ' "$hay"
+expect_contains on/pick 'PICK --view occupied' "$hay"
+expect_absent on/no-print --print- "$hay"
 : >"$log"
 st=0
 out=$(cli_dispatch office on 2>&1) || st=$?
 hay=$(read_log)
-if (( st != 0 )) || [[ -n $out ]]; then
+if (( st != 0 )); then
   print -u2 "FAIL on-host/status got $st out=$(printf %q "$out")"
   (( fails++ ))
 fi
-expect_absent on-host/no-list 'LIST ' "$hay"
-expect_absent on-host/no-remote 'REMOTE_' "$hay"
+expect_contains on-host/pick 'REMOTE_PICK host=office argv=--view occupied' "$hay"
+expect_absent on-host/no-print --print- "$hay"
 st=0
 err=$(cli_dispatch on foo 2>&1) || st=$?
 if (( st == 0 )); then
@@ -2181,12 +2212,10 @@ else
     (( fails++ ))
   fi
 fi
-_lj_recent=$(sed -n '/^cli_recent_select()/,/^}/p' "${0:A:h}/lanjump.zsh")
-if [[ $_lj_recent != *read_key_or_exit* ]]; then
-  print -u2 "FAIL key/eof-spin recent loop missing read_key_or_exit"
+if grep -E -q '^cli_recent_select\(\)|^cli_recent_draw\(\)' "${0:A:h}/lanjump.zsh"; then
+  print -u2 "FAIL key/eof-spin small recent list still exists"
   (( fails++ ))
 fi
-unset _lj_recent
 if grep -E -q '^[[:space:]]*read_key \|\| continue' "${0:A:h}/lanjump.zsh"; then
   print -u2 "FAIL key/eof-spin host loop still continues forever on read fail"
   (( fails++ ))

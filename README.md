@@ -30,7 +30,7 @@ lanjump upgrade
 
 主机列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 连接（或进入本机），`r` 扫描，`d` 忘掉，`e` 给已保存的机器改名，`i` 开关打开时切英文输入法，`q` 退出。
 
-tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 当前窗口进入，`t` 新窗口进入，`n` 新建，`e` 重命名，`d` 删除，`p` 常驻，`X` 删空闲，`h` 换机器，`o` 时间/占用/常驻，`v` 开关预览，`/` 包含，`!` 排除，`f` 开关上次筛选，`,` 设置，`s` 普通 shell（`exit` 返回），`q` 退出。开不了外部窗口时（SSH / 没有本机键盘）Enter 和 `t` 都在当前窗口进入，不提示。Shift+Enter 仍是 Grok 换行，不开新窗口。预览默认关闭；`v` 打开或关上后会记住，下次打开列表保持上次的状态。
+tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 当前窗口进入，`t` 新窗口进入，`n` 新建，`e` 重命名，`d` 删除，`p` 常驻，`X` 删空闲，`h` 换机器，`o` 时间/占用/常驻，`v` 开关预览，`/` 包含，`!` 排除，`f` 开关上次筛选，`,` 设置，`s` 普通 shell（`exit` 返回），`q` 退出。开不了外部窗口时（SSH / 没有本机键盘）Enter 和 `t` 都在当前窗口进入，不提示。Shift+Enter 仍是 Grok 换行，不开新窗口。预览默认关闭；`v` 打开或关上后会记住，下次打开列表保持上次的状态。`last` / `pin` / `on` 进的是同一个 session 列表，只显示对应范围。
 
 重启电脑或 `tmux kill-server` 之后再打开 tmux 列表：若还有没建出来的常驻 session，先整屏显示恢复进度，完成后再进入列表，顶上留「已恢复 N 个」。只把 pin 建回 tmux，回到记下的目录。不开窗口，也不询问。没标 pin 的 session 不重建。命令行 `list` / `go` 仍静默恢复。纯数字名只有按 `p` 时先改成 `s-` 加时间戳并写成 pin 才会回来。
 
@@ -47,9 +47,9 @@ tmux 列表：`↑` `↓` / `j` 上 `k` 下 选择，`Enter` 当前窗口进入�
 | `lanjump go demo -g` | 进入并续上 Grok |
 | `lanjump <机器> go -G` | 在那台另开一个全新 Grok |
 | `lanjump [<机器>] list` | 列出 session |
-| `lanjump [<机器>] last [N]` | 最近的 session 里选一个进入 |
-| `lanjump [<机器>] pin` | 已常驻的 session 里选一个进入 |
-| `lanjump [<机器>] on` | 那台占用中的 session |
+| `lanjump [<机器>] last [N]` | 打开 session 列表，只显示最近 N 个（不写 N 则 5 个） |
+| `lanjump [<机器>] pin` | 打开 session 列表，只显示常驻 |
+| `lanjump [<机器>] on` | 打开 session 列表，只显示占用中 |
 | `lanjump upgrade` | 升级到最新版本 |
 | `lanjump update` | 同 `upgrade` |
 

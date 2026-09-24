@@ -38,11 +38,9 @@ SSH_CONFIG="$HOME/.ssh/config"
 
 typeset -a h_alias h_user h_hostname h_ip h_mac h_port h_ssh_id h_last
 typeset -a items_kind items_alias items_user items_hostname items_ip items_mac items_port items_status items_saved
-typeset -a cli_recent_names
 typeset -a s_alias s_host s_ip s_mac s_port
 typeset -a MYIPS
 cursor=1
-cli_recent_cur=1
 loading=0
 host_list_active=0
 draw_remain=0
@@ -3155,6 +3153,8 @@ cli_remote_pick() {
   if (( acc != 0 )); then
     return $acc
   fi
+  # Before SSH blocks, same as the host list. A refused connection returns above.
+  mark_last "$alias"
   if ! sync_picker "$target" "$user"; then
     print -u2 "无法把 tmux 选择界面同步到对方。"
     return 1
@@ -3279,69 +3279,6 @@ cli_pin_session() {
   [[ -n ${lines[-1]:-} ]] && REPLY=${lines[-1]}
 }
 
-cli_recent_draw() {
-  local -i i n=${#cli_recent_names}
-  print -n $'\e[H\e[J'
-  print -r -- "${cli_recent_title:-最近 session}"
-  print
-  for (( i = 1; i <= n; i++ )); do
-    if (( i == cli_recent_cur )); then
-      print -r -- "> ${cli_recent_names[i]}"
-    else
-      print -r -- "  ${cli_recent_names[i]}"
-    fi
-  done
-  print
-  print -r -- "j/k 选择  Enter 进入  q 取消"
-}
-
-cli_recent_select() {
-  local -i n
-  local chosen=
-  cli_recent_names=("$@")
-  cli_recent_cur=1
-  n=${#cli_recent_names}
-  (( n )) || return 1
-  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
-    print -u2 "需要交互式终端。"
-    return 1
-  fi
-  {
-    stty_orig=$(stty -g </dev/tty 2>/dev/null) || stty_orig=
-    stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
-    print -n $'\e[?25l'
-    trap cli_recent_draw WINCH
-    while true; do
-      cli_recent_draw
-      read_key_or_exit || continue
-      case $REPLY in
-        up)
-          (( cli_recent_cur-- ))
-          (( cli_recent_cur < 1 )) && cli_recent_cur=$n
-          ;;
-        down)
-          (( cli_recent_cur++ ))
-          (( cli_recent_cur > n )) && cli_recent_cur=1
-          ;;
-        enter)
-          chosen=${cli_recent_names[cli_recent_cur]}
-          break
-          ;;
-        q|esc)
-          chosen=
-          break
-          ;;
-      esac
-    done
-  } always {
-    trap - WINCH
-    print -n $'\e[?25h'
-    [[ -n $stty_orig ]] && stty "$stty_orig" </dev/tty 2>/dev/null
-  } </dev/tty >/dev/tty
-  [[ -n $chosen ]] || return 1
-  print -r -- "$chosen"
-}
-
 cli_has_session() {
   local host=$1 session=$2
   if [[ $host == local ]]; then
@@ -3408,10 +3345,10 @@ cli_usage() {
   print -r -- '  lanjump go demo -g        进入并续上 Grok'
   print -r -- '  lanjump <机器> go -G      在那台开一个全新 Grok'
   print -r -- '  lanjump list              列出 session'
-  print -r -- '  lanjump last              最近的 session 里选一个进入'
-  print -r -- '  lanjump last 20           最近的 session 里选一个进入'
-  print -r -- '  lanjump pin               已常驻的 session 里选一个进入'
-  print -r -- '  lanjump <机器> on         那台占用中的 session'
+  print -r -- '  lanjump last              打开 session 列表，只显示最近 5 个'
+  print -r -- '  lanjump last 20           打开 session 列表，只显示最近 20 个'
+  print -r -- '  lanjump pin               打开 session 列表，只显示常驻'
+  print -r -- '  lanjump <机器> on         打开 session 列表，只显示占用中'
   print -r -- '  lanjump upgrade           升级到最新版本'
   print -r -- '  lanjump update            同 upgrade'
   print -r -- '  lanjump help              显示本说明'
@@ -3587,7 +3524,7 @@ cli_reject_host_positional() {
   return 1
 }
 
-# N is checked only. The recent list stays the fixed five until #480.
+# N is a positive integer with no cap. 0, junk, and extra words are usage errors.
 cli_last_positionals_ok() {
   if (( ${#pos} == 0 )); then
     return 0
@@ -3614,9 +3551,25 @@ cli_tty_read() {
   printf -v $_cli_tty_name '%s' "$_cli_tty_val"
 }
 
+# Same picker as lanjump <机器>. --view only narrows rows for this launch.
+# Local is the interactive list (full-screen pin restore). Remote is cli_remote_pick.
+cli_open_session_list() {
+  local host=$1 view=$2
+  local -i shell=${3:-0}
+  local -a args
+  args=(--view "$view")
+  (( shell )) && args+=(--shell)
+  if [[ $host == local ]]; then
+    mark_last "$host"
+    cli_pick "${args[@]}"
+  else
+    cli_remote_pick "$host" "${args[@]}"
+  fi
+}
+
 cli_dispatch() {
   local cmd host session spec base a
-  local -a pos names
+  local -a pos
   local -i shell=0 grok=0 grok_new=0 host_explicit=0 has_st=0
   for a in "$@"; do
     if [[ $a == -h || $a == --help ]]; then
@@ -3739,19 +3692,7 @@ cli_dispatch() {
       ;;
     pin)
       cli_reject_host_positional pin || return 1
-      has_st=0
-      names=("${(@f)$(cli_list_names "$host" --print-pinned)}") || has_st=$?
-      (( has_st && has_st != 1 )) && return $has_st
-      names=("${(@)names:#}")
-      if (( ! ${#names} )); then
-        print -u2 "没有 pin。"
-        return 1
-      fi
-      cli_recent_title=pin
-      session=$(cli_recent_select "${names[@]}") || return 1
-      mark_last "$host"
-      cli_attach_one "$host" "$session" $shell || return 1
-      mark_last "$host"
+      cli_open_session_list "$host" pinned $shell || return $?
       ;;
     list|ls)
       cli_reject_host_positional "$cmd" || return 1
@@ -3768,30 +3709,18 @@ cli_dispatch() {
       ;;
     last)
       cli_last_positionals_ok || return 1
-      has_st=0
-      names=("${(@f)$(cli_list_names "$host" --print-recent)}") || has_st=$?
-      # #178: connect/login/sync/unknown is 2. #182: picker empty list is 1.
-      # N is accepted above; the window stays five until #480.
-      (( has_st && has_st != 1 )) && return $has_st
-      names=("${(@)names:#}")
-      if (( ! ${#names} )); then
-        print -u2 "没有最近的 session。"
-        return 1
+      if (( ${#pos} )); then
+        cli_open_session_list "$host" "recent:${pos[1]}" $shell || return $?
+      else
+        cli_open_session_list "$host" recent:5 $shell || return $?
       fi
-      session=$(cli_recent_select "${names[@]}") || return 1
-      # Mark before attach: remote SSH blocks until it returns.
-      # --shell skips maybe_resume, same as go/attach.
-      mark_last "$host"
-      cli_attach_one "$host" "$session" $shell || return 1
-      mark_last "$host"
       ;;
     on)
-      # #480 owns the occupied-session list. This only checks arguments.
       if (( ${#pos} )); then
         print -u2 -r -- "用法：lanjump [机器] on"
         return 1
       fi
-      return 0
+      cli_open_session_list "$host" occupied 0 || return $?
       ;;
     upgrade|update)
       # Remote upgrade is undefined. Bare upgrade is handled before dispatch.
