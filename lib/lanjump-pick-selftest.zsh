@@ -8049,6 +8049,81 @@ EOF
     print -u2 "FAIL lock/same-body host, picker, and install locks differ"
     (( fails++ ))
   fi
+
+  # #482: zsh 5.8 rejects flock -i. Retry without -i, then a delete drops the pin.
+  local flock482_home flock482_saved_home flock482_out
+  local -i flock482_has_tmux=$HAS_TMUX
+  flock482_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-482.XXXXXX") || return 1
+  flock482_saved_home=$HOME
+  HOME=$flock482_home
+  mkdir -p "$HOME/Library/Application Support/lanjump"
+  unset _LANJUMP_FLOCK_NO_INTERVAL
+  zsystem() {
+    if [[ $1 == flock && $* == *' -i '* ]]; then
+      return 1
+    fi
+    builtin zsystem "$@"
+  }
+  if ! add_pin_record stay /tmp/stay || ! add_pin_record later /tmp/later; then
+    print -u2 "FAIL lock/zsh58-flock-i pin write failed"
+    (( fails++ ))
+  fi
+  load_pinned_sessions
+  if ! pin_record_exists stay || ! pin_record_exists later; then
+    print -u2 "FAIL lock/zsh58-flock-i pin missing after write stay=${pinned_names[*]}"
+    (( fails++ ))
+  fi
+  if [[ ${_LANJUMP_FLOCK_NO_INTERVAL:-0} != 1 ]]; then
+    print -u2 "FAIL lock/zsh58-flock-i did not remember to skip -i"
+    (( fails++ ))
+  fi
+  functions -c tmuxx _flock482_tmuxx
+  functions -c restore_tty _flock482_restore_tty
+  functions -c setup_tty _flock482_setup_tty
+  functions -c draw _flock482_draw
+  functions -c load_items _flock482_load_items
+  tmuxx() { return 0 }
+  restore_tty() { : }
+  setup_tty() { : }
+  draw() { : }
+  load_items() { : }
+  items_kind=(session)
+  items_id=(stay)
+  items_name=(stay)
+  items_att=(0)
+  items_pinned=(1)
+  cursor=1
+  HAS_TMUX=1
+  flock482_out=$(prompt_delete <<'EOF'
+y
+
+EOF
+)
+  if [[ $flock482_out == *删除失败* ]]; then
+    print -u2 "FAIL lock/zsh58-flock-i delete reported 删除失败 got=$(printf %q "$flock482_out")"
+    (( fails++ ))
+  fi
+  load_pinned_sessions
+  if pin_record_exists stay; then
+    print -u2 "FAIL lock/zsh58-flock-i deleted pin still on disk"
+    (( fails++ ))
+  fi
+  if ! pin_record_exists later; then
+    print -u2 "FAIL lock/zsh58-flock-i dropped an unrelated pin names=${pinned_names[*]}"
+    (( fails++ ))
+  fi
+  unfunction zsystem 2>/dev/null || true
+  unset _LANJUMP_FLOCK_NO_INTERVAL
+  functions -c _flock482_tmuxx tmuxx
+  functions -c _flock482_restore_tty restore_tty
+  functions -c _flock482_setup_tty setup_tty
+  functions -c _flock482_draw draw
+  functions -c _flock482_load_items load_items
+  unset -f _flock482_tmuxx _flock482_restore_tty _flock482_setup_tty \
+    _flock482_draw _flock482_load_items
+  HAS_TMUX=$flock482_has_tmux
+  HOME=$flock482_saved_home
+  rm -rf "$flock482_home"
   local lock467_src
   lock467_src=$(<"$_pick_src_file")
   if [[ $lock467_src != *'LANJUMP_LOCK_QUIET=1
