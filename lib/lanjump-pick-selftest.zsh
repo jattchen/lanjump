@@ -5211,6 +5211,92 @@ pick_selftest() {
   fi
   expect name/cli-flag-colon "名称不能包含冒号或点。" "$err"
 
+  # #479: --new-auto names, dedups, and chooses cwd on this machine.
+  if (( ! ${+functions[new_auto_session]} )); then
+    print -u2 "FAIL new-auto/missing new_auto_session"
+    (( fails++ ))
+  else
+    oldhome=$HOME
+    auto_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-auto.XXXXXX")
+    HOME=$auto_home
+    mkdir -p "$HOME/Documents/projects/lanjump-2" "$HOME/Library/Application Support/lanjump"
+    auto_log=$auto_home/tmux.log
+    : >"$auto_log"
+    HAS_TMUX=1
+    typeset -A auto_live
+    auto_live=()
+    tmux_state_invalidate
+    _auto_have_tmuxx=0
+    if (( ${+functions[tmuxx]} )); then
+      functions -c tmuxx _auto_save_tmuxx
+      _auto_have_tmuxx=1
+    fi
+    tmuxx() {
+      print -r -- "$*" >>"$auto_log"
+      case $1 in
+        list-sessions) return 1 ;;
+        has-session)
+          local n=${@[-1]#=}
+          (( ${auto_live[$n]:-0} ))
+          ;;
+        *) return 0 ;;
+      esac
+    }
+    st=0
+    err=$(new_auto_session 'web.api' '/tmp/lj-explicit' 2>&1) || st=$?
+    if (( st == 0 )); then
+      print -u2 "FAIL new-auto/dot status got 0"
+      (( fails++ ))
+    fi
+    expect new-auto/dot "名称不能包含冒号或点。" "$err"
+    : >"$auto_log"
+    got=$(new_auto_session lanjump /tmp/lj-explicit) || got=
+    expect new-auto/name lanjump "$got"
+    restore_log=$(<"$auto_log")
+    if [[ $restore_log != *'new-session -d -s lanjump -c /tmp/lj-explicit'* ]]; then
+      print -u2 "FAIL new-auto/cwd missing explicit dir got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    if [[ $restore_log == *'Documents/projects'* ]]; then
+      print -u2 "FAIL new-auto/cwd used project dir got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    auto_live[lanjump]=1
+    auto_live[lanjump-2]=1
+    tmux_state_invalidate
+    : >"$auto_log"
+    got=$(new_auto_session lanjump /tmp/lj-explicit) || got=
+    expect new-auto/dedup lanjump-3 "$got"
+    restore_log=$(<"$auto_log")
+    if [[ $restore_log != *'new-session -d -s lanjump-3 -c /tmp/lj-explicit'* ]]; then
+      print -u2 "FAIL new-auto/dedup-cwd got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    auto_live=()
+    auto_live[demo]=1
+    tmux_state_invalidate
+    mkdir -p "$HOME/Documents/projects/demo-2"
+    : >"$auto_log"
+    got=$(new_auto_session demo) || got=
+    expect new-auto/remote-name demo-2 "$got"
+    restore_log=$(<"$auto_log")
+    if [[ $restore_log != *"-c $HOME/Documents/projects/demo-2"* ]]; then
+      print -u2 "FAIL new-auto/remote-cwd got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    if [[ $restore_log == *'/tmp/lj-explicit'* ]]; then
+      print -u2 "FAIL new-auto/remote used local cwd got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    HOME=$oldhome
+    if (( _auto_have_tmuxx )); then
+      functions -c _auto_save_tmuxx tmuxx
+      unfunction _auto_save_tmuxx
+    fi
+    unset auto_live
+    rm -rf "$auto_home"
+  fi
+
   # #103: picker n named-create must use project dir as tmux -c.
   if [[ ${functions[prompt_new]} != *resolve_session_cwd* && ${functions[prompt_new]} != *create_named_session* ]]; then
     print -u2 "FAIL prompt_new/named-cwd missing resolve_session_cwd got=$(printf %q "${functions[prompt_new]}")"
@@ -6131,6 +6217,10 @@ pick_selftest() {
         [[ -n ${TEST_PANE_LIST:-} ]] && print -r -- "$TEST_PANE_LIST"
         ;;
       send-keys|select-window|select-pane) return 0 ;;
+      new-window)
+        print -r -- '@9'
+        return 0
+        ;;
       *) return 0 ;;
     esac
   }
@@ -6240,6 +6330,71 @@ pick_selftest() {
     print -u2 "FAIL grok/start-no-tty --start-grok still needs tty"
     (( fails++ ))
   fi
+  if pick_needs_tty --start-grok-new || pick_needs_tty --new-auto; then
+    print -u2 "FAIL grok/new-auto-tty still needs tty"
+    (( fails++ ))
+  fi
+
+  # #479: -G never uses grok -c and does not steal an existing grok pane.
+  TEST_GROK_DIR=1
+  TEST_PANE_CMD=zsh
+  TEST_PANE_LIST=
+  : >"$grok_log"
+  start_grok_new_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log != *'send-keys -t =demo:. -- grok Enter'* ]]; then
+    print -u2 "FAIL grok-new/idle missing fresh grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'grok -c'* || $restore_log == *'new-window'* ]]; then
+    print -u2 "FAIL grok-new/idle used -c or new-window got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  TEST_GROK_DIR=0
+
+  TEST_PANE_LIST=$'%1\tzsh\n%2\tgrok'
+  TEST_PANE_CMD=zsh
+  TEST_PANE_CWD=/tmp/typed-cwd
+  : >"$grok_log"
+  start_grok_new_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* || $restore_log == *'select-window -t %2'* ]]; then
+    print -u2 "FAIL grok-new/existing disturbed grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-window -P -F #{window_id} -t =demo -c /tmp/typed-cwd -- grok'* ]]; then
+    print -u2 "FAIL grok-new/existing missing new-window got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'grok -c'* ]]; then
+    print -u2 "FAIL grok-new/existing used grok -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'select-window -t @9'* ]]; then
+    print -u2 "FAIL grok-new/existing missing select got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  TEST_PANE_LIST=
+  TEST_PANE_CMD=vim
+  : >"$grok_log"
+  start_grok_new_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log != *'new-window'* || $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL grok-new/busy missing new-window got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  TEST_PANE_CMD=grok
+  : >"$grok_log"
+  start_grok_new_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* || $restore_log != *'new-window'* ]]; then
+    print -u2 "FAIL grok-new/current-grok disturbed pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  TEST_PANE_CMD=zsh
+  TEST_PANE_LIST=
   rm -f "$grok_log"
 
   # #173: Apple Terminal color prep must not disable RGB for other clients.

@@ -15,7 +15,7 @@ fi
 
 pick_needs_tty() {
   case ${1:-} in
-    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-recent|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--start-grok|--snapshot|--refresh-pin-cwd|--install-hooks) return 1 ;;
+    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-recent|--print-sessions|--open-tabs|--has-session|--new-session|--new-auto|--pin-session|--start-grok|--start-grok-new|--snapshot|--refresh-pin-cwd|--install-hooks) return 1 ;;
   esac
   return 0
 }
@@ -1307,6 +1307,47 @@ start_grok_session() {
     line="$bin"
   fi
   tmuxx send-keys -t "$target" -- "$line" Enter
+}
+
+# Any pane in the session is grok. Does not select it.
+session_has_grok() {
+  local session=$1 pane_line pane_cmd
+  local -a panes
+  [[ -n $session ]] || return 1
+  panes=("${(@f)$(tmuxx list-panes -s -t "=$session" -F $'#{pane_id}\t#{pane_current_command}' 2>/dev/null)}")
+  for pane_line in "${panes[@]}"; do
+    [[ -n $pane_line ]] || continue
+    pane_cmd=${pane_line#*$'\t'}
+    pane_cmd=${pane_cmd##*/}
+    if [[ $pane_cmd == grok || $pane_cmd == grok-* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# -G: a fresh grok, never `grok -c`, and never steal a grok already running.
+start_grok_new_session() {
+  local session=$1
+  local live pane_cwd bin target wid
+  local -a nw
+  [[ -n $session ]] || return 1
+  [[ $HAS_TMUX -eq 1 ]] || return 1
+  target=$(session_pane_target "$session")
+  live=$(tmuxx display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
+  live=${live##*/}
+  pane_cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
+  bin=$(grok_bin)
+  if session_has_grok "$session" || ! pane_is_idle_shell "$live"; then
+    nw=(new-window -P -F '#{window_id}' -t "=$session")
+    [[ -n $pane_cwd ]] && nw+=(-c "$pane_cwd")
+    nw+=(-- "${(q)bin}")
+    wid=$(tmuxx "${nw[@]}") || return 1
+    wid=${wid##*$'\n'}
+    [[ -n $wid ]] && tmuxx select-window -t "$wid"
+    return 0
+  fi
+  tmuxx send-keys -t "$target" -- "$bin" Enter
 }
 
 useful_summary() {
@@ -5184,6 +5225,44 @@ create_named_session() {
   (( ok ))
 }
 
+# Nameless go: free name from base, then create. Empty cwd uses the final
+# name (pin, snapshot, project dir). A cwd is this machine's $PWD.
+new_auto_session() {
+  local base=$1 cwd=${2:-} candidate msg
+  local -i n=2
+  if [[ -z $base ]]; then
+    print -u2 "用法：lanjump go"
+    return 1
+  fi
+  if msg=$(session_name_invalid "$base"); then
+    print -u2 "$msg"
+    return 1
+  fi
+  if [[ $HAS_TMUX -ne 1 ]]; then
+    print -u2 "这台机器上没有 tmux。"
+    return 1
+  fi
+  candidate=$base
+  while tmux_session_live "$candidate"; do
+    candidate="${base}-${n}"
+    (( n++ ))
+    if (( n > 10000 )); then
+      print -u2 "无法新建 session。"
+      return 1
+    fi
+  done
+  if [[ -n $cwd ]]; then
+    if ! tmuxx new-session -d -s "$candidate" -c "$cwd" 2>/dev/null; then
+      tmuxx new-session -d -s "$candidate" 2>/dev/null || return 1
+    fi
+    tmux_state_invalidate
+  else
+    create_named_session "$candidate" || return 1
+  fi
+  mark_snapshot_occupied "$candidate"
+  print -r -- "$candidate"
+}
+
 # List n pin cwd: live pane then project, never picker $PWD (#130).
 prompt_new_pin_cwd() {
   local name=$1 pane=
@@ -5603,6 +5682,34 @@ if [[ ${1:-} == --start-grok ]]; then
   [[ -n $name ]] || exit 1
   start_grok_session "$name"
   exit $?
+fi
+
+if [[ ${1:-} == --start-grok-new ]]; then
+  name=${2:-}
+  [[ -n $name ]] || exit 1
+  start_grok_new_session "$name"
+  exit $?
+fi
+
+if [[ ${1:-} == --new-auto ]]; then
+  base=${2:-}
+  cwd=
+  if [[ -z $base || $base == -* ]]; then
+    print -u2 "用法：lanjump go"
+    exit 1
+  fi
+  if [[ ${3:-} == --cwd ]]; then
+    cwd=${4:-}
+    if [[ -z $cwd || -n ${5:-} ]]; then
+      print -u2 "用法：lanjump go"
+      exit 1
+    fi
+  elif [[ -n ${3:-} ]]; then
+    print -u2 "用法：lanjump go"
+    exit 1
+  fi
+  new_auto_session "$base" "$cwd" || exit 1
+  exit 0
 fi
 
 if [[ ${1:-} == --pin-session ]]; then
