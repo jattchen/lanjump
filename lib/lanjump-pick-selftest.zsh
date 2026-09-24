@@ -4433,6 +4433,8 @@ pick_selftest() {
   expect settings/preview-merge-placement tab "$open_placement"
   expect settings/preview-merge-kept 1 "$preview_on"
   expect settings/preview-merge-root /opt/keep "${project_roots[*]}"
+  open_target=auto
+  open_placement=window
 
   expect settings/label-auto '自动（Ghostty 优先）' "$(settings_value_label target)"
   open_target=ghostty
