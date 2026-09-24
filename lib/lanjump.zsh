@@ -775,8 +775,21 @@ with_data_file_lock() {
   }
   {
     if zmodload zsh/system 2>/dev/null && zsystem supports flock; then
-      zsystem flock -t "$wait_s" -i 0.05 -f fd "$lock" 2>/dev/null
-      st=$?
+      # zsh 5.8 flock rejects -i (zsh 5.9+) with status 1 and does not lock.
+      if [[ ${_LANJUMP_FLOCK_NO_INTERVAL:-0} == 1 ]]; then
+        zsystem flock -t "$wait_s" -f fd "$lock" 2>/dev/null
+        st=$?
+      else
+        zsystem flock -t "$wait_s" -i 0.05 -f fd "$lock" 2>/dev/null
+        st=$?
+        if (( st == 1 )); then
+          zsystem flock -t "$wait_s" -f fd "$lock" 2>/dev/null
+          st=$?
+          if (( st == 0 || st == 2 )); then
+            typeset -g _LANJUMP_FLOCK_NO_INTERVAL=1
+          fi
+        fi
+      fi
       if (( st != 0 )); then
         if (( st == 2 || wait_s == 0 )); then
           _lanjump_lock_busy
