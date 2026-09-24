@@ -1020,6 +1020,10 @@ host_selftest() {
     expect host/alias-reserved-go/st 1 "$?"
     host_alias_invalid local
     expect host/alias-reserved-local/st 1 "$?"
+    host_alias_invalid pin
+    expect host/alias-reserved-pin/st 1 "$?"
+    host_alias_invalid on
+    expect host/alias-reserved-on/st 1 "$?"
     host_alias_invalid 'x|y'
     expect host/alias-pipe/st 1 "$?"
   fi

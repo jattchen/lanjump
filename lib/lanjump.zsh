@@ -6,7 +6,23 @@ zmodload zsh/zselect
 
 APP="$HOME/Library/Application Support/lanjump"
 
-if [[ ${1:-} == upgrade || ${1:-} == update ]]; then
+# -h/--help anywhere wins, including `upgrade -h`.
+_lj_help=0
+for _lj_a in "$@"; do
+  if [[ $_lj_a == -h || $_lj_a == --help ]]; then
+    _lj_help=1
+    break
+  fi
+done
+
+if (( ! _lj_help )) && [[ ${1:-} == upgrade || ${1:-} == update ]]; then
+  shift
+  for _lj_a in "$@"; do
+    if [[ $_lj_a == -* ]]; then
+      print -u2 "未知选项：${_lj_a}"
+      exit 1
+    fi
+  done
   if [[ ! -f $APP/install.zsh ]]; then
     print -u2 '找不到安装脚本。请重新安装：zsh install.zsh'
     exit 1
@@ -22,11 +38,9 @@ SSH_CONFIG="$HOME/.ssh/config"
 
 typeset -a h_alias h_user h_hostname h_ip h_mac h_port h_ssh_id h_last
 typeset -a items_kind items_alias items_user items_hostname items_ip items_mac items_port items_status items_saved
-typeset -a cli_recent_names
 typeset -a s_alias s_host s_ip s_mac s_port
 typeset -a MYIPS
 cursor=1
-cli_recent_cur=1
 loading=0
 host_list_active=0
 draw_remain=0
@@ -2944,7 +2958,7 @@ host_alias_invalid() {
     return 1
   fi
   case ${name:l} in
-    local|host|go|work|pins|list|ls|last|attach|help|upgrade|update)
+    local|host|go|work|pins|pin|list|ls|last|on|attach|help|upgrade|update)
       REPLY="不能叫「${name}」。"
       return 1
       ;;
@@ -3097,7 +3111,7 @@ default_cli_host() {
 
 cli_is_command() {
   case ${1:-} in
-    attach|go|pin|list|ls|last|help|upgrade|update|-h|--help)
+    attach|go|pin|list|ls|last|on|help|upgrade|update|-h|--help)
       return 0
       ;;
   esac
@@ -3139,6 +3153,8 @@ cli_remote_pick() {
   if (( acc != 0 )); then
     return $acc
   fi
+  # Before SSH blocks, same as the host list. A refused connection returns above.
+  mark_last "$alias"
   if ! sync_picker "$target" "$user"; then
     print -u2 "无法把 tmux 选择界面同步到对方。"
     return 1
@@ -3243,94 +3259,6 @@ cli_tmux() {
   "$bin" "$@"
 }
 
-cli_grok_bin() {
-  local c
-  if [[ -n ${LANJUMP_GROK_BIN:-} ]]; then
-    print -r -- "$LANJUMP_GROK_BIN"
-    return 0
-  fi
-  for c in "$HOME/.grok/bin/grok" "$HOME/.local/bin/grok"; do
-    [[ -x $c ]] && { print -r -- "$c"; return 0 }
-  done
-  (( $+commands[grok] )) && { print -r -- "${commands[grok]}"; return 0 }
-  print -r -- grok
-}
-
-cli_cwd_has_grok_session() {
-  local cwd=$1 enc dir
-  [[ -n $cwd ]] || return 1
-  enc=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$cwd" 2>/dev/null) || return 1
-  dir="$HOME/.grok/sessions/$enc"
-  [[ -d $dir ]]
-}
-
-cli_auto_new_session() {
-  local created
-  created=$(cli_tmux new-session -d -P -F '#{session_name}' -c "$PWD" 2>/dev/null) || created=
-  created=${created%%$'\n'*}
-  [[ -n $created ]] || {
-    print -u2 "无法新建 session。"
-    return 1
-  }
-  print -r -- "$created"
-}
-
-cli_start_grok() {
-  local host=$1 session=$2
-  local live pane_cwd bin line target grok_pane pane_line pane_id pane_cmd
-  local -a panes
-  [[ -n $session ]] || return 1
-  if [[ $host != local ]]; then
-    cli_remote_print "$host" --start-grok "$session"
-    return $?
-  fi
-  target="=${session}:."
-  live=$(cli_tmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
-  live=${live##*/}
-  if [[ $live == grok || $live == grok-* ]]; then
-    return 0
-  fi
-  grok_pane=
-  panes=("${(@f)$(cli_tmux list-panes -s -t "=$session" -F $'#{pane_id}\t#{pane_current_command}' 2>/dev/null)}")
-  for pane_line in "${panes[@]}"; do
-    [[ -n $pane_line ]] || continue
-    pane_id=${pane_line%%$'\t'*}
-    pane_cmd=${pane_line#*$'\t'}
-    pane_cmd=${pane_cmd##*/}
-    if [[ $pane_cmd == grok || $pane_cmd == grok-* ]]; then
-      grok_pane=$pane_id
-      break
-    fi
-  done
-  if [[ -n $grok_pane ]]; then
-    cli_tmux select-window -t "$grok_pane" 2>/dev/null || true
-    cli_tmux select-pane -t "$grok_pane" 2>/dev/null || true
-    return 0
-  fi
-  # Unreadable command is not an idle shell; do not send-keys into a live grok.
-  [[ -n $live ]] || return 0
-  case $live in
-    zsh|bash|sh|fish|dash|login) ;;
-    *) return 0 ;;
-  esac
-  pane_cwd=$(cli_tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
-  bin=$(cli_grok_bin)
-  if cli_cwd_has_grok_session "$pane_cwd"; then
-    line="$bin -c"
-  else
-    line="$bin"
-  fi
-  cli_tmux send-keys -t "$target" -- "$line" Enter
-}
-
-cli_ask_create() {
-  local ans
-  print "没有 session「${1}」。"
-  print -n "要新建并打开吗？（回车=是，其他键=否） "
-  read -r ans </dev/tty || ans=
-  [[ -z $ans ]]
-}
-
 cli_ask_pin() {
   local pinans
   print -n "常驻（y=是，回车=否）: "
@@ -3349,69 +3277,6 @@ cli_pin_session() {
   fi
   lines=("${(@f)out}")
   [[ -n ${lines[-1]:-} ]] && REPLY=${lines[-1]}
-}
-
-cli_recent_draw() {
-  local -i i n=${#cli_recent_names}
-  print -n $'\e[H\e[J'
-  print -r -- "${cli_recent_title:-最近 session}"
-  print
-  for (( i = 1; i <= n; i++ )); do
-    if (( i == cli_recent_cur )); then
-      print -r -- "> ${cli_recent_names[i]}"
-    else
-      print -r -- "  ${cli_recent_names[i]}"
-    fi
-  done
-  print
-  print -r -- "j/k 选择  Enter 进入  q 取消"
-}
-
-cli_recent_select() {
-  local -i n
-  local chosen=
-  cli_recent_names=("$@")
-  cli_recent_cur=1
-  n=${#cli_recent_names}
-  (( n )) || return 1
-  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
-    print -u2 "需要交互式终端。"
-    return 1
-  fi
-  {
-    stty_orig=$(stty -g </dev/tty 2>/dev/null) || stty_orig=
-    stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
-    print -n $'\e[?25l'
-    trap cli_recent_draw WINCH
-    while true; do
-      cli_recent_draw
-      read_key_or_exit || continue
-      case $REPLY in
-        up)
-          (( cli_recent_cur-- ))
-          (( cli_recent_cur < 1 )) && cli_recent_cur=$n
-          ;;
-        down)
-          (( cli_recent_cur++ ))
-          (( cli_recent_cur > n )) && cli_recent_cur=1
-          ;;
-        enter)
-          chosen=${cli_recent_names[cli_recent_cur]}
-          break
-          ;;
-        q|esc)
-          chosen=
-          break
-          ;;
-      esac
-    done
-  } always {
-    trap - WINCH
-    print -n $'\e[?25h'
-    [[ -n $stty_orig ]] && stty "$stty_orig" </dev/tty 2>/dev/null
-  } </dev/tty >/dev/tty
-  [[ -n $chosen ]] || return 1
-  print -r -- "$chosen"
 }
 
 cli_has_session() {
@@ -3467,29 +3332,216 @@ cli_attach_one() {
 }
 
 cli_usage() {
-  print -r -- '用法：lanjump [命令]'
+  print -r -- '用法：lanjump [机器] [命令] [参数] [选项]'
   print
-  print -r -- '  （无命令）        打开主机列表，再选 tmux session'
-  print -r -- '  机器别名          进那台的 tmux 列表'
-  print -r -- '  help              显示本说明'
-  print -r -- '  list [机器]       列出 session'
-  print -r -- '  last [机器]       最近 5 个 session，选一个进入'
-  print -r -- '  go [机器 名字 | 机器:名字] [--grok]  打开；不写名字则本机自动新建；--grok 再开 grok'
-  print -r -- '  pin [机器]        列出全部 pin，选一个进入'
-  print -r -- '  upgrade           升级到最新版本'
-  print -r -- '  update            同 upgrade'
+  print -r -- '机器写在最前面，是已保存的别名。不写就是本机，写 local 也是本机。'
+  print -r -- '只写机器名时进入那台的 session 列表。什么都不写则打开主机列表。'
   print
-  print -r -- '机器省略时用本机。远程要写出别名。'
-  print -r -- '列表 Enter 当前窗口进入，t 新窗口。新窗口用 Ghostty 还是系统终端可在列表按 , 设置。'
+  print -r -- '  lanjump                  主机列表'
+  print -r -- '  lanjump <机器>            那台的 session 列表'
+  print -r -- '  lanjump go                按当前目录新建 session 并进入'
+  print -r -- '  lanjump <机器> go         在那台新建 session 并进入'
+  print -r -- '  lanjump go demo           进入 demo，没有就直接建'
+  print -r -- '  lanjump go demo -g        进入并续上 Grok'
+  print -r -- '  lanjump <机器> go -G      在那台开一个全新 Grok'
+  print -r -- '  lanjump list              列出 session'
+  print -r -- '  lanjump last              打开 session 列表，只显示最近 5 个'
+  print -r -- '  lanjump last 20           打开 session 列表，只显示最近 20 个'
+  print -r -- '  lanjump pin               打开 session 列表，只显示常驻'
+  print -r -- '  lanjump <机器> on         打开 session 列表，只显示占用中'
+  print -r -- '  lanjump upgrade           升级到最新版本'
+  print -r -- '  lanjump update            同 upgrade'
+  print -r -- '  lanjump help              显示本说明'
+  print
+  print -r -- '-g（--grok）续上已有 Grok，-G（--grok-new）另开全新的。两个不能一起用。'
   print -r -- '主机列表按 e 给已保存的机器改名；按 i 开关打开时切英文输入法（默认开；手机 SSH 进来时不切）。'
 }
 
-# Empty / y / Y / 是 = create in current window. t/T = create in a new window.
-cli_confirm_create() {
-  local ans=$1
-  CREATE_WANT_NEW=0
-  [[ $ans == t || $ans == T ]] && CREATE_WANT_NEW=1
-  [[ -z $ans || $ans == y || $ans == Y || $ans == 是 || $ans == t || $ans == T ]]
+# Directory basename for nameless go. `.` and `:` become `-`.
+# Pure digits cannot stay resident, so prefix s-. Empty becomes s.
+cli_go_base_name() {
+  local name
+  name=${1:t}
+  name=${name//./-}
+  name=${name//:/-}
+  if [[ -z $name ]]; then
+    print -r -- s
+    return
+  fi
+  if [[ $name == <-> ]]; then
+    print -r -- "s-$name"
+    return
+  fi
+  print -r -- "$name"
+}
+
+# Picker prints the final name. Local passes $PWD; remote resolves there.
+cli_new_auto() {
+  local host=$1 base=$2 out
+  local -i st=0
+  if [[ $host == local ]]; then
+    out=$(cli_pick --new-auto "$base" --cwd "$PWD") || st=$?
+  else
+    out=$(cli_remote_print "$host" --new-auto "$base") || st=$?
+  fi
+  (( st )) && return $st
+  out=${out##*$'\n'}
+  if [[ -z $out ]]; then
+    print -u2 "无法新建 session。"
+    return 1
+  fi
+  print -r -- "$out"
+}
+
+# CLI_ROUTE is dispatch, local-list, or host-list-alias.
+cli_route() {
+  CLI_ROUTE=
+  if (( $# == 0 )); then
+    return 1
+  fi
+  if [[ $1 == -* ]]; then
+    print -u2 -r -- "未知选项：${1}"
+    return 1
+  fi
+  if cli_is_command "$1"; then
+    CLI_ROUTE=dispatch
+    return 0
+  fi
+  if [[ $1 == local ]]; then
+    if (( $# == 1 )); then
+      CLI_ROUTE=local-list
+    else
+      CLI_ROUTE=dispatch
+    fi
+    return 0
+  fi
+  if find_host_index "$1" >/dev/null; then
+    if (( $# == 1 )); then
+      CLI_ROUTE=host-list-alias
+    else
+      CLI_ROUTE=dispatch
+    fi
+    return 0
+  fi
+  print -u2 -r -- "没有这台机器，也没有这个命令：${1}"
+  return 1
+}
+
+# Fills caller's shell, grok, grok_new, and pos. -g/-G are only for go.
+cli_split_args() {
+  local cmd=$1 arg
+  shift
+  shell=0
+  grok=0
+  grok_new=0
+  pos=()
+  while (( $# )); do
+    arg=$1
+    shift
+    case $arg in
+      --shell)
+        case $cmd in
+          attach|go|last|pin) shell=1 ;;
+          *)
+            print -u2 -r -- "未知选项：--shell"
+            return 1
+            ;;
+        esac
+        ;;
+      -g|--grok)
+        if [[ $cmd != go ]]; then
+          print -u2 -r -- "未知选项：${arg}"
+          return 1
+        fi
+        grok=1
+        ;;
+      -G|--grok-new)
+        if [[ $cmd != go ]]; then
+          print -u2 -r -- "未知选项：${arg}"
+          return 1
+        fi
+        grok_new=1
+        ;;
+      -*)
+        print -u2 -r -- "未知选项：${arg}"
+        return 1
+        ;;
+      *)
+        pos+=("$arg")
+        ;;
+    esac
+  done
+  if [[ $cmd == go ]] && (( grok && grok_new )); then
+    print -u2 -r -- "用法：lanjump [机器] go [名字] [-g|-G]"
+    return 1
+  fi
+  return 0
+}
+
+# Old `go A:B` and `go A B` are rejected. One word stays a local session.
+cli_go_positionals_ok() {
+  local spec ahint bhint
+  if (( ${#pos} == 0 )); then
+    session=
+    return 0
+  fi
+  if [[ ${pos[1]} == *:* ]]; then
+    spec=${pos[1]}
+    ahint=${spec%:*}
+    bhint=${spec##*:}
+    if [[ -n $ahint && -n $bhint ]]; then
+      print -u2 -r -- "现在写 lanjump ${ahint} go ${bhint}"
+    elif [[ -n $ahint ]]; then
+      print -u2 -r -- "现在写 lanjump ${ahint} go"
+    else
+      print -u2 -r -- "用法：lanjump [机器] go [名字] [-g|-G]"
+    fi
+    return 1
+  fi
+  if (( ${#pos} > 1 )); then
+    if find_host_index "${pos[1]}" >/dev/null; then
+      print -u2 -r -- "现在写 lanjump ${pos[1]} go ${pos[2]}"
+      return 1
+    fi
+    print -u2 -r -- "用法：lanjump [机器] go [名字] [-g|-G]"
+    return 1
+  fi
+  session=${pos[1]}
+  return 0
+}
+
+# Old `list|last|pin A` when A is a saved alias. Otherwise a usage error.
+cli_reject_host_positional() {
+  local cmd=$1
+  if (( ${#pos} == 0 )); then
+    return 0
+  fi
+  if find_host_index "${pos[1]}" >/dev/null; then
+    print -u2 -r -- "现在写 lanjump ${pos[1]} ${cmd}"
+    return 1
+  fi
+  print -u2 -r -- "用法：lanjump [机器] ${cmd}"
+  return 1
+}
+
+# N is a positive integer with no cap. 0, junk, and extra words are usage errors.
+cli_last_positionals_ok() {
+  if (( ${#pos} == 0 )); then
+    return 0
+  fi
+  if (( ${#pos} > 1 )); then
+    print -u2 -r -- "用法：lanjump [机器] last [N]"
+    return 1
+  fi
+  if [[ ${pos[1]} == [1-9]* && ${pos[1]} != *[!0-9]* ]]; then
+    return 0
+  fi
+  if find_host_index "${pos[1]}" >/dev/null; then
+    print -u2 -r -- "现在写 lanjump ${pos[1]} last"
+    return 1
+  fi
+  print -u2 -r -- "用法：lanjump [机器] last [N]"
+  return 1
 }
 
 cli_tty_read() {
@@ -3499,72 +3551,101 @@ cli_tty_read() {
   printf -v $_cli_tty_name '%s' "$_cli_tty_val"
 }
 
+# h in the session list exits 10. The host list treats that as "back".
+cli_keep_host_list() {
+  [[ ${1:-0} -eq 10 ]]
+}
+
+# Same picker as lanjump <机器>. --view only narrows rows for this launch.
+# Local is the interactive list (full-screen pin restore). Remote is cli_remote_pick.
+cli_open_session_list() {
+  local host=$1 view=$2
+  local -i shell=${3:-0}
+  local -a args
+  args=(--view "$view")
+  (( shell )) && args+=(--shell)
+  if [[ $host == local ]]; then
+    mark_last "$host"
+    cli_pick "${args[@]}"
+  else
+    cli_remote_pick "$host" "${args[@]}"
+  fi
+}
+
 cli_dispatch() {
-  local cmd=$1
-  shift
-  local host session spec ans pinans
-  local -i shell=0 pin=0 want_grok=0 has_st=0
-  local -a extra names
-  extra=()
-  while (( $# )); do
-    case $1 in
-      -h|--help)
-        cli_usage
-        return 0
-        ;;
-      --shell) shell=1 ;;
-      --grok) want_grok=1 ;;
-      *) extra+=("$1") ;;
-    esac
-    shift
+  local cmd host session spec base a
+  local -a pos
+  local -i shell=0 grok=0 grok_new=0 host_explicit=0 has_st=0
+  for a in "$@"; do
+    if [[ $a == -h || $a == --help ]]; then
+      cli_usage
+      return 0
+    fi
   done
-  host=$(default_cli_host)
-  session=
-  spec=
+  if (( $# == 0 )); then
+    return 1
+  fi
+  if [[ $1 == -* ]]; then
+    print -u2 -r -- "未知选项：${1}"
+    return 1
+  fi
+  if cli_is_command "$1"; then
+    cmd=$1
+    if find_host_index "$cmd" >/dev/null; then
+      print -u2 -r -- "有台机器也叫 ${cmd}，按 e 在主机列表给它改名"
+    fi
+    host=local
+    host_explicit=0
+    shift
+  elif [[ $1 == local ]] || find_host_index "$1" >/dev/null; then
+    host=$1
+    host_explicit=1
+    shift
+    if (( $# == 0 )); then
+      print -u2 -r -- "用法：lanjump ${host}"
+      return 1
+    fi
+    if [[ $1 == -* ]]; then
+      print -u2 -r -- "未知选项：${1}"
+      return 1
+    fi
+    if ! cli_is_command "$1"; then
+      print -u2 -r -- "未知命令：${1}"
+      cli_usage >&2
+      return 1
+    fi
+    cmd=$1
+    shift
+  else
+    print -u2 -r -- "没有这台机器，也没有这个命令：${1}"
+    return 1
+  fi
+  if [[ $cmd == help ]]; then
+    cli_usage
+    return 0
+  fi
+  cli_split_args "$cmd" "$@" || return 1
   case $cmd in
-    list|ls|last|pin)
-      if (( ${#extra} )); then
-        host=${extra[1]}
-      fi
-      ;;
     attach)
-      if (( ${#extra} )); then
-        spec=${extra[1]}
-        if [[ $spec == *:* ]]; then
-          # #378: session names forbid colons; aliases may contain them.
-          host=${spec%:*}
-          session=${spec##*:}
-        else
-          session=$spec
-          # #85: unprefixed attach is local.
-          host=local
-        fi
-      fi
-      ;;
-    go)
-      # #440: one word is always a local session. Remote is two words
-      # `go 别名 session`, or the old `go 别名:session`.
-      if (( ${#extra} == 1 )); then
-        spec=${extra[1]}
-        if [[ $spec == *:* ]]; then
-          host=${spec%:*}
-          session=${spec##*:}
-        else
-          session=$spec
-          host=local
-        fi
-      elif (( ${#extra} == 2 )); then
-        host=${extra[1]}
-        session=${extra[2]}
-      elif (( ${#extra} > 2 )); then
-        print -u2 "用法：lanjump go [机器 名字 | 机器:名字]"
+      # Hidden. Host stays inside 机器:名字; a leading machine is not a new form.
+      if (( host_explicit )); then
+        print -u2 "用法：lanjump attach [--shell] <session>"
         return 1
       fi
-      ;;
-  esac
-  [[ -n $host ]] || host=local
-  case $cmd in
-    attach)
+      if (( ${#pos} != 1 )); then
+        print -u2 "用法：lanjump attach [--shell] <session>"
+        return 1
+      fi
+      spec=${pos[1]}
+      if [[ $spec == *:* ]]; then
+        # #378: session names forbid colons; aliases may contain them.
+        host=${spec%:*}
+        session=${spec##*:}
+      else
+        session=$spec
+        # #85: unprefixed attach is local.
+        host=local
+      fi
       if [[ -z $session ]]; then
         print -u2 "用法：lanjump attach [--shell] <session>"
         return 1
@@ -3574,66 +3655,52 @@ cli_dispatch() {
       mark_last "$host"
       ;;
     go)
-      if [[ -n ${spec:-} && $spec == *:* && -z $session ]]; then
-        print -u2 "用法：lanjump go [机器 名字 | 机器:名字]"
-        return 1
-      fi
+      session=
+      cli_go_positionals_ok || return 1
       if [[ -z $session ]]; then
-        session=$(cli_auto_new_session) || return 1
-        if (( want_grok )); then
-          cli_start_grok local "$session" || return 1
+        base=$(cli_go_base_name "$PWD")
+        session=$(cli_new_auto "$host" "$base") || return $?
+      else
+        has_st=0
+        cli_has_session "$host" "$session" || has_st=$?
+        if (( has_st )); then
+          # #175: remote connect/login/sync failure is not a missing session.
+          if [[ $host != local ]] && (( has_st != 1 )); then
+            return $has_st
+          fi
+          # #183: colon/dot names cannot be created; do not ask first.
+          if session_name_invalid "$session"; then
+            return 1
+          fi
+          cli_new_session "$host" "$session" || return 1
         fi
-        # Local attach execs the picker; write last_target first.
-        # --grok already started/selected grok; --shell skips maybe_resume.
-        mark_last local
-        cli_attach_one local "$session" $(( want_grok || shell ))
-        return
       fi
-      CREATE_WANT_NEW=0
-      has_st=0
-      cli_has_session "$host" "$session" || has_st=$?
-      if (( has_st )); then
-        # #175: remote connect/login/sync failure is not a missing session.
-        if [[ $host != local ]] && (( has_st != 1 )); then
-          return $has_st
+      if (( grok_new )); then
+        if [[ $host == local ]]; then
+          cli_pick --start-grok-new "$session" || return 1
+        else
+          cli_remote_print "$host" --start-grok-new "$session" || return 1
         fi
-        # #183: colon/dot names cannot be created; do not ask first.
-        if session_name_invalid "$session"; then
-          return 1
+      elif (( grok )); then
+        if [[ $host == local ]]; then
+          cli_pick --start-grok "$session" || return 1
+        else
+          cli_remote_print "$host" --start-grok "$session" || return 1
         fi
-        print "没有 session「${session}」。"
-        print -n "要新建并打开吗？（回车或 y=当前窗口，t=新窗口，其他=否） "
-        cli_tty_read ans
-        if ! cli_confirm_create "$ans"; then
-          return 1
-        fi
-        cli_new_session "$host" "$session" || return 1
-      fi
-      if (( want_grok )); then
-        cli_start_grok "$host" "$session" || return 1
       fi
       # Mark before attach: remote SSH blocks until it returns.
-      # --grok already started/selected grok; --shell skips maybe_resume.
+      # -g/-G already started grok; --shell skips maybe_resume so -G
+      # does not select an older grok pane.
       mark_last "$host"
-      cli_attach_one "$host" "$session" $(( want_grok || shell )) ${CREATE_WANT_NEW:-0} || return 1
+      cli_attach_one "$host" "$session" $(( grok || grok_new || shell )) || return 1
       mark_last "$host"
       ;;
     pin)
-      has_st=0
-      names=("${(@f)$(cli_list_names "$host" --print-pinned)}") || has_st=$?
-      (( has_st && has_st != 1 )) && return $has_st
-      names=("${(@)names:#}")
-      if (( ! ${#names} )); then
-        print -u2 "没有 pin。"
-        return 1
-      fi
-      cli_recent_title=pin
-      session=$(cli_recent_select "${names[@]}") || return 1
-      mark_last "$host"
-      cli_attach_one "$host" "$session" $shell || return 1
-      mark_last "$host"
+      cli_reject_host_positional pin || return 1
+      cli_open_session_list "$host" pinned $shell || return $?
       ;;
     list|ls)
+      cli_reject_host_positional "$cmd" || return 1
       has_st=0
       cli_list_names "$host" --print-sessions || has_st=$?
       # #178/#465: remote connect/login/sync/unknown is 2. A local picker
@@ -3646,21 +3713,24 @@ cli_dispatch() {
       fi
       ;;
     last)
-      has_st=0
-      names=("${(@f)$(cli_list_names "$host" --print-recent)}") || has_st=$?
-      # #178: connect/login/sync/unknown is 2. #182: picker empty list is 1.
-      (( has_st && has_st != 1 )) && return $has_st
-      names=("${(@)names:#}")
-      if (( ! ${#names} )); then
-        print -u2 "没有最近的 session。"
+      cli_last_positionals_ok || return 1
+      if (( ${#pos} )); then
+        cli_open_session_list "$host" "recent:${pos[1]}" $shell || return $?
+      else
+        cli_open_session_list "$host" recent:5 $shell || return $?
+      fi
+      ;;
+    on)
+      if (( ${#pos} )); then
+        print -u2 -r -- "用法：lanjump [机器] on"
         return 1
       fi
-      session=$(cli_recent_select "${names[@]}") || return 1
-      # Mark before attach: remote SSH blocks until it returns.
-      # --shell skips maybe_resume, same as go/attach.
-      mark_last "$host"
-      cli_attach_one "$host" "$session" $shell || return 1
-      mark_last "$host"
+      cli_open_session_list "$host" occupied 0 || return $?
+      ;;
+    upgrade|update)
+      # Remote upgrade is undefined. Bare upgrade is handled before dispatch.
+      print -u2 -r -- "用法：lanjump upgrade"
+      return 1
       ;;
     *)
       return 1
@@ -3668,39 +3738,42 @@ cli_dispatch() {
   esac
 }
 
+if (( _lj_help )) || [[ ${1:-} == help ]]; then
+  cli_usage
+  exit 0
+fi
+
 if [[ ${1:-} == --cli-selftest ]]; then
   . "${0:A:h}/lanjump-cli-selftest.zsh"
   exit $?
 fi
 
-if [[ ${1:-} == help || ${1:-} == -h || ${1:-} == --help ]]; then
-  cli_usage
-  exit 0
-fi
-
-if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == pin || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then
-  if [[ ${2:-} == --help || ${2:-} == -h ]]; then
-    cli_usage
-    exit 0
-  fi
+# CLI entry: no LAN scan (#226).
+START_HOST_ALIAS=""
+START_LOCAL_LIST=""
+CLI_BACK_TO_HOSTS=0
+if (( $# )); then
   ensure_setup
   load_hosts
   find_lanjump_keys || true
-  cli_dispatch "$@"
-  exit $?
-fi
-
-START_HOST_ALIAS=""
-if [[ -n ${1:-} ]]; then
-  ensure_setup
-  load_hosts
-  if (( $# == 1 )) && find_host_index "$1" >/dev/null; then
-    START_HOST_ALIAS=$1
-  else
-    print -u2 "未知命令：${1}"
-    cli_usage >&2
-    exit 1
-  fi
+  cli_route "$@" || exit $?
+  case $CLI_ROUTE in
+    dispatch)
+      cli_dispatch "$@"
+      _lj_st=$?
+      # h from last/pin/on: stay for the host list, same as connect_local.
+      if ! cli_keep_host_list $_lj_st; then
+        exit $_lj_st
+      fi
+      CLI_BACK_TO_HOSTS=1
+      ;;
+    local-list)
+      START_LOCAL_LIST=1
+      ;;
+    host-list-alias)
+      START_HOST_ALIAS=$1
+      ;;
+  esac
 fi
 
 ensure_setup
@@ -3711,6 +3784,15 @@ if [[ -n $START_HOST_ALIAS ]]; then
   n=${#items_kind}
   for (( j = 1; j <= n; j++ )); do
     if [[ ${items_kind[$j]} == host && ${items_alias[$j]} == "$START_HOST_ALIAS" ]]; then
+      cursor=$j
+      break
+    fi
+  done
+elif [[ -n $START_LOCAL_LIST ]]; then
+  apply_last_cursor
+  n=${#items_kind}
+  for (( j = 1; j <= n; j++ )); do
+    if [[ ${items_kind[$j]} == local ]]; then
       cursor=$j
       break
     fi
@@ -3727,13 +3809,16 @@ fi
 setup_tty
 switch_ime_async
 # No saved remotes: auto-scan unless last used this Mac.
-if [[ -z $START_HOST_ALIAS ]] && (( ${#h_alias} == 0 )) && [[ $(read_last) != local ]]; then
+if [[ -z $START_HOST_ALIAS && -z $START_LOCAL_LIST ]] && (( ${#h_alias} == 0 )) && [[ $(read_last) != local ]]; then
   do_scan
   apply_last_cursor
 fi
 trap draw_on_winch WINCH
-if [[ -n $START_HOST_ALIAS ]]; then
+if [[ -n $START_HOST_ALIAS || -n $START_LOCAL_LIST ]]; then
   activate $cursor
+fi
+if (( CLI_BACK_TO_HOSTS )); then
+  notice="已回到机器列表。"
 fi
 draw
 

@@ -15,7 +15,7 @@ fi
 
 pick_needs_tty() {
   case ${1:-} in
-    --digit-selftest|--pick-selftest|--print-workspace|--print-pinned|--print-last|--print-recent|--print-sessions|--open-tabs|--has-session|--new-session|--pin-session|--start-grok|--snapshot|--refresh-pin-cwd|--install-hooks) return 1 ;;
+    --digit-selftest|--pick-selftest|--print-workspace|--print-sessions|--open-tabs|--has-session|--new-session|--new-auto|--pin-session|--start-grok|--start-grok-new|--snapshot|--refresh-pin-cwd|--install-hooks) return 1 ;;
   esac
   return 0
 }
@@ -75,6 +75,11 @@ restore_boot_notice=
 notice=""
 typeset -a pending_restore_names restore_progress_failed restore_created_names
 attach_shell_only=0
+# Set for this launch by last/pin --shell. Survives returning from a session.
+typeset -i launch_shell_only=0
+# all | recent | pinned | occupied. Not written to the session-filter file.
+view_scope=all
+typeset -i view_recent_n=0
 ghostty_close_others=0
 open_target=auto
 open_placement=window
@@ -1309,6 +1314,48 @@ start_grok_session() {
   tmuxx send-keys -t "$target" -- "$line" Enter
 }
 
+# Any pane in the session is grok. Does not select it.
+session_has_grok() {
+  local session=$1 pane_line pane_cmd
+  local -a panes
+  [[ -n $session ]] || return 1
+  panes=("${(@f)$(tmuxx list-panes -s -t "=$session" -F $'#{pane_id}\t#{pane_current_command}' 2>/dev/null)}")
+  for pane_line in "${panes[@]}"; do
+    [[ -n $pane_line ]] || continue
+    pane_cmd=${pane_line#*$'\t'}
+    pane_cmd=${pane_cmd##*/}
+    if [[ $pane_cmd == grok || $pane_cmd == grok-* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# -G: a fresh grok, never `grok -c`, and never steal a grok already running.
+start_grok_new_session() {
+  local session=$1
+  local live pane_cwd bin target wid
+  local -a nw
+  [[ -n $session ]] || return 1
+  [[ $HAS_TMUX -eq 1 ]] || return 1
+  target=$(session_pane_target "$session")
+  live=$(tmuxx display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)
+  live=${live##*/}
+  pane_cwd=$(tmuxx display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)
+  bin=$(grok_bin)
+  if session_has_grok "$session" || ! pane_is_idle_shell "$live"; then
+    nw=(new-window -P -F '#{window_id}' -t "=$session")
+    [[ -n $pane_cwd ]] && nw+=(-c "$pane_cwd")
+    # tmux 3.7c rejects `--`. One shell-command argument; quote the path inside it.
+    nw+=("${(q)bin}")
+    wid=$(tmuxx "${nw[@]}") || return 1
+    wid=${wid##*$'\n'}
+    [[ -n $wid ]] && tmuxx select-window -t "$wid"
+    return 0
+  fi
+  tmuxx send-keys -t "$target" -- "$bin" Enter
+}
+
 useful_summary() {
   local title=$1 cmd=$2 wname=$3
   local short
@@ -1732,15 +1779,65 @@ session_src_matches() {
   return 0
 }
 
+# Title chip for last/pin/on. Empty when the list is unscoped.
+session_view_label() {
+  case ${view_scope:-all} in
+    recent) REPLY="最近 ${view_recent_n} 个" ;;
+    pinned) REPLY=常驻 ;;
+    occupied) REPLY=占用中 ;;
+    *) REPLY= ;;
+  esac
+}
+
+# Newest activity first, same order as the old recent name list.
+# recent_keep is the caller's local. Ties follow sort.
+fill_recent_keep() {
+  local -i i n=0 limit=0
+  local act line idx
+  local -a raw
+  recent_keep=()
+  [[ $view_scope == recent ]] || return 0
+  if [[ $view_recent_n == <-> ]] && (( view_recent_n > 0 )); then
+    limit=$view_recent_n
+  fi
+  (( limit > 0 )) || return 0
+  raw=()
+  for (( i = 1; i <= ${#all_kind}; i++ )); do
+    [[ ${all_kind[$i]} == session ]] || continue
+    act=${all_activity[$i]:-0}
+    [[ $act == [0-9]## ]] || act=0
+    raw+=("${act}"$'\t'"$i")
+  done
+  (( ${#raw} )) || return 0
+  for line in "${(@f)$(print -r -- "${(F)raw}" | sort -t $'\t' -k1,1nr)}"; do
+    [[ -n $line ]] || continue
+    idx=${line#*$'\t'}
+    recent_keep[${all_id[$idx]}]=1
+    (( ++n >= limit )) && break
+  done
+}
+
+session_in_view() {
+  local i=$1
+  case ${view_scope:-all} in
+    recent) [[ -n ${recent_keep[${all_id[$i]}]-} ]] ;;
+    pinned) [[ ${all_pinned[$i]:-0} == 1 ]] ;;
+    occupied) [[ ${all_att[$i]:-0} == 1 ]] ;;
+    *) return 0 ;;
+  esac
+}
+
 filter_session_items() {
   local -i i n_sess=0 n_match=0
   local keep
+  local -A recent_keep
   if (( ${#all_kind} == 0 )); then
     copy_items_to_all
   fi
   if (( cursor >= 1 && cursor <= ${#items_id} )); then
     keep=${items_id[$cursor]}
   fi
+  fill_recent_keep
   items_kind=()
   items_id=()
   items_name=()
@@ -1753,6 +1850,7 @@ filter_session_items() {
   items_pinned=()
   for (( i = 1; i <= ${#all_kind}; i++ )); do
     if [[ ${all_kind[$i]} == session ]]; then
+      session_in_view $i || continue
       (( n_sess++ ))
       if (( filter_on )) && ! session_src_matches $i; then
         continue
@@ -3071,7 +3169,9 @@ attach_named_session() {
   tmux_tty attach-session -t "=$name"
   tmux_state_invalidate
   snapshot_live_sessions
-  attach_shell_only=0
+  if (( ! launch_shell_only )); then
+    attach_shell_only=0
+  fi
 }
 
 restore_saved_sessions() {
@@ -4733,6 +4833,10 @@ draw() {
   title="$host_short  选择 tmux session"
   _fit_right "$title" $(( cols - 2 ))
   title="  ${c_bold}${REPLY}${c_reset}"
+  if [[ $view_scope != all ]]; then
+    session_view_label
+    title+="  ${c_dim}${REPLY}${c_reset}"
+  fi
   if (( filter_on )); then
     if [[ -n $filter_include ]]; then
       _fit_right "含 ${filter_include}" 24
@@ -4758,7 +4862,15 @@ draw() {
     draw_emit "  ${c_dim}（这台机器上没有 tmux，可以直接进普通 shell；exit 或 Ctrl+D 返回）${c_reset}" || return
     draw_emit "" || return
   elif (( session_end == 0 )); then
-    if (( filter_on )); then
+    if (( filter_on )) && (( filter_total_count > 0 )); then
+      draw_emit "  ${c_dim}（没有匹配的 session）${c_reset}" || return
+    elif [[ $view_scope == pinned ]]; then
+      draw_emit "  ${c_dim}（没有常驻 session）${c_reset}" || return
+    elif [[ $view_scope == occupied ]]; then
+      draw_emit "  ${c_dim}（没有占用中的 session）${c_reset}" || return
+    elif [[ $view_scope == recent ]]; then
+      draw_emit "  ${c_dim}（没有最近的 session）${c_reset}" || return
+    elif (( filter_on )); then
       draw_emit "  ${c_dim}（没有匹配的 session）${c_reset}" || return
     else
       draw_emit "  ${c_dim}（当前没有 session）${c_reset}" || return
@@ -5184,6 +5296,44 @@ create_named_session() {
   (( ok ))
 }
 
+# Nameless go: free name from base, then create. Empty cwd uses the final
+# name (pin, snapshot, project dir). A cwd is this machine's $PWD.
+new_auto_session() {
+  local base=$1 cwd=${2:-} candidate msg
+  local -i n=2
+  if [[ -z $base ]]; then
+    print -u2 "用法：lanjump go"
+    return 1
+  fi
+  if msg=$(session_name_invalid "$base"); then
+    print -u2 "$msg"
+    return 1
+  fi
+  if [[ $HAS_TMUX -ne 1 ]]; then
+    print -u2 "这台机器上没有 tmux。"
+    return 1
+  fi
+  candidate=$base
+  while tmux_session_live "$candidate"; do
+    candidate="${base}-${n}"
+    (( n++ ))
+    if (( n > 10000 )); then
+      print -u2 "无法新建 session。"
+      return 1
+    fi
+  done
+  if [[ -n $cwd ]]; then
+    if ! tmuxx new-session -d -s "$candidate" -c "$cwd" 2>/dev/null; then
+      tmuxx new-session -d -s "$candidate" 2>/dev/null || return 1
+    fi
+    tmux_state_invalidate
+  else
+    create_named_session "$candidate" || return 1
+  fi
+  mark_snapshot_occupied "$candidate"
+  print -r -- "$candidate"
+}
+
 # List n pin cwd: live pane then project, never picker $PWD (#130).
 prompt_new_pin_cwd() {
   local name=$1 pane=
@@ -5422,6 +5572,50 @@ prompt_rename() {
   draw
 }
 
+# last/pin/on pass --view. last/pin may also pass --shell. Other args
+# are handled above or ignored, same as launching the list with no flags.
+parse_picker_launch_args() {
+  local spec n
+  while (( $# )); do
+    case ${1:-} in
+      --shell)
+        launch_shell_only=1
+        attach_shell_only=1
+        shift
+        ;;
+      --view)
+        shift
+        spec=${1:-}
+        if [[ -z $spec || $spec == --* ]]; then
+          print -u2 "用法：--view recent:N、pinned 或 occupied"
+          exit 1
+        fi
+        shift
+        case $spec in
+          pinned) view_scope=pinned ;;
+          occupied) view_scope=occupied ;;
+          recent:*)
+            n=${spec#recent:}
+            if [[ $n == 0* || $n != <-> ]]; then
+              print -u2 "用法：--view recent:N、pinned 或 occupied"
+              exit 1
+            fi
+            view_scope=recent
+            view_recent_n=$n
+            ;;
+          *)
+            print -u2 "用法：--view recent:N、pinned 或 occupied"
+            exit 1
+            ;;
+        esac
+        ;;
+      *)
+        return 0
+        ;;
+    esac
+  done
+}
+
 if [[ ${1:-} == --digit-selftest ]]; then
   . "${0:A:h}/lanjump-digit-selftest.zsh"
   digit_selftest
@@ -5469,65 +5663,7 @@ ensure_named_session_for_attach() {
   return 1
 }
 
-# Restore before listing so pins matches work/list (#137).
-print_pinned_names() {
-  load_pinned_sessions
-  load_session_snapshot
-  if should_restore_sessions; then
-    restore_saved_sessions
-  else
-    restore_pinned_sessions
-  fi
-  local n
-  for n in "${pinned_names[@]}"; do
-    [[ -n $n ]] || continue
-    numeric_session_name "$n" && continue
-    lanjump_foreign_session "$n" && continue
-    print -r -- "$n"
-  done
-}
-
-print_last_name() {
-  local n
-  n=$(read_last_session_name) && { print -r -- "$n"; return 0 }
-  load_session_snapshot
-  (( ${#snap_names} )) || return 1
-  print -r -- "${snap_names[-1]}"
-}
-
-# Restore before listing so last matches work/go (#122).
-# Newest-activity first, up to $1 names (default 5).
-print_recent_names() {
-  local -i max=${1:-5} n=0
-  local line name act
-  local -a raw
-  [[ $HAS_TMUX -eq 1 ]] || return 1
-  load_pinned_sessions
-  load_session_snapshot
-  if should_restore_sessions; then
-    restore_saved_sessions
-  else
-    restore_pinned_sessions
-  fi
-  tmux_state_load
-  (( tm_server_up && ${#tm_names} )) || return 1
-  raw=()
-  for name in "${tm_names[@]}"; do
-    act=${tm_activity[$name]:-0}
-    [[ $act == [0-9]## ]] || act=0
-    raw+=("${act}"$'\t'"$name")
-  done
-  for line in "${(@f)$(print -r -- "${(F)raw}" | sort -t $'\t' -k1,1nr)}"; do
-    [[ -n $line ]] || continue
-    name=${line#*$'\t'}
-    [[ -n $name ]] || continue
-    print -r -- "$name"
-    (( ++n >= max )) && break
-  done
-  (( n ))
-}
-
-# Restore before listing so list matches last/work (#134).
+# Restore before listing so list matches work (#134).
 print_session_list() {
   local n att
   [[ $HAS_TMUX -eq 1 ]] || return 0
@@ -5576,18 +5712,6 @@ if [[ ${1:-} == --print-workspace ]]; then
   print_workspace_names
   exit 0
 fi
-if [[ ${1:-} == --print-pinned ]]; then
-  print_pinned_names
-  exit 0
-fi
-if [[ ${1:-} == --print-last ]]; then
-  print_last_name || exit 1
-  exit 0
-fi
-if [[ ${1:-} == --print-recent ]]; then
-  print_recent_names 5 || exit 1
-  exit 0
-fi
 if [[ ${1:-} == --print-sessions ]]; then
   print_session_list
   exit 0
@@ -5603,6 +5727,34 @@ if [[ ${1:-} == --start-grok ]]; then
   [[ -n $name ]] || exit 1
   start_grok_session "$name"
   exit $?
+fi
+
+if [[ ${1:-} == --start-grok-new ]]; then
+  name=${2:-}
+  [[ -n $name ]] || exit 1
+  start_grok_new_session "$name"
+  exit $?
+fi
+
+if [[ ${1:-} == --new-auto ]]; then
+  base=${2:-}
+  cwd=
+  if [[ -z $base || $base == -* ]]; then
+    print -u2 "用法：lanjump go"
+    exit 1
+  fi
+  if [[ ${3:-} == --cwd ]]; then
+    cwd=${4:-}
+    if [[ -z $cwd || -n ${5:-} ]]; then
+      print -u2 "用法：lanjump go"
+      exit 1
+    fi
+  elif [[ -n ${3:-} ]]; then
+    print -u2 "用法：lanjump go"
+    exit 1
+  fi
+  new_auto_session "$base" "$cwd" || exit 1
+  exit 0
 fi
 
 if [[ ${1:-} == --pin-session ]]; then
@@ -5682,6 +5834,7 @@ if [[ ${1:-} == --attach ]]; then
   fi
 fi
 
+parse_picker_launch_args "$@"
 picker_boot_before_first_draw
 picker_boot_after_first_draw
 
@@ -5789,6 +5942,7 @@ while true; do
       ;;
     p)
       toggle_session_pin
+      filter_session_items
       draw
       ;;
     X)

@@ -27,22 +27,24 @@ if ! (( ${+functions[cli_dispatch]} )); then
 
   out=$(/bin/zsh "$MAIN" help)
   expect_contains help/title '用法：lanjump' "$out"
-  expect_contains help/list 'list [机器]' "$out"
-  expect_contains help/last 'last [机器]' "$out"
-  expect_contains help/go 'go [机器 名字 | 机器:名字]' "$out"
-  expect_contains help/omit-local '机器省略时用本机' "$out"
-  expect_contains help/alias-enter '机器别名' "$out"
+  expect_contains help/list 'lanjump list' "$out"
+  expect_contains help/last 'lanjump last 20' "$out"
+  expect_contains help/go 'lanjump go' "$out"
+  expect_contains help/go-host 'lanjump <机器> go' "$out"
+  expect_contains help/go-g 'lanjump go demo -g' "$out"
+  expect_contains help/go-G 'lanjump <机器> go -G' "$out"
+  expect_contains help/on 'lanjump <机器> on' "$out"
+  expect_contains help/omit-local '不写就是本机' "$out"
+  expect_contains help/alias-enter '<机器>' "$out"
   expect_absent help/no-last-omit '机器省略时用上次进入的那台' "$out"
   expect_contains help/grok '--grok' "$out"
-  expect_contains help/last-menu '最近 5 个' "$out"
+  expect_absent help/no-old-go 'go [机器 名字 | 机器:名字]' "$out"
+  expect_absent help/no-t-create 't=新窗口' "$out"
   expect_absent help/no-new '  new ' "$out"
-  expect_contains help/pin 'pin [机器]' "$out"
+  expect_contains help/pin 'lanjump pin' "$out"
   expect_absent help/no-work 'work [机器]' "$out"
   expect_absent help/no-pins 'pins [机器]' "$out"
-  expect_contains help/settings ', 设置' "$out"
-  expect_contains help/enter-current 'Enter 当前窗口' "$out"
-  expect_contains help/t-window 't 新窗口' "$out"
-  expect_absent help/no-current-default '当前窗口）。' "$out"
+  expect_contains help/rename '按 e' "$out"
 
   out=$(/bin/zsh "$MAIN" --help)
   expect_contains help/long-opt '用法：lanjump' "$out"
@@ -58,9 +60,11 @@ if ! (( ${+functions[cli_dispatch]} )); then
       (( fails++ ))
     fi
     expect_contains $cmd-help/title '用法：lanjump' "$out"
-    expect_contains $cmd-help/pin 'pin [机器]' "$out"
+    expect_contains $cmd-help/pin 'lanjump pin' "$out"
+    expect_contains $cmd-help/last 'lanjump last 20' "$out"
     expect_absent $cmd-help/no-work 'work [机器]' "$out"
     expect_absent $cmd-help/no-pins 'pins [机器]' "$out"
+    expect_absent $cmd-help/no-old-go 'go [机器 名字 | 机器:名字]' "$out"
     expect_absent $cmd-help/session "没有 session「--help」" "$out"
     expect_absent $cmd-help/host "没有保存的机器「--help」" "$out"
   done
@@ -97,8 +101,8 @@ if ! (( ${+functions[cli_dispatch]} )); then
     print -u2 "FAIL help/unknown-exit got 0 want nonzero"
     (( fails++ ))
   fi
-  expect_contains help/unknown-msg '未知命令：nosuch' "$err"
-  expect_contains help/unknown-usage '用法：lanjump' "$err"
+  expect_contains help/unknown-msg '没有这台机器，也没有这个命令：nosuch' "$err"
+  expect_absent help/unknown-not-old '未知命令：nosuch' "$err"
 
   if (( fails )); then
     print -u2 "cli-selftest: $fails failed"
@@ -113,6 +117,9 @@ tmpdir=$(mktemp -d) || exit 1
 log=$tmpdir/log
 fake_picker=$tmpdir/pick
 export LANJUMP_CLI_TEST_LOG=$log
+# cli_remote_pick records the host before SSH. Do that in this temp dir,
+# or the first remote call creates a real Application Support/lanjump.
+LAST_FILE=$tmpdir/last_target
 trap 'rm -rf "$tmpdir"; restore_tty 2>/dev/null || true' EXIT
 
 # #153: WINCH at file load must not host-draw. last/help/list/confirm
@@ -161,18 +168,6 @@ else
   host_list_active=0
   loading=0
   unset _lj_save_draw _lj_winch_draws
-fi
-
-if ! (( ${+functions[cli_recent_draw]} )); then
-  print -u2 "FAIL last-winch/cli_recent_draw missing"
-  (( fails++ ))
-else
-  cli_recent_names=(alpha beta)
-  cli_recent_cur=2
-  out=$(cli_recent_draw)
-  expect_contains last-winch/recent-title '最近 session' "$out"
-  expect_contains last-winch/recent-sel '> beta' "$out"
-  expect_absent last-winch/recent-host '局域网 SSH' "$out"
 fi
 
 cat >"$fake_picker" <<'EOF'
@@ -516,7 +511,7 @@ default_cli_host() {
 }
 
 : >"$log"
-cli_dispatch go studio:lanjump
+cli_dispatch studio go lanjump
 assert_remote_open remote/go "$(read_log)" lanjump
 
 # #70: real cli_remote_print path. Stub local tmux so a miss cannot
@@ -526,7 +521,7 @@ cli_tmux() {
   return 0
 }
 : >"$log"
-cli_dispatch go studio:lanjump --grok
+cli_dispatch studio go lanjump --grok
 hay=$(read_log)
 assert_remote_open remote/go-grok "$hay" lanjump
 expect_contains remote/go-grok/start --start-grok "$hay"
@@ -566,7 +561,7 @@ fi
 expect_contains has-session-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$err"
 expect_absent has-session-net/no-auth '无法登录' "$err"
 st=0
-out=$(cli_dispatch go studio:demo 2>&1) || st=$?
+out=$(cli_dispatch studio go demo 2>&1) || st=$?
 if (( st != 2 )); then
   print -u2 "FAIL go-net/status got $st want 2"
   (( fails++ ))
@@ -575,7 +570,7 @@ expect_contains go-net/msg '连不上 studio（可能睡眠、离线或换了网
 expect_absent go-net/no-prompt '要新建并打开吗' "$out"
 expect_absent go-net/no-auth '无法登录' "$out"
 st=0
-out=$(cli_dispatch last studio 2>&1) || st=$?
+out=$(cli_dispatch studio last 2>&1) || st=$?
 if (( st != 2 )); then
   print -u2 "FAIL last-net/status got $st want 2"
   (( fails++ ))
@@ -583,7 +578,7 @@ fi
 expect_contains last-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$out"
 expect_absent last-net/no-auth '无法登录' "$out"
 st=0
-out=$(cli_dispatch list studio 2>&1) || st=$?
+out=$(cli_dispatch studio list 2>&1) || st=$?
 if (( st != 2 )); then
   print -u2 "FAIL list-net/status got $st want 2"
   (( fails++ ))
@@ -591,7 +586,7 @@ fi
 expect_contains list-net/msg '连不上 studio（可能睡眠、离线或换了网络）。' "$out"
 expect_absent list-net/no-auth '无法登录' "$out"
 st=0
-out=$(cli_dispatch ls studio 2>&1) || st=$?
+out=$(cli_dispatch studio ls 2>&1) || st=$?
 if (( st != 2 )); then
   print -u2 "FAIL ls-net/status got $st want 2"
   (( fails++ ))
@@ -601,7 +596,7 @@ expect_absent ls-net/no-auth '无法登录' "$out"
 _lj_save_pick=$functions[cli_pick]
 cli_pick() { return 1 }
 st=0
-out=$(cli_dispatch list local 2>&1) || st=$?
+out=$(cli_dispatch local list 2>&1) || st=$?
 if (( st != 1 )); then
   print -u2 "FAIL list-local-fail/status got $st want 1"
   (( fails++ ))
@@ -623,14 +618,11 @@ functions[sync_picker]=$_lj_save_sync
 unset _lj_save_access _lj_save_sync
 
 : >"$log"
-_lj_save_recent=$functions[cli_recent_select]
-cli_recent_select() { print -r -- "$1"; }
-cli_dispatch pin studio
-functions[cli_recent_select]=$_lj_save_recent
-unset _lj_save_recent
+cli_dispatch studio pin
 hay=$(read_log)
-expect_contains remote/pin-print --print-pinned "$hay"
-expect_contains remote/pin-session lanjump "$hay"
+expect_contains remote/pin-view '--view pinned' "$hay"
+expect_absent remote/pin-no-print --print-pinned "$hay"
+expect_absent remote/pin-no-attach '--attach' "$hay"
 if [[ $hay == *--open-tabs* ]]; then
   print -u2 "FAIL remote/pin opened every pin got=$(printf %q "$hay")"
   (( fails++ ))
@@ -654,14 +646,11 @@ cli_open_tabs studio a b
 assert_remote_local_tabs remote-ghostty/open-tabs "$(read_log)" a b
 
 : >"$log"
-_lj_save_recent=$functions[cli_recent_select]
-cli_recent_select() { print -r -- "$1"; }
-cli_dispatch pin studio
-functions[cli_recent_select]=$_lj_save_recent
-unset _lj_save_recent
+cli_dispatch studio pin
 hay=$(read_log)
-expect_contains remote-ghostty/pin-print --print-pinned "$hay"
-expect_contains remote-ghostty/pin-session lanjump "$hay"
+expect_contains remote-ghostty/pin-view '--view pinned' "$hay"
+expect_absent remote-ghostty/pin-no-print --print-pinned "$hay"
+expect_absent remote-ghostty/pin-no-attach '--attach' "$hay"
 if [[ $hay == *--open-tabs* ]]; then
   print -u2 "FAIL remote-ghostty/pin opened every pin got=$(printf %q "$hay")"
   (( fails++ ))
@@ -685,15 +674,14 @@ cli_dispatch go lanjump
 assert_local_attach local/go "$(read_log)" lanjump
 
 : >"$log"
-_lj_save_recent=$functions[cli_recent_select]
-cli_recent_select() { print -r -- "$1"; }
 cli_dispatch pin
-functions[cli_recent_select]=$_lj_save_recent
-unset _lj_save_recent
 hay=$(read_log)
-assert_local_attach local/pin "$hay" lanjump
-expect_contains local/pin-print --print-pinned "$hay"
+expect_contains local/pin-pick LOCAL_PICK "$hay"
+expect_contains local/pin-view '--view pinned' "$hay"
+expect_absent local/pin-no-print --print-pinned "$hay"
+expect_absent local/pin-no-attach --attach "$hay"
 expect_absent local/pin-no-tabs --open-tabs "$hay"
+expect_absent local/pin-no-ssh REMOTE_SSH "$hay"
 
 # Host routing for work/pins (issue 44): stub list/open so the chosen
 # machine is visible without going through SSH.
@@ -756,12 +744,19 @@ cli_open_tabs() {
 }
 
 cli_remote_pick() {
+  if [[ $1 != local ]] && (( ${CLI_HAS_CONNECT:-1} == 0 )); then
+    print -u2 "无法登录 ${1}."
+    return 2
+  fi
+  mark_last "$1"
   print -r -- "REMOTE_PICK host=$1 argv=${(j: :)${@[2,-1]}}" >>"$log"
 }
 
 cli_remote_print() {
   print -r -- "REMOTE_PRINT host=$1 argv=${(j: :)${@[2,-1]}}" >>"$log"
-  if [[ ${2:-} == --pin-session ]]; then
+  if [[ ${2:-} == --new-auto ]]; then
+    print -r -- auto7
+  elif [[ ${2:-} == --pin-session ]]; then
     local n=${3:-}
     if [[ -n $n && $n != *[!0-9]* ]]; then
       print -r -- "s-renamed-$n"
@@ -810,19 +805,55 @@ fi
 expect_contains has-session/restore-gate should_restore_sessions "$has_src"
 expect_contains has-session/restore-saved restore_saved_sessions "$has_src"
 
-# #122: last/--print-recent must restore like work/go before listing.
-recent_src=
+# #122/#137/#480: last/pin/on open the interactive picker. Restore is the
+# same boot as lanjump <机器>, not a silent print before a small list.
+open_src=${functions[cli_open_session_list]:-}
+if [[ -z $open_src ]]; then
+  print -u2 "FAIL view/open missing cli_open_session_list"
+  (( fails++ ))
+else
+  expect_contains view/open-local cli_pick "$open_src"
+  expect_contains view/open-remote cli_remote_pick "$open_src"
+  expect_contains view/open-flag --view "$open_src"
+  if [[ $open_src == *--print-recent* || $open_src == *--print-pinned* || $open_src == *--print-last* ]]; then
+    print -u2 "FAIL view/open still uses a silent print list"
+    (( fails++ ))
+  fi
+fi
+dispatch_view=${functions[cli_dispatch]}
+expect_contains view/last-recent 'recent:' "$dispatch_view"
+expect_contains view/pin-pinned 'pinned' "$dispatch_view"
+expect_contains view/on-occupied 'occupied' "$dispatch_view"
+remote_pick_src=$(awk '
+  /^cli_remote_pick\(\)/ {p=1}
+  p {print}
+  p && /^}/ {exit}
+' "${0:A:h}/lanjump.zsh")
+if [[ $remote_pick_src != *'cli_ensure_access'*'mark_last'*'ssh_lanjump_tty'* ]]; then
+  print -u2 "FAIL view/remote-mark mark_last is not after access and before ssh got=$(printf %q "$remote_pick_src")"
+  (( fails++ ))
+fi
+boot_src=
+restore_src=
 if [[ -f $pick_file ]]; then
-  recent_src=$(awk '
-    /^print_recent_names\(\)/ {p=1}
+  boot_src=$(awk '
+    /^picker_boot_after_first_draw_steps=/ {print; exit}
+    /^picker_boot_after_first_draw\(\)/ {p=1}
+    p {print}
+    p && /^}/ {exit}
+  ' "$pick_file")
+  restore_src=$(awk '
+    /^maybe_restore_sessions\(\)/ {p=1}
     p {print}
     p && /^}/ {exit}
   ' "$pick_file")
 fi
-expect_contains last/restore-gate should_restore_sessions "$recent_src"
-expect_contains last/restore-saved restore_saved_sessions "$recent_src"
+expect_contains view/boot-restore maybe_restore_sessions "$boot_src"
+expect_contains view/restore-gate should_restore_sessions "$restore_src"
+expect_contains view/restore-saved restore_saved_sessions "$restore_src"
+unset open_src dispatch_view remote_pick_src boot_src restore_src
 
-# #134: list/--print-sessions must restore like last/work before listing.
+# #134: list/--print-sessions must restore like work before listing.
 list_src=
 if [[ -f $pick_file ]]; then
   list_src=$(awk '
@@ -833,18 +864,6 @@ if [[ -f $pick_file ]]; then
 fi
 expect_contains list/restore-gate should_restore_sessions "$list_src"
 expect_contains list/restore-saved restore_saved_sessions "$list_src"
-
-# #137: pins/--print-pinned must restore like work/list before listing pins.
-pins_src=
-if [[ -f $pick_file ]]; then
-  pins_src=$(awk '
-    /^print_pinned_names\(\)/ {p=1}
-    p {print}
-    p && /^}/ {exit}
-  ' "$pick_file")
-fi
-expect_contains pins/restore-gate should_restore_sessions "$pins_src"
-expect_contains pins/restore-saved restore_saved_sessions "$pins_src"
 
 # #124: --attach must restore like go/--has-session before attaching.
 attach_src=
@@ -894,7 +913,9 @@ cli_ask_pin() {
 
 cli_pick() {
   print -r -- "PICK ${(j: :)@}" >>"$log"
-  if [[ ${1:-} == --pin-session ]]; then
+  if [[ ${1:-} == --new-auto ]]; then
+    print -r -- auto7
+  elif [[ ${1:-} == --pin-session ]]; then
     local n=${2:-}
     if [[ -n $n && $n != *[!0-9]* ]]; then
       print -r -- "s-renamed-$n"
@@ -928,10 +949,6 @@ cli_tmux() {
   return 0
 }
 
-cli_cwd_has_grok_session() {
-  (( CLI_GROK_DIR ))
-}
-
 cli_recent_select() {
   print -r -- "SELECT ${(j: :)@}" >>"$log"
   print -r -- "$1"
@@ -942,30 +959,18 @@ read_log() {
   print -r -- "$(<$log)"
 }
 
-for ans in '' y Y 是; do
-  if ! cli_confirm_create "$ans"; then
-    print -u2 "FAIL confirm-create/yes $(printf %q "$ans")"
-    (( fails++ ))
-  fi
-done
-for ans in n N no yes x; do
-  if cli_confirm_create "$ans"; then
-    print -u2 "FAIL confirm-create/no $(printf %q "$ans") treated as yes"
-    (( fails++ ))
-  fi
-done
-
 : >"$log"
 st=0
-cli_dispatch pin office >/dev/null || st=$?
+cli_dispatch office pin >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL pin-office/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains pin-office/list 'LIST host=office flag=--print-pinned' "$hay"
-expect_contains pin-office/select 'SELECT office-pin' "$hay"
+expect_contains pin-office/pick 'REMOTE_PICK host=office argv=--view pinned' "$hay"
 expect_contains pin-office/last 'LAST host=office' "$hay"
+expect_contains pin-office/last-before-pick $'LAST host=office\nREMOTE_PICK' "$hay"
+expect_absent pin-office/not-print --print-pinned "$hay"
 expect_absent pin-office/not-open 'OPEN host=office' "$hay"
 expect_absent pin-office/not-local-list 'LIST host=local' "$hay"
 
@@ -976,7 +981,8 @@ if (( st == 0 )); then
   print -u2 "FAIL pin-unknown/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains pin-unknown/msg '没有保存的机器「nosuch」。' "$err"
+expect_contains pin-unknown/msg '用法：lanjump [机器] pin' "$err"
+expect_absent pin-unknown/no-hint '现在写' "$err"
 hay=$(read_log)
 expect_absent pin-unknown/no-last 'LAST ' "$hay"
 
@@ -1000,14 +1006,15 @@ if (( st != 0 )); then
   print -u2 "FAIL pin-omit-local/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains pin-omit-local/list 'LIST host=local flag=--print-pinned' "$hay"
-expect_contains pin-omit-local/select 'SELECT local-pin' "$hay"
-expect_absent pin-omit-local/not-office 'LIST host=office' "$hay"
+expect_contains pin-omit-local/pick 'PICK --view pinned' "$hay"
+expect_contains pin-omit-local/last 'LAST host=local' "$hay"
+expect_absent pin-omit-local/not-office 'REMOTE_PICK host=office' "$hay"
+expect_absent pin-omit-local/not-print --print-pinned "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
 st=0
-cli_dispatch go office:lanjump >/dev/null || st=$?
+cli_dispatch office go lanjump >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL go-host-session/status got $st want 0"
@@ -1023,26 +1030,24 @@ expect_absent go-host-session/no-shell '--shell' "$hay"
 expect_absent go-host-session/no-tabs --open-tabs "$hay"
 expect_absent go-host-session/not-local-open 'OPEN host=local' "$hay"
 
-# #440: two-word `go 别名 session` is the new remote form.
+# #479: two-word `go 别名 session` is rejected. The host comes first.
 TEST_LAST_HOST=local
 : >"$log"
 st=0
-cli_dispatch go office lanjump >/dev/null || st=$?
+err=$(cli_dispatch go office lanjump 2>&1) || st=$?
 hay=$(read_log)
-if (( st != 0 )); then
-  print -u2 "FAIL go-two-word/status got $st want 0"
+if (( st == 0 )); then
+  print -u2 "FAIL go-two-word/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains go-two-word/has 'HAS host=office session=lanjump' "$hay"
-expect_contains go-two-word/attach 'REMOTE_PICK host=office' "$hay"
-expect_contains go-two-word/session lanjump "$hay"
-expect_contains go-two-word/last 'LAST host=office' "$hay"
-expect_absent go-two-word/not-local 'PICK_EXEC' "$hay"
+expect_contains go-two-word/hint '现在写 lanjump office go lanjump' "$err"
+expect_absent go-two-word/no-has 'HAS ' "$hay"
+expect_absent go-two-word/no-attach 'REMOTE_PICK' "$hay"
 
 LANJUMP_GROK_BIN=grok
 : >"$log"
 st=0
-cli_dispatch go office demo --grok >/dev/null || st=$?
+cli_dispatch office go demo --grok >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL go-two-word-grok/status got $st want 0"
@@ -1051,6 +1056,8 @@ fi
 expect_contains go-two-word-grok/has 'HAS host=office session=demo' "$hay"
 expect_contains go-two-word-grok/remote 'REMOTE_PRINT host=office argv=--start-grok demo' "$hay"
 expect_contains go-two-word-grok/attach 'REMOTE_PICK host=office' "$hay"
+expect_contains go-two-word-grok/shell '--attach --shell demo' "$hay"
+expect_absent go-two-word-grok/no-local-pick 'PICK --start-grok' "$hay"
 
 st=0
 err=$(cli_dispatch go office demo extra 2>&1) || st=$?
@@ -1058,35 +1065,29 @@ if (( st == 0 )); then
   print -u2 "FAIL go-three-word/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains go-three-word/usage '用法：lanjump go' "$err"
+expect_contains go-three-word/hint '现在写 lanjump office go demo' "$err"
 
-# #70: --grok on host:session must start grok on that host, not local tmux.
+# #479: `go 别名:名字` is rejected, including with --grok.
 LANJUMP_GROK_BIN=grok
 TEST_PANE_CMD=zsh
 CLI_HAS_SESSION=1
 TEST_LAST_HOST=local
 : >"$log"
 st=0
-cli_dispatch go office:demo --grok >/dev/null || st=$?
+err=$(cli_dispatch go office:demo --grok 2>&1) || st=$?
 hay=$(read_log)
-if (( st != 0 )); then
-  print -u2 "FAIL go-host-grok/status got $st want 0"
+if (( st == 0 )); then
+  print -u2 "FAIL go-host-grok/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains go-host-grok/has 'HAS host=office session=demo' "$hay"
-expect_contains go-host-grok/remote 'REMOTE_PRINT host=office argv=--start-grok demo' "$hay"
-expect_contains go-host-grok/attach 'REMOTE_PICK host=office' "$hay"
-expect_contains go-host-grok/attach-flag '--attach' "$hay"
-expect_contains go-host-grok/shell '--attach --shell demo' "$hay"
-expect_contains go-host-grok/last 'LAST host=office' "$hay"
-expect_absent go-host-grok/no-local-tmux 'TMUX ' "$hay"
+expect_contains go-host-grok/hint '现在写 lanjump office go demo' "$err"
+expect_absent go-host-grok/no-remote 'REMOTE_PRINT' "$hay"
 expect_absent go-host-grok/no-local-pick 'PICK --start-grok' "$hay"
-expect_absent go-host-grok/not-local-open 'OPEN host=local' "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
 st=0
-cli_dispatch go local:lanjump >/dev/null || st=$?
+cli_dispatch local go lanjump >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL go-local/status got $st want 0"
@@ -1103,7 +1104,7 @@ TEST_LAST_HOST=office
 CLI_HAS_SESSION=1
 : >"$log"
 st=0
-cli_dispatch go local:lanjump >/dev/null || st=$?
+cli_dispatch local go lanjump >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL go-local-from-remote/status got $st want 0"
@@ -1126,8 +1127,8 @@ if (( st != 0 )); then
   print -u2 "FAIL go-create-y/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains go-create-y/prompt '回车或 y=当前窗口' "$out"
-expect_contains go-create-y/t-hint 't=新窗口' "$out"
+expect_absent go-create-y/no-prompt '要新建并打开吗' "$out"
+expect_absent go-create-y/no-t 't=新窗口' "$out"
 expect_absent go-create-y/no-pin '常驻（y=是，回车=否）' "$out"
 hay=$(read_log)
 expect_contains go-create-y/new 'NEW host=local session=dummytest' "$hay"
@@ -1197,7 +1198,7 @@ hay=$(read_log)
 expect_absent go-create-named/no-pin 'PICK --pin-session' "$hay"
 expect_contains go-create-named/attach 'PICK_EXEC --attach dummytest' "$hay"
 
-# t on missing go opens a new window instead of exec-attach.
+# Missing go attaches the current window. The old t=新窗口 prompt is gone.
 CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=(t)
 : >"$log"
@@ -1209,8 +1210,8 @@ if (( st != 0 )); then
 fi
 hay=$(read_log)
 expect_contains go-create-t/new 'NEW host=local session=dummytest' "$hay"
-expect_contains go-create-t/tabs 'OPEN host=local names=dummytest' "$hay"
-expect_absent go-create-t/no-attach 'PICK_EXEC --attach dummytest' "$hay"
+expect_absent go-create-t/no-tabs 'OPEN ' "$hay"
+expect_contains go-create-t/attach 'PICK_EXEC --attach dummytest' "$hay"
 expect_absent go-create-t/no-pin 'PICK --pin-session' "$hay"
 
 # Remote go create numeric stays 42 and does not pin.
@@ -1218,7 +1219,7 @@ CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=(y)
 : >"$log"
 st=0
-cli_dispatch go office:42 >/dev/null || st=$?
+cli_dispatch office go 42 >/dev/null || st=$?
 if (( st != 0 )); then
   print -u2 "FAIL go-remote-create-numeric/status got $st want 0"
   (( fails++ ))
@@ -1229,25 +1230,24 @@ expect_absent go-remote-create-numeric/no-pin 'REMOTE_PRINT host=office argv=--p
 expect_contains go-remote-create-numeric/attach 'REMOTE_PICK host=office' "$hay"
 expect_contains go-remote-create-numeric/attach-flag '--attach' "$hay"
 
+# No prompt: a missing name is created even if nothing is typed.
 CLI_HAS_SESSION=0
 CLI_TTY_REPLIES=(n)
 : >"$log"
 st=0
-out=$(cli_dispatch go dummytest) || st=$?
-if (( st == 0 )); then
-  print -u2 "FAIL go-create-n/status got 0 want nonzero"
+out=$(cli_dispatch go dummytest 2>&1) || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-create-n/status got $st want 0"
   (( fails++ ))
 fi
+expect_absent go-create-n/no-prompt '要新建并打开吗' "$out"
 hay=$(read_log)
-expect_absent go-create-n/no-new 'NEW ' "$hay"
-expect_absent go-create-n/no-open 'OPEN ' "$hay"
-expect_absent go-create-n/no-last 'LAST ' "$hay"
+expect_contains go-create-n/new 'NEW host=local session=dummytest' "$hay"
+expect_contains go-create-n/attach 'PICK_EXEC --attach dummytest' "$hay"
 
-# #175: prefixed go must not treat connect/sync failure as a missing session.
-# Local go missingname still prompts (go-create-y / go-create-n above).
+# #479: `go A:B` always hints, even when A is not a saved alias.
 CLI_HAS_SESSION=0
 CLI_HAS_CONNECT=1
-CLI_TTY_REPLIES=(y '')
 TEST_LAST_HOST=local
 : >"$log"
 st=0
@@ -1256,20 +1256,28 @@ if (( st == 0 )); then
   print -u2 "FAIL go-unknown-host/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains go-unknown-host/msg '没有保存的机器「nosuchhost」。' "$out"
+expect_contains go-unknown-host/hint '现在写 lanjump nosuchhost go demo' "$out"
+expect_absent go-unknown-host/no-saved '没有保存的机器' "$out"
 expect_absent go-unknown-host/no-prompt '要新建并打开吗' "$out"
-expect_absent go-unknown-host/no-session-msg '没有 session「demo」' "$out"
 hay=$(read_log)
 expect_absent go-unknown-host/no-new 'NEW ' "$hay"
 expect_absent go-unknown-host/no-last 'LAST ' "$hay"
 expect_absent go-unknown-host/no-remote-new '--new-session' "$hay"
 
+# Unknown machine in the new position never connects.
+st=0
+out=$(cli_dispatch nosuchhost go demo 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-nosuch-machine/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-nosuch-machine/msg '没有这台机器，也没有这个命令：nosuchhost' "$out"
+
 CLI_HAS_SESSION=0
 CLI_HAS_CONNECT=0
-CLI_TTY_REPLIES=(y '')
 : >"$log"
 st=0
-out=$(cli_dispatch go office:demo 2>&1) || st=$?
+out=$(cli_dispatch office go demo 2>&1) || st=$?
 if (( st == 0 )); then
   print -u2 "FAIL go-login-fail/status got 0 want nonzero"
   (( fails++ ))
@@ -1283,20 +1291,19 @@ expect_absent go-login-fail/no-last 'LAST ' "$hay"
 expect_absent go-login-fail/no-remote-new '--new-session' "$hay"
 CLI_HAS_CONNECT=1
 
-# Stubbed reachable remote, session actually missing: still prompt.
+# Reachable remote, session missing: create without asking.
 CLI_HAS_SESSION=0
-CLI_TTY_REPLIES=(n)
 : >"$log"
 st=0
-out=$(cli_dispatch go office:demo) || st=$?
-if (( st == 0 )); then
-  print -u2 "FAIL go-remote-missing/status got 0 want nonzero"
+out=$(cli_dispatch office go demo 2>&1) || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL go-remote-missing/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains go-remote-missing/prompt '回车或 y=当前窗口' "$out"
-expect_contains go-remote-missing/session-msg '没有 session「demo」' "$out"
+expect_absent go-remote-missing/no-prompt '要新建并打开吗' "$out"
 hay=$(read_log)
-expect_absent go-remote-missing/no-new 'NEW ' "$hay"
+expect_contains go-remote-missing/new 'NEW host=office session=demo' "$hay"
+expect_contains go-remote-missing/attach 'REMOTE_PICK host=office' "$hay"
 
 # #183: missing dotted name must fail before the create/pin prompts.
 CLI_HAS_SESSION=0
@@ -1344,30 +1351,27 @@ if (( st != 0 )); then
   print -u2 "FAIL last-menu/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-menu/list 'LIST host=local flag=--print-recent' "$hay"
-expect_contains last-menu/select 'SELECT local-recent1 local-recent2' "$hay"
-expect_contains last-menu/attach 'PICK_EXEC --attach local-recent1' "$hay"
+expect_contains last-menu/pick 'PICK --view recent:5' "$hay"
 expect_contains last-menu/last 'LAST host=local' "$hay"
+expect_absent last-menu/no-print --print-recent "$hay"
+expect_absent last-menu/no-attach 'PICK_EXEC' "$hay"
 
 # #75: last <host> enters that host; last/default host must become it, not the previous local.
 TEST_LAST_HOST=local
 : >"$log"
 st=0
-cli_dispatch last office >/dev/null || st=$?
+cli_dispatch office last >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL last-host/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-host/list 'LIST host=office flag=--print-recent' "$hay"
-expect_contains last-host/select 'SELECT office-recent1 office-recent2' "$hay"
-expect_contains last-host/attach 'REMOTE_PICK host=office' "$hay"
-expect_contains last-host/attach-flag '--attach' "$hay"
-expect_contains last-host/session office-recent1 "$hay"
+expect_contains last-host/pick 'REMOTE_PICK host=office argv=--view recent:5' "$hay"
 expect_contains last-host/last 'LAST host=office' "$hay"
-expect_contains last-host/last-before-attach $'LAST host=office\nREMOTE_PICK' "$hay"
+expect_contains last-host/last-before-pick $'LAST host=office\nREMOTE_PICK' "$hay"
 expect_absent last-host/not-local 'LAST host=local' "$hay"
-expect_absent last-host/not-local-list 'LIST host=local' "$hay"
+expect_absent last-host/not-attach '--attach' "$hay"
+expect_absent last-host/not-print --print-recent "$hay"
 TEST_LAST_HOST=local
 
 # #202: last --shell must skip resume, same as go name --shell.
@@ -1379,26 +1383,24 @@ if (( st != 0 )); then
   print -u2 "FAIL last-shell/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-shell/list 'LIST host=local flag=--print-recent' "$hay"
-expect_contains last-shell/select 'SELECT local-recent1 local-recent2' "$hay"
-expect_contains last-shell/attach 'PICK_EXEC --attach --shell local-recent1' "$hay"
-expect_absent last-shell/no-resume 'PICK_EXEC --attach local-recent1' "$hay"
+expect_contains last-shell/pick 'PICK --view recent:5 --shell' "$hay"
 expect_contains last-shell/last 'LAST host=local' "$hay"
+expect_absent last-shell/no-print --print-recent "$hay"
+expect_absent last-shell/no-unknown '未知选项' "$hay"
 
 TEST_LAST_HOST=local
 : >"$log"
 st=0
-cli_dispatch last office --shell >/dev/null || st=$?
+cli_dispatch office last --shell >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL last-host-shell/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-host-shell/list 'LIST host=office flag=--print-recent' "$hay"
-expect_contains last-host-shell/attach 'REMOTE_PICK host=office' "$hay"
-expect_contains last-host-shell/shell '--attach --shell office-recent1' "$hay"
-expect_absent last-host-shell/no-resume 'argv=--attach office-recent1' "$hay"
+expect_contains last-host-shell/pick 'REMOTE_PICK host=office argv=--view recent:5 --shell' "$hay"
 expect_contains last-host-shell/last 'LAST host=office' "$hay"
+expect_absent last-host-shell/no-print --print-recent "$hay"
+expect_absent last-host-shell/no-unknown '未知选项' "$hay"
 TEST_LAST_HOST=local
 
 # #178: last must not treat connect failure as an empty recent list.
@@ -1410,7 +1412,8 @@ if (( st == 0 )); then
   print -u2 "FAIL last-unknown-host/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains last-unknown-host/msg '没有保存的机器「nosuchhost」。' "$out"
+expect_contains last-unknown-host/msg '用法：lanjump [机器] last [N]' "$out"
+expect_absent last-unknown-host/no-hint '现在写' "$out"
 expect_absent last-unknown-host/no-empty '没有最近的 session。' "$out"
 hay=$(read_log)
 expect_absent last-unknown-host/no-last 'LAST ' "$hay"
@@ -1420,7 +1423,7 @@ expect_absent last-unknown-host/no-attach 'REMOTE_PICK ' "$hay"
 CLI_HAS_CONNECT=0
 : >"$log"
 st=0
-out=$(cli_dispatch last office 2>&1) || st=$?
+out=$(cli_dispatch office last 2>&1) || st=$?
 if (( st == 0 )); then
   print -u2 "FAIL last-login-fail/status got 0 want nonzero"
   (( fails++ ))
@@ -1432,34 +1435,28 @@ expect_absent last-login-fail/no-last 'LAST ' "$hay"
 expect_absent last-login-fail/no-select 'SELECT ' "$hay"
 CLI_HAS_CONNECT=1
 
-# #182: product --print-recent exits 1 on a successful empty list.
-CLI_RECENT_EMPTY=1
+# Empty ranges stay inside the picker. The CLI still opens the list.
 : >"$log"
 st=0
-out=$(cli_dispatch last office 2>&1) || st=$?
-if (( st == 0 )); then
-  print -u2 "FAIL last-empty-recent/status got 0 want nonzero"
+out=$(cli_dispatch office last 2>&1) || st=$?
+if (( st != 0 )); then
+  print -u2 "FAIL last-empty-recent/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-empty-recent/msg '没有最近的 session。' "$out"
+expect_absent last-empty-recent/no-msg '没有最近的 session。' "$out"
 hay=$(read_log)
-expect_contains last-empty-recent/list 'LIST host=office flag=--print-recent' "$hay"
-expect_absent last-empty-recent/no-last 'LAST ' "$hay"
-expect_absent last-empty-recent/no-select 'SELECT ' "$hay"
+expect_contains last-empty-recent/pick 'REMOTE_PICK host=office argv=--view recent:5' "$hay"
 
 : >"$log"
 st=0
 out=$(cli_dispatch last 2>&1) || st=$?
-if (( st == 0 )); then
-  print -u2 "FAIL last-empty-recent-local/status got 0 want nonzero"
+if (( st != 0 )); then
+  print -u2 "FAIL last-empty-recent-local/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-empty-recent-local/msg '没有最近的 session。' "$out"
+expect_absent last-empty-recent-local/no-msg '没有最近的 session。' "$out"
 hay=$(read_log)
-expect_contains last-empty-recent-local/list 'LIST host=local flag=--print-recent' "$hay"
-expect_absent last-empty-recent-local/no-last 'LAST ' "$hay"
-expect_absent last-empty-recent-local/no-select 'SELECT ' "$hay"
-CLI_RECENT_EMPTY=0
+expect_contains last-empty-recent-local/pick 'PICK --view recent:5' "$hay"
 
 : >"$log"
 st=0
@@ -1469,11 +1466,12 @@ if (( st != 0 )); then
   print -u2 "FAIL go-auto/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains go-auto/tmux 'TMUX new-session' "$hay"
+expect_contains go-auto/new 'PICK --new-auto' "$hay"
+expect_contains go-auto/cwd '--cwd' "$hay"
 expect_contains go-auto/attach 'PICK_EXEC --attach auto7' "$hay"
 expect_contains go-auto/last 'LAST host=local' "$hay"
 expect_absent go-auto/no-tabs 'OPEN ' "$hay"
-expect_absent go-auto/no-grok 'TMUX send-keys' "$hay"
+expect_absent go-auto/no-tmux 'TMUX new-session' "$hay"
 expect_absent go-auto/no-pin 'PICK --pin-session' "$hay"
 
 # #164: nameless go --shell still skips resume (same attach flag as --grok).
@@ -1487,7 +1485,7 @@ if (( st != 0 )); then
 fi
 expect_contains go-auto-shell/attach 'PICK_EXEC --attach --shell auto7' "$hay"
 expect_absent go-auto-shell/no-resume 'PICK_EXEC --attach auto7' "$hay"
-expect_absent go-auto-shell/no-grok 'TMUX send-keys' "$hay"
+expect_absent go-auto-shell/no-grok 'PICK --start-grok' "$hay"
 
 # #73: nameless go enters local; last host must become local, not the previous remote.
 TEST_LAST_HOST=office
@@ -1499,7 +1497,7 @@ if (( st != 0 )); then
   print -u2 "FAIL go-auto-from-remote/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains go-auto-from-remote/tmux 'TMUX new-session' "$hay"
+expect_contains go-auto-from-remote/new 'PICK --new-auto' "$hay"
 expect_contains go-auto-from-remote/attach 'PICK_EXEC --attach auto7' "$hay"
 expect_contains go-auto-from-remote/last 'LAST host=local' "$hay"
 expect_absent go-auto-from-remote/not-office 'LAST host=office' "$hay"
@@ -1515,7 +1513,7 @@ if (( st == 0 )); then
   print -u2 "FAIL go-host-empty/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains go-host-empty/usage '用法：' "$err"
+expect_contains go-host-empty/hint '现在写 lanjump office go' "$err"
 hay=$(read_log)
 expect_absent go-host-empty/no-local-pick 'LOCAL_PICK' "$hay"
 expect_absent go-host-empty/no-tmux 'TMUX ' "$hay"
@@ -1532,41 +1530,93 @@ if (( st != 0 )); then
   print -u2 "FAIL go-auto-grok/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains go-auto-grok/send 'TMUX send-keys' "$hay"
-expect_contains go-auto-grok/fresh '-- grok Enter' "$hay"
+expect_contains go-auto-grok/pick 'PICK --start-grok auto7' "$hay"
+expect_absent go-auto-grok/no-new 'PICK --start-grok-new' "$hay"
 expect_contains go-auto-grok/shell 'PICK_EXEC --attach --shell auto7' "$hay"
-expect_absent go-auto-grok/no-c 'grok -c' "$hay"
 expect_absent go-auto-grok/no-resume 'PICK_EXEC --attach auto7' "$hay"
 
-CLI_GROK_DIR=1
 : >"$log"
 st=0
-cli_dispatch go --grok >/dev/null || st=$?
+cli_dispatch go -g >/dev/null || st=$?
 hay=$(read_log)
-expect_contains go-auto-grok-c/c 'grok -c' "$hay"
-CLI_GROK_DIR=0
-
-TEST_PANE_CMD=
-: >"$log"
-st=0
-cli_dispatch go --grok >/dev/null || st=$?
-hay=$(read_log)
-expect_absent go-auto-unread/no-send 'TMUX send-keys' "$hay"
-TEST_PANE_CMD=zsh
+expect_contains go-auto-short-g/pick 'PICK --start-grok auto7' "$hay"
+expect_contains go-auto-short-g/shell 'PICK_EXEC --attach --shell auto7' "$hay"
 
 CLI_HAS_SESSION=1
-TEST_PANE_CMD=zsh
-CLI_GROK_DIR=0
 : >"$log"
 st=0
 cli_dispatch go demo --grok >/dev/null || st=$?
 hay=$(read_log)
-expect_contains go-exist-grok/send 'TMUX send-keys' "$hay"
-expect_contains go-exist-grok/fresh '-- grok Enter' "$hay"
-expect_absent go-exist-grok/no-c 'grok -c' "$hay"
+expect_contains go-exist-grok/pick 'PICK --start-grok demo' "$hay"
 # #151: start-grok already typed grok; --attach must skip maybe_resume.
 expect_contains go-exist-grok/shell 'PICK_EXEC --attach --shell demo' "$hay"
 expect_absent go-exist-grok/no-resume 'PICK_EXEC --attach demo' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch go -g demo >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-g-before-name/pick 'PICK --start-grok demo' "$hay"
+expect_contains go-g-before-name/shell 'PICK_EXEC --attach --shell demo' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch go demo -g >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-g-after-name/pick 'PICK --start-grok demo' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch go -G >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-auto-G/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-auto-G/pick 'PICK --start-grok-new auto7' "$hay"
+expect_contains go-auto-G/shell 'PICK_EXEC --attach --shell auto7' "$hay"
+expect_absent go-auto-G/no-resume 'PICK_EXEC --attach auto7' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch go demo -G >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-exist-G/pick 'PICK --start-grok-new demo' "$hay"
+expect_contains go-exist-G/shell 'PICK_EXEC --attach --shell demo' "$hay"
+expect_absent go-exist-G/no-resume 'PICK_EXEC --attach demo' "$hay"
+expect_absent go-exist-G/no-old 'PICK --start-grok demo' "$hay"
+
+: >"$log"
+st=0
+err=$(cli_dispatch go -g -G 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-both-grok/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-both-grok/usage '用法：lanjump [机器] go [名字] [-g|-G]' "$err"
+hay=$(read_log)
+expect_absent go-both-grok/no-pick 'PICK --start-grok' "$hay"
+
+: >"$log"
+st=0
+err=$(cli_dispatch go --grok --grok-new demo 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-both-long/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-both-long/usage '用法：lanjump [机器] go [名字] [-g|-G]' "$err"
+
+: >"$log"
+st=0
+err=$(cli_dispatch go -x 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-unknown-opt/status got 0 want nonzero"
+  (( fails++ ))
+fi
+expect_contains go-unknown-opt/msg '未知选项：-x' "$err"
+hay=$(read_log)
+expect_absent go-unknown-opt/no-new 'NEW ' "$hay"
+expect_absent go-unknown-opt/no-ask '要新建并打开吗' "$err"
 
 : >"$log"
 st=0
@@ -1590,64 +1640,7 @@ if (( st != 0 )); then
 fi
 expect_contains go-exist-shell/attach 'PICK_EXEC --attach --shell demo' "$hay"
 expect_absent go-exist-shell/no-resume 'PICK_EXEC --attach demo' "$hay"
-expect_absent go-exist-shell/no-grok 'TMUX send-keys' "$hay"
-
-TEST_PANE_CMD=grok
-: >"$log"
-st=0
-cli_dispatch go demo --grok >/dev/null || st=$?
-hay=$(read_log)
-expect_absent go-exist-already/no-send 'TMUX send-keys' "$hay"
-
-TEST_PANE_CMD=grok-1.0.24-mac
-: >"$log"
-st=0
-cli_dispatch go demo --grok >/dev/null || st=$?
-hay=$(read_log)
-expect_absent go-exist-grok-ver/no-send 'TMUX send-keys' "$hay"
-
-TEST_PANE_CMD=
-: >"$log"
-st=0
-cli_dispatch go demo --grok >/dev/null || st=$?
-hay=$(read_log)
-expect_absent go-exist-unread/no-send 'TMUX send-keys' "$hay"
-expect_contains go-exist-unread/pane-target '-t =demo:.' "$hay"
-TEST_PANE_CMD=zsh
-
-# #82: another window already runs grok; jump there, do not start a second grok.
-TEST_PANE_LIST=$'%1\tzsh\n%2\tgrok'
-: >"$log"
-st=0
-cli_dispatch go demo --grok >/dev/null || st=$?
-hay=$(read_log)
-if (( st != 0 )); then
-  print -u2 "FAIL go-exist-other-grok/status got $st want 0"
-  (( fails++ ))
-fi
-expect_absent go-exist-other-grok/no-send 'TMUX send-keys' "$hay"
-expect_contains go-exist-other-grok/list 'list-panes -s' "$hay"
-expect_contains go-exist-other-grok/select 'select-window -t %2' "$hay"
-expect_contains go-exist-other-grok/attach 'PICK_EXEC --attach --shell demo' "$hay"
-
-TEST_PANE_LIST=$'%1\tzsh\n%2\tgrok-1.0.24-mac'
-: >"$log"
-st=0
-cli_dispatch go demo --grok >/dev/null || st=$?
-hay=$(read_log)
-expect_absent go-exist-other-ver/no-send 'TMUX send-keys' "$hay"
-expect_contains go-exist-other-ver/select 'select-window -t %2' "$hay"
-
-TEST_PANE_CMD=
-TEST_PANE_LIST=$'%1\t\n%2\tgrok'
-: >"$log"
-st=0
-cli_dispatch go demo --grok >/dev/null || st=$?
-hay=$(read_log)
-expect_absent go-exist-unread-other/no-send 'TMUX send-keys' "$hay"
-expect_contains go-exist-unread-other/select 'select-window -t %2' "$hay"
-TEST_PANE_CMD=zsh
-TEST_PANE_LIST=
+expect_absent go-exist-shell/no-grok 'PICK --start-grok' "$hay"
 
 # #85: unprefixed attach is always local (Ghostty / `lanjump attach name`).
 # #440: unprefixed go <name> is also local. Prefixed attach host:name still honors host.
@@ -1757,7 +1750,7 @@ TEST_LAST_HOST=office
 print -r -- office >"$LAST_FILE"
 : >"$log"
 st=0
-cli_dispatch go studio:demo >/dev/null || st=$?
+cli_dispatch studio go demo >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL go-remote-mark-before-attach/status got $st want 0"
@@ -1781,33 +1774,35 @@ expect_eq attach-remote-mark-before-attach/last-file studio "$(read_last)"
 print -r -- office >"$LAST_FILE"
 : >"$log"
 st=0
-cli_dispatch last studio >/dev/null || st=$?
+cli_dispatch studio last >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL last-remote-mark-before-attach/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains last-remote-mark-before-attach/during 'ATTACH_DURING last=studio host=studio session=studio-recent1' "$hay"
+expect_contains last-remote-mark-before-attach/pick 'REMOTE_PICK host=studio argv=--view recent:5' "$hay"
+expect_contains last-remote-mark-before-attach/order $'LAST host=studio\nREMOTE_PICK' "$hay"
 expect_eq last-remote-mark-before-attach/last-file studio "$(read_last)"
 
-# pin attaches the chosen session and marks the host first, same as last.
+# pin opens the local list and marks this Mac first, same as last.
 print -r -- office >"$LAST_FILE"
 : >"$log"
 st=0
-cli_dispatch pin local >/dev/null || st=$?
+cli_dispatch local pin >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL pin-local-mark-before-attach/status got $st want 0"
   (( fails++ ))
 fi
-expect_contains pin-local-mark-before-attach/during 'ATTACH_DURING last=local host=local session=local-pin' "$hay"
+expect_contains pin-local-mark-before-attach/pick 'PICK --view pinned' "$hay"
+expect_contains pin-local-mark-before-attach/order $'LAST host=local\nPICK' "$hay"
 expect_eq pin-local-mark-before-attach/last-file local "$(read_last)"
 
 # #192: list/ls is not entering. LAST_FILE stays the previously entered host.
 print -r -- office >"$LAST_FILE"
 : >"$log"
 st=0
-cli_dispatch list local >/dev/null || st=$?
+cli_dispatch local list >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL list-local-no-mark/status got $st want 0"
@@ -1820,7 +1815,7 @@ expect_eq list-local-no-mark/last office "$(read_last)"
 print -r -- office >"$LAST_FILE"
 : >"$log"
 st=0
-cli_dispatch list studio >/dev/null || st=$?
+cli_dispatch studio list >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL list-saved-no-mark/status got $st want 0"
@@ -1833,7 +1828,7 @@ expect_eq list-saved-no-mark/last office "$(read_last)"
 print -r -- office >"$LAST_FILE"
 : >"$log"
 st=0
-cli_dispatch ls studio >/dev/null || st=$?
+cli_dispatch studio ls >/dev/null || st=$?
 hay=$(read_log)
 if (( st != 0 )); then
   print -u2 "FAIL ls-saved-no-mark/status got $st want 0"
@@ -1846,13 +1841,13 @@ expect_eq ls-saved-no-mark/last office "$(read_last)"
 print -r -- office >"$LAST_FILE"
 : >"$log"
 st=0
-err=$(cli_dispatch list nosuchhost 2>&1) || st=$?
+err=$(cli_dispatch nosuchhost list 2>&1) || st=$?
 hay=$(read_log)
 if (( st == 0 )); then
   print -u2 "FAIL list-unknown-no-mark/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains list-unknown-no-mark/msg '没有保存的机器「nosuchhost」。' "$err"
+expect_contains list-unknown-no-mark/msg '没有这台机器，也没有这个命令：nosuchhost' "$err"
 expect_absent list-unknown-no-mark/no-last 'LAST ' "$hay"
 expect_eq list-unknown-no-mark/last office "$(read_last)"
 
@@ -1861,14 +1856,344 @@ functions[cli_attach_one]=$_lj_save_cli_attach_one
 unset _lj_save_mark_last _lj_save_cli_attach_one
 TEST_LAST_HOST=local
 
-if ! cli_is_command go || ! cli_is_command pin || ! cli_is_command list; then
-  print -u2 "FAIL cli-is-command/known go/pin/list not recognized"
+if ! cli_is_command go || ! cli_is_command pin || ! cli_is_command list || ! cli_is_command on; then
+  print -u2 "FAIL cli-is-command/known go/pin/list/on not recognized"
   (( fails++ ))
 fi
 if cli_is_command office || cli_is_command o; then
   print -u2 "FAIL cli-is-command/alias treated as command"
   (( fails++ ))
 fi
+
+# #479: machine-first parsing, nameless go, -g/-G, old syntax, on, last N.
+_lj479_alias=("${h_alias[@]}")
+_lj479_pwd=$PWD
+h_alias=(office o)
+mkdir -p "$tmpdir/lanjump" "$tmpdir/foo.bar" "$tmpdir/a:b" "$tmpdir/123"
+
+st=0
+cli_route go demo >/dev/null || st=$?
+if (( st != 0 )) || [[ ${CLI_ROUTE:-} != dispatch ]]; then
+  print -u2 "FAIL route/command got st=$st route=${CLI_ROUTE:-}"
+  (( fails++ ))
+fi
+st=0
+cli_route office >/dev/null || st=$?
+if (( st != 0 )) || [[ ${CLI_ROUTE:-} != host-list-alias ]]; then
+  print -u2 "FAIL route/alias got st=$st route=${CLI_ROUTE:-}"
+  (( fails++ ))
+fi
+st=0
+cli_route local >/dev/null || st=$?
+if (( st != 0 )) || [[ ${CLI_ROUTE:-} != local-list ]]; then
+  print -u2 "FAIL route/local got st=$st route=${CLI_ROUTE:-}"
+  (( fails++ ))
+fi
+st=0
+cli_route local go >/dev/null || st=$?
+if (( st != 0 )) || [[ ${CLI_ROUTE:-} != dispatch ]]; then
+  print -u2 "FAIL route/local-go got st=$st route=${CLI_ROUTE:-}"
+  (( fails++ ))
+fi
+st=0
+err=$(cli_route zz 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL route/neither status got 0"
+  (( fails++ ))
+fi
+expect_contains route/neither '没有这台机器，也没有这个命令：zz' "$err"
+st=0
+cli_route office nope >/dev/null || st=$?
+if (( st != 0 )) || [[ ${CLI_ROUTE:-} != dispatch ]]; then
+  print -u2 "FAIL route/alias-plus got st=$st route=${CLI_ROUTE:-}"
+  (( fails++ ))
+fi
+st=0
+err=$(cli_dispatch office nope 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL route/bad-cmd status got 0"
+  (( fails++ ))
+fi
+expect_contains route/bad-cmd '未知命令：nope' "$err"
+expect_contains route/bad-cmd-usage '用法：lanjump' "$err"
+
+CLI_HAS_SESSION=1
+: >"$log"
+st=0
+err=$(cli_dispatch go o 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-o/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-o/has 'HAS host=local session=o' "$hay"
+expect_contains go-o/attach 'PICK_EXEC --attach o' "$hay"
+expect_absent go-o/no-rename '改名' "$err"
+expect_absent go-o/no-hint '现在写' "$err"
+
+: >"$log"
+st=0
+err=$(cli_dispatch go office:demo 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL go-colon/status got 0"
+  (( fails++ ))
+fi
+expect_contains go-colon/hint '现在写 lanjump office go demo' "$err"
+hay=$(read_log)
+expect_absent go-colon/no-has 'HAS ' "$hay"
+
+: >"$log"
+st=0
+err=$(cli_dispatch list office 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL list-old/status got 0"
+  (( fails++ ))
+fi
+expect_contains list-old/hint '现在写 lanjump office list' "$err"
+
+: >"$log"
+st=0
+err=$(cli_dispatch last office 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL last-old/status got 0"
+  (( fails++ ))
+fi
+expect_contains last-old/hint '现在写 lanjump office last' "$err"
+
+: >"$log"
+st=0
+err=$(cli_dispatch pin office 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL pin-old/status got 0"
+  (( fails++ ))
+fi
+expect_contains pin-old/hint '现在写 lanjump office pin' "$err"
+
+: >"$log"
+st=0
+err=$(cli_dispatch list nope 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL list-extra/status got 0"
+  (( fails++ ))
+fi
+expect_contains list-extra/usage '用法：lanjump [机器] list' "$err"
+expect_absent list-extra/no-hint '现在写' "$err"
+
+: >"$log"
+st=0
+cli_dispatch last 20 >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL last-n/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains last-n/pick 'PICK --view recent:20' "$hay"
+expect_absent last-n/no-print --print-recent "$hay"
+
+: >"$log"
+st=0
+cli_dispatch office last 8 >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL last-n-host/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains last-n-host/pick 'REMOTE_PICK host=office argv=--view recent:8' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch pin --shell >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL pin-shell/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains pin-shell/pick 'PICK --view pinned --shell' "$hay"
+expect_absent pin-shell/no-unknown '未知选项' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch office pin --shell >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL pin-host-shell/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains pin-host-shell/pick 'REMOTE_PICK host=office argv=--view pinned --shell' "$hay"
+
+for bad in 0 abc 01; do
+  st=0
+  err=$(cli_dispatch last "$bad" 2>&1) || st=$?
+  if (( st == 0 )); then
+    print -u2 "FAIL last-bad/$bad status got 0"
+    (( fails++ ))
+  fi
+  expect_contains last-bad/$bad '用法：lanjump [机器] last [N]' "$err"
+done
+st=0
+err=$(cli_dispatch last 1 2 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL last-two/status got 0"
+  (( fails++ ))
+fi
+expect_contains last-two/usage '用法：lanjump [机器] last [N]' "$err"
+
+: >"$log"
+st=0
+out=$(cli_dispatch on 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL on/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains on/pick 'PICK --view occupied' "$hay"
+expect_absent on/no-print --print- "$hay"
+: >"$log"
+st=0
+out=$(cli_dispatch office on 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL on-host/status got $st out=$(printf %q "$out")"
+  (( fails++ ))
+fi
+expect_contains on-host/pick 'REMOTE_PICK host=office argv=--view occupied' "$hay"
+expect_absent on-host/no-print --print- "$hay"
+# h exits 10. That status is what the host list already treats as "back".
+_lj_save_pick=$functions[cli_pick]
+cli_pick() { return 10 }
+st=0
+cli_open_session_list local recent:5 0 || st=$?
+functions[cli_pick]=$_lj_save_pick
+if (( st != 10 )); then
+  print -u2 "FAIL list-h/status got $st want 10"
+  (( fails++ ))
+fi
+if ! cli_keep_host_list 10; then
+  print -u2 "FAIL list-h/keep rejected 10"
+  (( fails++ ))
+fi
+if cli_keep_host_list 0 || cli_keep_host_list 1; then
+  print -u2 "FAIL list-h/keep accepted a non-10 status"
+  (( fails++ ))
+fi
+st=0
+err=$(cli_dispatch on foo 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL on-arg/status got 0"
+  (( fails++ ))
+fi
+expect_contains on-arg/usage '用法：lanjump [机器] on' "$err"
+st=0
+err=$(cli_dispatch on -g 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL on-g/status got 0"
+  (( fails++ ))
+fi
+expect_contains on-g/opt '未知选项：-g' "$err"
+st=0
+err=$(cli_dispatch list -G 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL list-G/status got 0"
+  (( fails++ ))
+fi
+expect_contains list-G/opt '未知选项：-G' "$err"
+st=0
+err=$(cli_dispatch pin --grok 2>&1) || st=$?
+if (( st == 0 )); then
+  print -u2 "FAIL pin-grok/status got 0"
+  (( fails++ ))
+fi
+expect_contains pin-grok/opt '未知选项：--grok' "$err"
+
+: >"$log"
+st=0
+err=$(cli_dispatch office upgrade 2>&1) || st=$?
+hay=$(read_log)
+if (( st == 0 )); then
+  print -u2 "FAIL upgrade-remote/status got 0"
+  (( fails++ ))
+fi
+expect_contains upgrade-remote/usage '用法：lanjump upgrade' "$err"
+expect_absent upgrade-remote/no-ssh 'REMOTE_' "$hay"
+
+: >"$log"
+st=0
+err=$(cli_dispatch office attach demo 2>&1) || st=$?
+hay=$(read_log)
+if (( st == 0 )); then
+  print -u2 "FAIL attach-new-form/status got 0"
+  (( fails++ ))
+fi
+expect_contains attach-new-form/usage '用法：lanjump attach [--shell] <session>' "$err"
+expect_absent attach-new-form/no-remote 'REMOTE_PICK' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch office go -G >/dev/null || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL go-remote-G/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains go-remote-G/pick 'REMOTE_PRINT host=office argv=--start-grok-new auto7' "$hay"
+expect_contains go-remote-G/attach 'REMOTE_PICK host=office' "$hay"
+expect_absent go-remote-G/no-local 'PICK --start-grok-new' "$hay"
+
+: >"$log"
+st=0
+cli_dispatch office go demo -g >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-remote-g-after/pick 'REMOTE_PRINT host=office argv=--start-grok demo' "$hay"
+expect_contains go-remote-g-after/shell '--attach --shell demo' "$hay"
+
+cd "$tmpdir/lanjump"
+: >"$log"
+st=0
+cli_dispatch go >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-base/name 'PICK --new-auto lanjump --cwd '"$tmpdir/lanjump" "$hay"
+cd "$tmpdir/foo.bar"
+: >"$log"
+cli_dispatch go >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-base/dot 'PICK --new-auto foo-bar --cwd '"$tmpdir/foo.bar" "$hay"
+cd "$tmpdir/a:b"
+: >"$log"
+cli_dispatch go >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-base/colon 'PICK --new-auto a-b --cwd '"$tmpdir/a:b" "$hay"
+cd "$tmpdir/123"
+: >"$log"
+cli_dispatch go >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-base/num 'PICK --new-auto s-123 --cwd '"$tmpdir/123" "$hay"
+cd "$tmpdir/lanjump"
+: >"$log"
+cli_dispatch office go >/dev/null || st=$?
+hay=$(read_log)
+expect_contains go-base/remote 'REMOTE_PRINT host=office argv=--new-auto lanjump' "$hay"
+expect_absent go-base/remote-no-cwd '--cwd' "$hay"
+cd "$_lj479_pwd"
+
+expect_eq base/root s "$(cli_go_base_name /)"
+expect_eq base/dots --- "$(cli_go_base_name /tmp/...)"
+expect_eq base/empty s "$(cli_go_base_name '')"
+
+h_alias=(go)
+: >"$log"
+st=0
+err=$(cli_dispatch go demo 2>&1) || st=$?
+hay=$(read_log)
+if (( st != 0 )); then
+  print -u2 "FAIL alias-cmd/status got $st want 0"
+  (( fails++ ))
+fi
+expect_contains alias-cmd/warn '有台机器也叫 go，按 e 在主机列表给它改名' "$err"
+expect_contains alias-cmd/has 'HAS host=local session=demo' "$hay"
+
+h_alias=("${_lj479_alias[@]}")
+unset _lj479_alias _lj479_pwd
+CLI_HAS_SESSION=1
 
 st=0
 # Same ensure_setup side effect as the nosuch case above.
@@ -1883,7 +2208,7 @@ if (( st == 0 )); then
   print -u2 "FAIL new-removed/status got 0 want nonzero"
   (( fails++ ))
 fi
-expect_contains new-removed/msg '未知命令：new' "$err"
+expect_contains new-removed/msg '没有这台机器，也没有这个命令：new' "$err"
 expect_absent new-removed/no-hint 'lanjump go' "$err"
 
 # #227: host/recent loops must not `read_key || continue` forever on EOF.
@@ -1908,12 +2233,10 @@ else
     (( fails++ ))
   fi
 fi
-_lj_recent=$(sed -n '/^cli_recent_select()/,/^}/p' "${0:A:h}/lanjump.zsh")
-if [[ $_lj_recent != *read_key_or_exit* ]]; then
-  print -u2 "FAIL key/eof-spin recent loop missing read_key_or_exit"
+if grep -E -q '^cli_recent_select\(\)|^cli_recent_draw\(\)' "${0:A:h}/lanjump.zsh"; then
+  print -u2 "FAIL key/eof-spin small recent list still exists"
   (( fails++ ))
 fi
-unset _lj_recent
 if grep -E -q '^[[:space:]]*read_key \|\| continue' "${0:A:h}/lanjump.zsh"; then
   print -u2 "FAIL key/eof-spin host loop still continues forever on read fail"
   (( fails++ ))
@@ -1922,11 +2245,9 @@ fi
 # #226: go/list/last do not need the LAN prefix. CLI entry must not probe
 # interfaces; is_self_ip lazy-loads collect_self_ips when MYIPS is empty.
 _lj_cli=$(awk '
-  index($0, "if [[ ${1:-} == attach || ${1:-} == go || ${1:-} == pin || ${1:-} == list || ${1:-} == ls || ${1:-} == last ]]; then") {
-    p=1
-  }
+  index($0, "CLI entry: no LAN scan") { p=1 }
   p { print }
-  p && index($0, "cli_dispatch") { exit }
+  p && index($0, "build_items") { exit }
 ' "${0:A:h}/lanjump.zsh")
 if [[ -z $_lj_cli ]]; then
   print -u2 "FAIL cli-entry/no-detect-lan missing go/list/last branch"

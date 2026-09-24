@@ -7,8 +7,8 @@
 # session_delete_needs_pin_warning, pin_delete_warning_text,
 # rename_pin_record, prompt_rename, restore_pinned_sessions, numeric_session_name,
 # collect_restore_names, collect_work_session_names, should_restore_sessions, restore_saved_sessions,
-# maybe_restore_sessions, print_pinned_names, print_workspace_names,
-# has_named_session, ensure_named_session_for_attach, print_recent_names,
+# maybe_restore_sessions, print_workspace_names,
+# has_named_session, ensure_named_session_for_attach,
 # print_session_list,
 # ghostty_restore_available, ghostty_osascript_for_sessions,
 # ghostty_applescript_string, ghostty_focus_session,
@@ -859,6 +859,8 @@ pick_selftest() {
     filter_on=0
     sort_mode=time
     cursor=1
+    view_scope=all
+    view_recent_n=0
   }
 
   sort_fixture
@@ -940,6 +942,8 @@ pick_selftest() {
     filter_on=0
     sort_mode=time
     cursor=1
+    view_scope=all
+    view_recent_n=0
     HAS_TMUX=1
     host_short=testhost
     COLUMNS=120
@@ -1114,6 +1118,270 @@ pick_selftest() {
     (( fails++ ))
   fi
 
+  # #480: --view narrows session rows. o reorders that set; it does not swap in others.
+  view_fixture() {
+    items_kind=(session session session session session new shell hosts quit)
+    items_id=(alpha beta gamma delta epsilon new shell hosts quit)
+    items_name=("${items_id[@]}")
+    items_att=(0 1 0 0 1 '' '' '' '')
+    items_time=('01-01 00:01' '01-01 00:02' '01-01 00:03' '01-01 00:04' '01-01 00:05' '' '' '' '')
+    items_activity=(10 40 30 50 20 '' '' '' '')
+    items_path=('~/a' '~/b' '~/c' '~/d' '~/e' '' '' '' '')
+    items_summary=(keepme other keepme other other '' '' '' '')
+    items_cmd=(zsh zsh zsh zsh zsh '' '' '' '')
+    items_pinned=(1 0 1 0 0 '' '' '' '')
+    all_kind=() all_id=() all_name=() all_att=() all_time=()
+    all_path=() all_summary=() all_cmd=() all_activity=() all_pinned=()
+    filter_include=
+    filter_exclude=
+    filter_on=0
+    sort_mode=time
+    cursor=1
+    HAS_TMUX=1
+    host_short=testhost
+    COLUMNS=120
+    LINES=40
+    view_scope=all
+    view_recent_n=0
+  }
+  view_session_ids() {
+    local -a ids sorted
+    local id
+    ids=()
+    for id in "${items_id[@]}"; do
+      case $id in
+        new|shell|hosts|quit) ;;
+        *) ids+=("$id") ;;
+      esac
+    done
+    sorted=("${(o)ids[@]}")
+    print -r -- "${(j: :)sorted}"
+  }
+
+  view_fixture
+  sort_session_items
+  copy_items_to_all
+  view_scope=recent
+  view_recent_n=2
+  filter_session_items
+  expect view/recent-2 'beta delta' "$(view_session_ids)"
+  if [[ ${items_id[*]} == *epsilon* || ${items_id[*]} == *alpha* || ${items_id[*]} == *gamma* ]]; then
+    print -u2 "FAIL view/recent-2 kept a session outside the newest two got=${items_id[*]}"
+    (( fails++ ))
+  fi
+  before=$(view_session_ids)
+  toggle_sort_mode
+  expect view/recent-o-set "$before" "$(view_session_ids)"
+  if [[ ${items_id[*]} == *epsilon* ]]; then
+    print -u2 "FAIL view/recent-o swapped in epsilon got=${items_id[*]}"
+    (( fails++ ))
+  fi
+
+  view_fixture
+  view_scope=pinned
+  filter_session_items
+  expect view/pinned 'alpha gamma' "$(view_session_ids)"
+
+  view_fixture
+  view_scope=occupied
+  filter_session_items
+  expect view/occupied 'beta epsilon' "$(view_session_ids)"
+
+  view_fixture
+  sort_session_items
+  copy_items_to_all
+  view_scope=recent
+  view_recent_n=3
+  filter_include=keepme
+  filter_on=1
+  filter_session_items
+  expect view/stack gamma "$(view_session_ids)"
+  expect view/stack-count 1 "$filter_match_count"
+  expect view/stack-total 3 "$filter_total_count"
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  title_line=${plain%%$'\n'*}
+  if [[ $title_line != *'最近 3 个'* || $title_line != *'1/3'* ]]; then
+    print -u2 "FAIL view/title-stack got=$(printf %q "$title_line")"
+    (( fails++ ))
+  fi
+
+  view_fixture
+  view_scope=pinned
+  filter_on=1
+  filter_include=zzzz
+  filter_session_items
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'（没有匹配的 session）'* ]]; then
+    print -u2 "FAIL view/keyword-miss missing 没有匹配的 session got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
+  if [[ $plain == *'（没有常驻 session）'* ]]; then
+    print -u2 "FAIL view/keyword-miss used the empty-range line"
+    (( fails++ ))
+  fi
+
+  view_fixture
+  items_pinned=(0 0 0 0 0 '' '' '' '')
+  view_scope=pinned
+  filter_session_items
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'（没有常驻 session）'* ]]; then
+    print -u2 "FAIL view/empty-pinned got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
+  if [[ $plain != *quit* ]]; then
+    print -u2 "FAIL view/empty-pinned closed the list"
+    (( fails++ ))
+  fi
+
+  view_fixture
+  items_att=(0 0 0 0 0 '' '' '' '')
+  view_scope=occupied
+  filter_session_items
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'（没有占用中的 session）'* ]]; then
+    print -u2 "FAIL view/empty-occupied got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
+
+  view_fixture
+  items_kind=(new shell hosts quit)
+  items_id=(new shell hosts quit)
+  items_name=('新建 session' '普通 shell' '换一台机器' '退出')
+  items_att=('' '' '' '')
+  items_time=('' '' '' '')
+  items_activity=('' '' '' '')
+  items_path=('' '' '' '')
+  items_summary=('' '' '' '')
+  items_cmd=('' '' '' '')
+  items_pinned=('' '' '' '')
+  all_kind=() all_id=() all_name=() all_att=() all_time=()
+  all_path=() all_summary=() all_cmd=() all_activity=() all_pinned=()
+  view_scope=recent
+  view_recent_n=5
+  filter_session_items
+  out=$(draw)
+  plain=${out//$'\e'\[[0-9;]#[A-Za-z]/}
+  if [[ $plain != *'（没有最近的 session）'* ]]; then
+    print -u2 "FAIL view/empty-recent got=$(printf %q "$plain")"
+    (( fails++ ))
+  fi
+  title_line=${plain%%$'\n'*}
+  if [[ $title_line != *'最近 5 个'* ]]; then
+    print -u2 "FAIL view/empty-recent-title got=$(printf %q "$title_line")"
+    (( fails++ ))
+  fi
+
+  view_fixture
+  view_scope=pinned
+  filter_session_items
+  if [[ ${items_id[1]} != alpha ]]; then
+    print -u2 "FAIL view/unpin-setup cursor not alpha got=${items_id[1]}"
+    (( fails++ ))
+  fi
+  cursor=1
+  toggle_session_pin
+  filter_session_items
+  if [[ ${items_id[*]} == *alpha* ]]; then
+    print -u2 "FAIL view/unpin alpha stayed after p got=${items_id[*]}"
+    (( fails++ ))
+  fi
+  expect view/unpin-left gamma "$(view_session_ids)"
+
+  view_fixture
+  view_scope=pinned
+  filter_include=
+  filter_exclude=
+  filter_on=0
+  session_filter_file
+  print -r -- $'include \nexclude \n' >"$REPLY"
+  filter_session_items
+  toggle_session_filter
+  if [[ $view_scope != pinned ]]; then
+    print -u2 "FAIL view/f-on cleared the range got=$view_scope"
+    (( fails++ ))
+  fi
+  expect view/f-on 'alpha gamma' "$(view_session_ids)"
+  toggle_session_filter
+  if [[ $view_scope != pinned ]]; then
+    print -u2 "FAIL view/f-off cleared the range got=$view_scope"
+    (( fails++ ))
+  fi
+  expect view/f-off 'alpha gamma' "$(view_session_ids)"
+
+  view_scope=recent
+  view_recent_n=4
+  filter_include=aa
+  filter_exclude=bb
+  save_session_filter
+  session_filter_file
+  got=$(<"$REPLY")
+  if [[ $got == *recent* || $got == *pinned* || $got == *occupied* || $got == *view_scope* ]]; then
+    print -u2 "FAIL view/not-saved wrote the range got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  if [[ $got != *'include aa'* || $got != *'exclude bb'* ]]; then
+    print -u2 "FAIL view/not-saved dropped keywords got=$(printf %q "$got")"
+    (( fails++ ))
+  fi
+  load_session_filter
+  if [[ $view_scope != recent || $view_recent_n != 4 ]]; then
+    print -u2 "FAIL view/not-saved load changed scope=$view_scope n=$view_recent_n"
+    (( fails++ ))
+  fi
+
+  view_scope=all
+  view_recent_n=0
+  launch_shell_only=0
+  attach_shell_only=0
+  parse_picker_launch_args --view recent:7 --shell
+  if [[ $view_scope != recent || $view_recent_n != 7 || $launch_shell_only != 1 || $attach_shell_only != 1 ]]; then
+    print -u2 "FAIL view/parse-shell scope=$view_scope n=$view_recent_n shell=$launch_shell_only attach=$attach_shell_only"
+    (( fails++ ))
+  fi
+  if [[ ${functions[attach_named_session]} != *launch_shell_only* ]]; then
+    print -u2 "FAIL view/shell-sticky attach clears --shell for later enters"
+    (( fails++ ))
+  fi
+  view_scope=all
+  view_recent_n=0
+  launch_shell_only=0
+  attach_shell_only=0
+  parse_picker_launch_args --shell --view pinned
+  if [[ $view_scope != pinned || $launch_shell_only != 1 ]]; then
+    print -u2 "FAIL view/parse-order scope=$view_scope shell=$launch_shell_only"
+    (( fails++ ))
+  fi
+  st=0
+  err=$(parse_picker_launch_args --view recent:0 2>&1) || st=$?
+  if (( st == 0 )); then
+    print -u2 "FAIL view/parse-zero accepted recent:0"
+    (( fails++ ))
+  fi
+  st=0
+  err=$(parse_picker_launch_args --view recent:01 2>&1) || st=$?
+  if (( st == 0 )); then
+    print -u2 "FAIL view/parse-pad accepted recent:01"
+    (( fails++ ))
+  fi
+  st=0
+  err=$(parse_picker_launch_args --view nope 2>&1) || st=$?
+  if (( st == 0 )); then
+    print -u2 "FAIL view/parse-bad accepted nope"
+    (( fails++ ))
+  fi
+  view_scope=all
+  view_recent_n=0
+  launch_shell_only=0
+  attach_shell_only=0
+  filter_include=
+  filter_exclude=
+  filter_on=0
+
   HOME=$oldhome
   rm -rf "$testhome"
 
@@ -1163,6 +1431,8 @@ pick_selftest() {
     filter_on=0
     sort_mode=time
     cursor=1
+    view_scope=all
+    view_recent_n=0
     HAS_TMUX=1
   }
 
@@ -1939,88 +2209,16 @@ pick_selftest() {
     (( fails++ ))
   fi
 
-  # #137: pins/--print-pinned must restore like work/list before listing pins.
-  if [[ ${functions[print_pinned_names]:-} != *should_restore_sessions* ]]; then
-    print -u2 "FAIL pin/print missing should_restore_sessions got=$(printf %q "${functions[print_pinned_names]:-}")"
+  # #137/#122/#480: last/pin/on use this list. Restore is the interactive
+  # boot, the same path as lanjump <机器>, not a silent print.
+  if [[ ${functions[maybe_restore_sessions]} != *should_restore_sessions* || ${functions[maybe_restore_sessions]} != *restore_saved_sessions* ]]; then
+    print -u2 "FAIL view/restore boot missing should_restore_sessions"
     (( fails++ ))
   fi
-  if [[ ${functions[print_pinned_names]:-} != *restore_saved_sessions* ]]; then
-    print -u2 "FAIL pin/print missing restore_saved_sessions got=$(printf %q "${functions[print_pinned_names]:-}")"
+  if [[ ${picker_boot_after_first_draw_steps[*]} != *maybe_restore_sessions* || ${functions[picker_boot_after_first_draw]} != *picker_boot_after_first_draw_steps* ]]; then
+    print -u2 "FAIL view/restore boot does not run maybe_restore_sessions"
     (( fails++ ))
   fi
-
-  setup_partial_pins
-  got=$(print_pinned_names)
-  restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
-    print -u2 "FAIL pin/restore-partial-pins missing lj-pin-gone got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log == *'new-session -d -s lj-pin-keep'* ]]; then
-    print -u2 "FAIL pin/restore-partial-pins recreated live pin got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
-    print -u2 "FAIL pin/restore-partial-pins restored unpinned workspace got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  expect pin/restore-partial-pins-names $'lj-pin-keep\nlj-pin-gone' "$got"
-
-  # #137: kill-server / empty tmux restores pin keep and unpinned demo, prints only keep.
-  : >"$tmux_log"
-  mock_live=()
-  did_restore=0
-  snap_names=(keep demo)
-  snap_cwd=()
-  snap_occupied=()
-  snap_workspace=()
-  snap_cmd=()
-  snap_attached=()
-  snap_cwd[keep]=/tmp/keep
-  snap_cwd[demo]=/tmp/demo
-  snap_occupied[keep]=1
-  snap_occupied[demo]=1
-  snap_workspace[keep]=1
-  snap_workspace[demo]=1
-  snap_attached[keep]=$EPOCHSECONDS
-  snap_attached[demo]=$EPOCHSECONDS
-  save_session_snapshot
-  print -r -- $'name keep\ncwd /tmp/keep\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
-  tmuxx() {
-    print -r -- "$*" >>"$tmux_log"
-    case $1 in
-      list-sessions) return 1 ;;
-      has-session)
-        [[ $2 == -t ]] || return 1
-        (( ${mock_live[${3#=}]:-0} )) && return 0
-        return 1
-        ;;
-      new-session)
-        mock_live_from_new_session "$@"
-        return 0
-        ;;
-      *) return 0 ;;
-    esac
-  }
-  got=$(print_pinned_names)
-  restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s keep -c /tmp/keep'* ]]; then
-    print -u2 "FAIL pin/print-empty missing keep new-session got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log == *'new-session -d -s demo'* ]]; then
-    print -u2 "FAIL pin/print-empty restored unpinned demo got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $got != *keep* ]]; then
-    print -u2 "FAIL pin/print-empty missing keep got=$(printf %q "$got")"
-    (( fails++ ))
-  fi
-  if [[ $got == *demo* ]]; then
-    print -u2 "FAIL pin/print-empty listed unpinned workspace got=$(printf %q "$got")"
-    (( fails++ ))
-  fi
-  expect pin/print-empty-names keep "$got"
 
   # #177: leftover bmx pin must not list or restore-pick, and restore must not recreate it.
   : >"$tmux_log"
@@ -2049,12 +2247,13 @@ pick_selftest() {
       *) return 0 ;;
     esac
   }
-  got=$(print_pinned_names)
-  if [[ $got == *bmx-demo* ]]; then
-    print -u2 "FAIL pin/print-skip-foreign listed bmx-demo got=$(printf %q "$got")"
-    (( fails++ ))
+  load_pinned_sessions
+  load_session_snapshot
+  if should_restore_sessions; then
+    restore_saved_sessions
+  else
+    restore_pinned_sessions
   fi
-  expect pin/print-skip-foreign-names keep "$got"
   restore_log=$(<"$tmux_log")
   if [[ $restore_log == *'new-session -d -s bmx-demo'* ]]; then
     print -u2 "FAIL pin/print-skip-foreign restored bmx-demo got=$(printf %q "$restore_log")"
@@ -2421,184 +2620,7 @@ pick_selftest() {
     (( fails++ ))
   fi
 
-  # #122: last/--print-recent must restore like work/go before listing.
-  if [[ ${functions[print_recent_names]:-} != *should_restore_sessions* ]]; then
-    print -u2 "FAIL recent/print missing should_restore_sessions got=$(printf %q "${functions[print_recent_names]:-}")"
-    (( fails++ ))
-  fi
-  if [[ ${functions[print_recent_names]:-} != *restore_saved_sessions* ]]; then
-    print -u2 "FAIL recent/print missing restore_saved_sessions got=$(printf %q "${functions[print_recent_names]:-}")"
-    (( fails++ ))
-  fi
-
-  local -A mock_activity
-  recent_list_tmuxx() {
-    print -r -- "$*" >>"$tmux_log"
-    case $1 in
-      list-sessions)
-        (( ${#mock_live} )) || return 1
-        if [[ $* == *session_activity* ]]; then
-          local k
-          for k in ${(k)mock_live}; do
-            print -r -- "${mock_activity[$k]:-1}"$'\t'"$k"
-          done
-        fi
-        return 0
-        ;;
-      has-session)
-        [[ $2 == -t ]] || return 1
-        (( ${mock_live[${3#=}]:-0} )) && return 0
-        return 1
-        ;;
-      new-session)
-        mock_live_from_new_session "$@"
-        return 0
-        ;;
-      *) return 0 ;;
-    esac
-  }
-
-  # kill-server / no live sessions: restore snapshot names then list them.
-  : >"$tmux_log"
-  mock_live=()
-  mock_activity=()
-  did_restore=0
-  snap_names=(demo other)
-  snap_cwd=()
-  snap_occupied=()
-  snap_workspace=()
-  snap_cmd=()
-  snap_attached=()
-  snap_cwd[demo]=/tmp/demo
-  snap_cwd[other]=/tmp/other
-  snap_occupied[demo]=1
-  snap_occupied[other]=1
-  snap_workspace[demo]=1
-  snap_workspace[other]=1
-  snap_attached[demo]=$EPOCHSECONDS
-  snap_attached[other]=$EPOCHSECONDS
-  mock_activity[demo]=200
-  mock_activity[other]=100
-  save_session_snapshot
-  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
-  tmuxx() { recent_list_tmuxx "$@" }
-  got=$(print_recent_names 5)
-  restore_log=$(<"$tmux_log")
-  if [[ $restore_log == *'new-session -d -s demo'* || $restore_log == *'new-session -d -s other'* ]]; then
-    print -u2 "FAIL recent/print-empty restored unpinned got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ -n $got ]]; then
-    print -u2 "FAIL recent/print-empty-names got=$(printf %q "$got") want empty"
-    (( fails++ ))
-  fi
-
-  # Newest-activity first, up to 5, after restore.
-  : >"$tmux_log"
-  mock_live=()
-  mock_activity=()
-  did_restore=0
-  snap_names=(r1 r2 r3 r4 r5 r6)
-  snap_cwd=()
-  snap_occupied=()
-  snap_workspace=()
-  snap_cmd=()
-  snap_attached=()
-  local rn
-  for rn in r1 r2 r3 r4 r5 r6; do
-    snap_cwd[$rn]=/tmp/$rn
-    snap_occupied[$rn]=1
-    snap_workspace[$rn]=1
-    snap_attached[$rn]=$EPOCHSECONDS
-  done
-  mock_activity[r1]=100
-  mock_activity[r2]=200
-  mock_activity[r3]=300
-  mock_activity[r4]=400
-  mock_activity[r5]=500
-  mock_activity[r6]=600
-  save_session_snapshot
-  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
-  tmuxx() { recent_list_tmuxx "$@" }
-  got=$(print_recent_names 5)
-  restore_log=$(<"$tmux_log")
-  if [[ $restore_log == *'new-session -d -s r6'* ]]; then
-    print -u2 "FAIL recent/print-limit restored unpinned r6 got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ -n $got ]]; then
-    print -u2 "FAIL recent/print-limit-names got=$(printf %q "$got") want empty"
-    (( fails++ ))
-  fi
-
-  # #80/#122: anything restoreable already live skips full restore.
-  : >"$tmux_log"
-  mock_live=()
-  mock_activity=()
-  mock_live[lj-pin-keep]=1
-  mock_live[ws-live]=1
-  mock_activity[lj-pin-keep]=300
-  mock_activity[lj-pin-gone]=200
-  mock_activity[ws-live]=100
-  mock_activity[ws-gone]=50
-  did_restore=0
-  snap_names=(ws-live ws-gone)
-  snap_cwd=()
-  snap_occupied=()
-  snap_workspace=()
-  snap_cmd=()
-  snap_attached=()
-  snap_cwd[ws-live]=/tmp/ws-live
-  snap_cwd[ws-gone]=/tmp/ws-gone
-  snap_occupied[ws-live]=1
-  snap_occupied[ws-gone]=1
-  snap_workspace[ws-live]=1
-  snap_workspace[ws-gone]=1
-  snap_attached[ws-live]=$EPOCHSECONDS
-  snap_attached[ws-gone]=$EPOCHSECONDS
-  save_session_snapshot
-  print -r -- $'name lj-pin-keep\ncwd /tmp/lj-pin-keep\n\nname lj-pin-gone\ncwd /tmp/lj-pin-gone\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
-  tmuxx() { recent_list_tmuxx "$@" }
-  got=$(print_recent_names 5)
-  restore_log=$(<"$tmux_log")
-  if [[ $restore_log != *'new-session -d -s lj-pin-gone -c /tmp/lj-pin-gone'* ]]; then
-    print -u2 "FAIL recent/print-partial missing lj-pin-gone got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log == *'new-session -d -s ws-gone'* ]]; then
-    print -u2 "FAIL recent/print-partial restored unpinned workspace got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  if [[ $restore_log == *'new-session -d -s lj-pin-keep'* ]]; then
-    print -u2 "FAIL recent/print-partial recreated live pin got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-  expect recent/print-partial-names $'lj-pin-keep\nlj-pin-gone\nws-live' "$got"
-
-  # Nothing restoreable and no live sessions: still empty.
-  : >"$tmux_log"
-  mock_live=()
-  mock_activity=()
-  snap_names=()
-  snap_cwd=()
-  snap_occupied=()
-  snap_workspace=()
-  snap_cmd=()
-  snap_attached=()
-  save_session_snapshot
-  : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
-  tmuxx() { recent_list_tmuxx "$@" }
-  if print_recent_names 5 >/dev/null; then
-    print -u2 "FAIL recent/print-none listed names"
-    (( fails++ ))
-  fi
-  restore_log=$(<"$tmux_log")
-  if [[ $restore_log == *'new-session -d -s '* ]]; then
-    print -u2 "FAIL recent/print-none restored sessions got=$(printf %q "$restore_log")"
-    (( fails++ ))
-  fi
-
-  # #134: list/--print-sessions must restore like last/work before listing.
+  # #134: list/--print-sessions must restore like work before listing.
   if [[ ${functions[print_session_list]:-} != *should_restore_sessions* ]]; then
     print -u2 "FAIL list/print missing should_restore_sessions got=$(printf %q "${functions[print_session_list]:-}")"
     (( fails++ ))
@@ -5126,31 +5148,6 @@ pick_selftest() {
     command "$TMUX_BIN" "$@" </dev/null
   }
 
-  recent_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-recent.XXXXXX")
-  HOME=$recent_home
-  mkdir -p "$HOME/Library/Application Support/lanjump"
-  tmuxx() {
-    if [[ $1 == list-sessions ]]; then
-      print -r -- $'100\toldest'
-      print -r -- $'300\tnewest'
-      print -r -- $'200\tmiddle'
-      return 0
-    fi
-    return 1
-  }
-  HAS_TMUX=1
-  got=$(print_recent_names 5)
-  expect recent/order $'newest\nmiddle\noldest' "$got"
-  got=$(print_recent_names 2)
-  expect recent/limit $'newest\nmiddle' "$got"
-  tmuxx() { return 1 }
-  if print_recent_names 5 >/dev/null; then
-    print -u2 "FAIL recent/empty listed names"
-    (( fails++ ))
-  fi
-  HOME=$oldhome
-  rm -rf "$recent_home"
-
   if session_name_invalid ''; then
     print -u2 "FAIL name/empty auto-name rejected"
     (( fails++ ))
@@ -5210,6 +5207,92 @@ pick_selftest() {
     (( fails++ ))
   fi
   expect name/cli-flag-colon "名称不能包含冒号或点。" "$err"
+
+  # #479: --new-auto names, dedups, and chooses cwd on this machine.
+  if (( ! ${+functions[new_auto_session]} )); then
+    print -u2 "FAIL new-auto/missing new_auto_session"
+    (( fails++ ))
+  else
+    oldhome=$HOME
+    auto_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-auto.XXXXXX")
+    HOME=$auto_home
+    mkdir -p "$HOME/Documents/projects/lanjump-2" "$HOME/Library/Application Support/lanjump"
+    auto_log=$auto_home/tmux.log
+    : >"$auto_log"
+    HAS_TMUX=1
+    typeset -A auto_live
+    auto_live=()
+    tmux_state_invalidate
+    _auto_have_tmuxx=0
+    if (( ${+functions[tmuxx]} )); then
+      functions -c tmuxx _auto_save_tmuxx
+      _auto_have_tmuxx=1
+    fi
+    tmuxx() {
+      print -r -- "$*" >>"$auto_log"
+      case $1 in
+        list-sessions) return 1 ;;
+        has-session)
+          local n=${@[-1]#=}
+          (( ${auto_live[$n]:-0} ))
+          ;;
+        *) return 0 ;;
+      esac
+    }
+    st=0
+    err=$(new_auto_session 'web.api' '/tmp/lj-explicit' 2>&1) || st=$?
+    if (( st == 0 )); then
+      print -u2 "FAIL new-auto/dot status got 0"
+      (( fails++ ))
+    fi
+    expect new-auto/dot "名称不能包含冒号或点。" "$err"
+    : >"$auto_log"
+    got=$(new_auto_session lanjump /tmp/lj-explicit) || got=
+    expect new-auto/name lanjump "$got"
+    restore_log=$(<"$auto_log")
+    if [[ $restore_log != *'new-session -d -s lanjump -c /tmp/lj-explicit'* ]]; then
+      print -u2 "FAIL new-auto/cwd missing explicit dir got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    if [[ $restore_log == *'Documents/projects'* ]]; then
+      print -u2 "FAIL new-auto/cwd used project dir got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    auto_live[lanjump]=1
+    auto_live[lanjump-2]=1
+    tmux_state_invalidate
+    : >"$auto_log"
+    got=$(new_auto_session lanjump /tmp/lj-explicit) || got=
+    expect new-auto/dedup lanjump-3 "$got"
+    restore_log=$(<"$auto_log")
+    if [[ $restore_log != *'new-session -d -s lanjump-3 -c /tmp/lj-explicit'* ]]; then
+      print -u2 "FAIL new-auto/dedup-cwd got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    auto_live=()
+    auto_live[demo]=1
+    tmux_state_invalidate
+    mkdir -p "$HOME/Documents/projects/demo-2"
+    : >"$auto_log"
+    got=$(new_auto_session demo) || got=
+    expect new-auto/remote-name demo-2 "$got"
+    restore_log=$(<"$auto_log")
+    if [[ $restore_log != *"-c $HOME/Documents/projects/demo-2"* ]]; then
+      print -u2 "FAIL new-auto/remote-cwd got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    if [[ $restore_log == *'/tmp/lj-explicit'* ]]; then
+      print -u2 "FAIL new-auto/remote used local cwd got=$(printf %q "$restore_log")"
+      (( fails++ ))
+    fi
+    HOME=$oldhome
+    if (( _auto_have_tmuxx )); then
+      functions -c _auto_save_tmuxx tmuxx
+      unfunction _auto_save_tmuxx
+    fi
+    unset auto_live
+    rm -rf "$auto_home"
+  fi
 
   # #103: picker n named-create must use project dir as tmux -c.
   if [[ ${functions[prompt_new]} != *resolve_session_cwd* && ${functions[prompt_new]} != *create_named_session* ]]; then
@@ -6131,6 +6214,10 @@ pick_selftest() {
         [[ -n ${TEST_PANE_LIST:-} ]] && print -r -- "$TEST_PANE_LIST"
         ;;
       send-keys|select-window|select-pane) return 0 ;;
+      new-window)
+        print -r -- '@9'
+        return 0
+        ;;
       *) return 0 ;;
     esac
   }
@@ -6240,6 +6327,71 @@ pick_selftest() {
     print -u2 "FAIL grok/start-no-tty --start-grok still needs tty"
     (( fails++ ))
   fi
+  if pick_needs_tty --start-grok-new || pick_needs_tty --new-auto; then
+    print -u2 "FAIL grok/new-auto-tty still needs tty"
+    (( fails++ ))
+  fi
+
+  # #479: -G never uses grok -c and does not steal an existing grok pane.
+  TEST_GROK_DIR=1
+  TEST_PANE_CMD=zsh
+  TEST_PANE_LIST=
+  : >"$grok_log"
+  start_grok_new_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log != *'send-keys -t =demo:. -- grok Enter'* ]]; then
+    print -u2 "FAIL grok-new/idle missing fresh grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'grok -c'* || $restore_log == *'new-window'* ]]; then
+    print -u2 "FAIL grok-new/idle used -c or new-window got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  TEST_GROK_DIR=0
+
+  TEST_PANE_LIST=$'%1\tzsh\n%2\tgrok'
+  TEST_PANE_CMD=zsh
+  TEST_PANE_CWD=/tmp/typed-cwd
+  : >"$grok_log"
+  start_grok_new_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* || $restore_log == *'select-window -t %2'* ]]; then
+    print -u2 "FAIL grok-new/existing disturbed grok got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'new-window -P -F #{window_id} -t =demo -c /tmp/typed-cwd grok'* ]]; then
+    print -u2 "FAIL grok-new/existing missing new-window got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log == *'grok -c'* ]]; then
+    print -u2 "FAIL grok-new/existing used grok -c got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  if [[ $restore_log != *'select-window -t @9'* ]]; then
+    print -u2 "FAIL grok-new/existing missing select got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  TEST_PANE_LIST=
+  TEST_PANE_CMD=vim
+  : >"$grok_log"
+  start_grok_new_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log != *'new-window'* || $restore_log == *'send-keys'* ]]; then
+    print -u2 "FAIL grok-new/busy missing new-window got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+
+  TEST_PANE_CMD=grok
+  : >"$grok_log"
+  start_grok_new_session demo
+  restore_log=$(<"$grok_log")
+  if [[ $restore_log == *'send-keys'* || $restore_log != *'new-window'* ]]; then
+    print -u2 "FAIL grok-new/current-grok disturbed pane got=$(printf %q "$restore_log")"
+    (( fails++ ))
+  fi
+  TEST_PANE_CMD=zsh
+  TEST_PANE_LIST=
   rm -f "$grok_log"
 
   # #173: Apple Terminal color prep must not disable RGB for other clients.
