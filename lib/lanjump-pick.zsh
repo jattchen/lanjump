@@ -1341,7 +1341,8 @@ start_grok_new_session() {
   if session_has_grok "$session" || ! pane_is_idle_shell "$live"; then
     nw=(new-window -P -F '#{window_id}' -t "=$session")
     [[ -n $pane_cwd ]] && nw+=(-c "$pane_cwd")
-    nw+=(-- "${(q)bin}")
+    # tmux 3.7c rejects `--`. One shell-command argument; quote the path inside it.
+    nw+=("${(q)bin}")
     wid=$(tmuxx "${nw[@]}") || return 1
     wid=${wid##*$'\n'}
     [[ -n $wid ]] && tmuxx select-window -t "$wid"

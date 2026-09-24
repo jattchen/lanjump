@@ -6362,7 +6362,7 @@ pick_selftest() {
     print -u2 "FAIL grok-new/existing disturbed grok got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi
-  if [[ $restore_log != *'new-window -P -F #{window_id} -t =demo -c /tmp/typed-cwd -- grok'* ]]; then
+  if [[ $restore_log != *'new-window -P -F #{window_id} -t =demo -c /tmp/typed-cwd grok'* ]]; then
     print -u2 "FAIL grok-new/existing missing new-window got=$(printf %q "$restore_log")"
     (( fails++ ))
   fi

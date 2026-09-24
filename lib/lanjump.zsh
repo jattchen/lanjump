@@ -3731,9 +3731,10 @@ cli_dispatch() {
         fi
       fi
       # Mark before attach: remote SSH blocks until it returns.
-      # -g already started grok; --shell skips maybe_resume.
+      # -g/-G already started grok; --shell skips maybe_resume so -G
+      # does not select an older grok pane.
       mark_last "$host"
-      cli_attach_one "$host" "$session" $(( grok || shell )) || return 1
+      cli_attach_one "$host" "$session" $(( grok || grok_new || shell )) || return 1
       mark_last "$host"
       ;;
     pin)

@@ -1570,15 +1570,16 @@ if (( st != 0 )); then
   (( fails++ ))
 fi
 expect_contains go-auto-G/pick 'PICK --start-grok-new auto7' "$hay"
-expect_absent go-auto-G/no-shell 'PICK_EXEC --attach --shell' "$hay"
-expect_contains go-auto-G/attach 'PICK_EXEC --attach auto7' "$hay"
+expect_contains go-auto-G/shell 'PICK_EXEC --attach --shell auto7' "$hay"
+expect_absent go-auto-G/no-resume 'PICK_EXEC --attach auto7' "$hay"
 
 : >"$log"
 st=0
 cli_dispatch go demo -G >/dev/null || st=$?
 hay=$(read_log)
 expect_contains go-exist-G/pick 'PICK --start-grok-new demo' "$hay"
-expect_contains go-exist-G/attach 'PICK_EXEC --attach demo' "$hay"
+expect_contains go-exist-G/shell 'PICK_EXEC --attach --shell demo' "$hay"
+expect_absent go-exist-G/no-resume 'PICK_EXEC --attach demo' "$hay"
 expect_absent go-exist-G/no-old 'PICK --start-grok demo' "$hay"
 
 : >"$log"
