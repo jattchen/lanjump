@@ -8599,6 +8599,120 @@ zsystem flock -u fd
   rm -rf "$lock467_hold_home"
   unset -f extract_lock_fn
 
+  # #485: $(fn) strips every trailing newline. short_path and short_command_name
+  # still print those bytes. useful_summary strips the command name the way
+  # $(short_command_name) did, and the list/snapshot/restore readers strip too.
+  {
+    local p485_home p485_saved_home p485_file p485_got p485_scope
+    local -a p485_roots
+    local -i p485_st p485_has=$HAS_TMUX p485_filter=$filter_on
+    p485_saved_home=$HOME
+    p485_roots=("${project_roots[@]}")
+    p485_scope=$view_scope
+    p485_home=$(mktemp -d "${TMPDIR:-/tmp}/lanjump-485.XXXXXX") || return 1
+    p485_file=$p485_home/out
+    HOME=$p485_home
+    mkdir -p "$HOME/Library/Application Support/lanjump"
+    p485_capture() {
+      local fn=$1
+      shift
+      "$fn" "$@" >"$p485_file"
+      p485_st=$?
+      IFS= read -r -d '' p485_got <"$p485_file" || true
+    }
+    REPLY=sentinel
+    p485_capture short_path $'/trailing\n'
+    expect fmt/path-nl-st 0 "$p485_st"
+    expect fmt/path-nl-bytes $'/trailing\n\n' "$p485_got"
+    expect fmt/path-nl-reply sentinel "$REPLY"
+    REPLY=sentinel
+    p485_capture short_command_name $'/trailing\n'
+    expect fmt/cmd-nl-st 0 "$p485_st"
+    expect fmt/cmd-nl-bytes $'trailing\n\n' "$p485_got"
+    expect fmt/cmd-nl-reply sentinel "$REPLY"
+    REPLY=sentinel
+    p485_capture useful_summary 'ignored' $'/trailing\n' ''
+    expect fmt/summary-nl-st 0 "$p485_st"
+    expect fmt/summary-nl-bytes $'trailing\n' "$p485_got"
+    expect fmt/summary-nl-reply sentinel "$REPLY"
+    p485_capture useful_summary 'ignored' $'/bin/grok-1\n\n' zsh
+    expect fmt/summary-grok-nl-bytes $'grok\n' "$p485_got"
+    p485_capture useful_summary 'ignored' $'/\n' $'title\n'
+    expect fmt/summary-wname-nl-bytes $'title\n\n' "$p485_got"
+    expect fmt/summary-nl-sub trailing "$(useful_summary ignored $'/trailing\n' '')"
+
+    pinned_names=(nl 4 bmx-bot)
+    pinned_cwd=()
+    snap_cwd=()
+    pinned_cwd[nl]=$'/opt/pin\n\n'
+    pinned_cwd[4]=/tmp/four
+    collect_restore_names
+    expect fmt/restore-nl-names nl "${restore_names[*]}"
+    expect fmt/restore-nl-cwd /opt/pin "${restore_cwd[nl]}"
+    if [[ ${restore_cwd[nl]} == *$'\n'* ]]; then
+      print -u2 "FAIL fmt/restore-nl-cwd kept a newline"
+      (( fails++ ))
+    fi
+
+    functions -c tmux_state_load _p485_state_load
+    tmux_state_load() {
+      tm_names=(nl)
+      tm_live=([nl]=1)
+      tm_path=([nl]=$'/trailing\n')
+      tm_cmd=([nl]=$'/trailing\n')
+      tm_att=([nl]=0)
+      tm_activity=([nl]=100)
+      tm_windows=([nl]=1)
+      tm_wname=([nl]=zsh)
+      tm_title=([nl]=title)
+      tm_server_up=1
+      tm_list_rows=1
+      tm_state_dirty=0
+      (( ++tm_state_gen ))
+      tm_state_src=${functions[tmuxx]:-}
+    }
+    HAS_TMUX=1
+    filter_on=0
+    view_scope=all
+    : >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    print -r -- $'name nl\ncwd /opt/stay\n\n' >"$HOME/Library/Application Support/lanjump/pinned-sessions"
+    tmux_state_invalidate
+    pin_cwd_refreshed_gen=-1
+    load_items
+    local -i p485_i p485_found=0
+    for (( p485_i = 1; p485_i <= ${#items_id}; p485_i++ )); do
+      [[ ${items_id[$p485_i]} == nl ]] || continue
+      p485_found=1
+      expect fmt/list-nl-path /trailing "${items_path[$p485_i]}"
+      expect fmt/list-nl-summary trailing "${items_summary[$p485_i]}"
+      if [[ ${items_path[$p485_i]} == *$'\n'* || ${items_summary[$p485_i]} == *$'\n'* ]]; then
+        print -u2 "FAIL fmt/list-nl kept a newline path=$(printf %q "${items_path[$p485_i]}") summary=$(printf %q "${items_summary[$p485_i]}")"
+        (( fails++ ))
+      fi
+    done
+    if (( ! p485_found )); then
+      print -u2 "FAIL fmt/list-nl missing session got=${items_id[*]}"
+      (( fails++ ))
+    fi
+    expect fmt/snap-nl-cwd /trailing "${snap_cwd[nl]:-}"
+    if [[ ${snap_cwd[nl]:-} == *$'\n'* ]]; then
+      print -u2 "FAIL fmt/snap-nl-cwd kept a newline"
+      (( fails++ ))
+    fi
+
+    functions -c _p485_state_load tmux_state_load
+    unset -f _p485_state_load p485_capture
+    HAS_TMUX=$p485_has
+    filter_on=$p485_filter
+    view_scope=$p485_scope
+    HOME=$p485_saved_home
+    project_roots=("${p485_roots[@]}")
+    unset 'pinned_cwd[nl]' 'snap_cwd[nl]'
+    pinned_names=()
+    tmux_state_invalidate
+    rm -rf "$p485_home"
+  }
+
   if (( fails )); then
     print -u2 "pick-selftest: $fails failed"
     return 1
