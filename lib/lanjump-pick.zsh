@@ -1153,30 +1153,79 @@ _padw() {
   printf -v REPLY '%s%*s' "$s" $(( width - d )) ''
 }
 
-short_path() {
+# In-process path/name helpers. The list, snapshot, and restore loops call
+# these and read REPLY. The printable wrappers below keep stdout, status,
+# and the caller's REPLY.
+# $(fn) drops every trailing newline. Callers that used to capture these
+# helpers must do the same; short_path and short_command_name still print
+# the raw bytes.
+_capture_reply() {
+  local s=$1
+  while [[ $s == *$'\n' ]]; do
+    s=${s%$'\n'}
+  done
+  REPLY=$s
+}
+
+_short_path() {
   local p=$1
   if [[ $p == "$HOME" ]]; then
-    print -r -- '~'
+    REPLY='~'
   elif [[ $p == "$HOME/"* ]]; then
-    print -r -- "~${p#$HOME}"
+    REPLY="~${p#$HOME}"
   else
-    print -r -- "$p"
+    REPLY=$p
   fi
 }
 
-short_command_name() {
+short_path() {
+  local out had=0 saved=
+  if (( ${+REPLY} )); then
+    had=1
+    saved=$REPLY
+  fi
+  _short_path "$1"
+  out=$REPLY
+  if (( had )); then
+    REPLY=$saved
+  else
+    unset REPLY
+  fi
+  print -r -- "$out"
+}
+
+_short_command_name() {
   local cmd=${1:-}
   cmd=${cmd##*/}
-  [[ -n $cmd ]] || { print -r -- ''; return }
+  if [[ -z $cmd ]]; then
+    REPLY=
+    return 0
+  fi
   if [[ $cmd == grok-* || $cmd == grok ]]; then
-    print -r -- grok
-    return
+    REPLY=grok
+    return 0
   fi
   if [[ $cmd == codex-* ]]; then
-    print -r -- codex
-    return
+    REPLY=codex
+    return 0
   fi
-  print -r -- "$cmd"
+  REPLY=$cmd
+}
+
+short_command_name() {
+  local out had=0 saved=
+  if (( ${+REPLY} )); then
+    had=1
+    saved=$REPLY
+  fi
+  _short_command_name "${1:-}"
+  out=$REPLY
+  if (( had )); then
+    REPLY=$saved
+  else
+    unset REPLY
+  fi
+  print -r -- "$out"
 }
 
 pane_is_shell() {
@@ -1210,38 +1259,105 @@ expand_project_root() {
   esac
 }
 
-session_project_dir() {
+# REPLY is the directory. _lj_spd_expanded is the last expanded root, which
+# the printable wrapper leaves in REPLY (not the directory itself).
+_lj_spd_expanded=
+typeset -i _lj_spd_saw=0
+
+_session_project_dir() {
   local n=$1 root d
+  _lj_spd_saw=0
+  _lj_spd_expanded=
   [[ -n $n ]] || return 1
   for root in "${project_roots[@]}"; do
     expand_project_root "$root"
     root=$REPLY
+    _lj_spd_expanded=$root
+    _lj_spd_saw=1
     [[ -n $root ]] || continue
     d="$root/$n"
-    [[ -d "$d" ]] || continue
-    print -r -- "$d"
+    [[ -d $d ]] || continue
+    REPLY=$d
     return 0
   done
+  REPLY=
   return 1
 }
 
-resolve_session_cwd() {
+session_project_dir() {
+  local n=$1 path st expanded had=0 saved=
+  [[ -n $n ]] || return 1
+  if (( ${+REPLY} )); then
+    had=1
+    saved=$REPLY
+  fi
+  _session_project_dir "$n"
+  st=$?
+  path=$REPLY
+  expanded=$_lj_spd_expanded
+  if (( _lj_spd_saw )); then
+    REPLY=$expanded
+  elif (( had )); then
+    REPLY=$saved
+  else
+    unset REPLY
+  fi
+  if (( st == 0 )); then
+    print -r -- "$path"
+  fi
+  return $st
+}
+
+_resolve_session_cwd() {
   local name=$1 live=${2:-}
   local pin=${pinned_cwd[$name]:-}
   local snap=${snap_cwd[$name]:-}
   local proj c
-  proj=$(session_project_dir "$name") || proj=
+  if _session_project_dir "$name"; then
+    _capture_reply "$REPLY"
+    proj=$REPLY
+  else
+    proj=
+  fi
   # Pin record wins over a leftover snapshot. Snapshot only fills a gap.
   for c in "$live" "$pin" "$snap"; do
     [[ -n $c ]] || continue
     cwd_is_home "$c" && continue
-    print -r -- "$c"
+    REPLY=$c
     return 0
   done
-  [[ -n $proj ]] && { print -r -- "$proj"; return 0 }
+  if [[ -n $proj ]]; then
+    REPLY=$proj
+    return 0
+  fi
   for c in "$live" "$pin" "$snap"; do
-    [[ -n $c ]] && { print -r -- "$c"; return 0 }
+    if [[ -n $c ]]; then
+      REPLY=$c
+      return 0
+    fi
   done
+  REPLY=
+  return 1
+}
+
+resolve_session_cwd() {
+  local out st had=0 saved=
+  if (( ${+REPLY} )); then
+    had=1
+    saved=$REPLY
+  fi
+  _resolve_session_cwd "$@"
+  st=$?
+  out=$REPLY
+  if (( had )); then
+    REPLY=$saved
+  else
+    unset REPLY
+  fi
+  if (( st == 0 )); then
+    print -r -- "$out"
+  fi
+  return $st
 }
 
 grok_bin() {
@@ -1356,17 +1472,34 @@ start_grok_new_session() {
   tmuxx send-keys -t "$target" -- "$bin" Enter
 }
 
-useful_summary() {
-  local title=$1 cmd=$2 wname=$3
-  local short
-  short=$(short_command_name "$cmd")
+_useful_summary() {
+  local title=$1 cmd=$2 wname=$3 short
+  _short_command_name "$cmd"
+  _capture_reply "$REPLY"
+  short=$REPLY
   if [[ -n $short ]]; then
-    print -r -- "$short"
+    REPLY=$short
   elif [[ -n $wname && $wname != zsh && $wname != bash ]]; then
-    print -r -- "$wname"
+    REPLY=$wname
   else
-    print -r -- '-'
+    REPLY='-'
   fi
+}
+
+useful_summary() {
+  local out had=0 saved=
+  if (( ${+REPLY} )); then
+    had=1
+    saved=$REPLY
+  fi
+  _useful_summary "$1" "$2" "$3"
+  out=$REPLY
+  if (( had )); then
+    REPLY=$saved
+  else
+    unset REPLY
+  fi
+  print -r -- "$out"
 }
 
 max_dw() {
@@ -2368,7 +2501,9 @@ restore_pinned_sessions() {
     [[ -n $name ]] || continue
     numeric_session_name "$name" && continue
     lanjump_foreign_session "$name" && continue
-    cwd=$(resolve_session_cwd "$name")
+    _resolve_session_cwd "$name"
+    _capture_reply "$REPLY"
+    cwd=$REPLY
     restore_one_missing_session "$name" "$cwd" || continue
   done
   tmux_server_running && tmux_install_snapshot_hooks
@@ -2689,7 +2824,9 @@ snapshot_live_sessions() {
     snap_names+=("$name")
     # resolve skips $HOME; keep the previous recorded cwd across that skip.
     snap_cwd[$name]=${prev_cwd[$name]:-}
-    snap_cwd[$name]=$(resolve_session_cwd "$name" "${cwd:-${prev_cwd[$name]:-}}")
+    _resolve_session_cwd "$name" "${cwd:-${prev_cwd[$name]:-}}"
+    _capture_reply "$REPLY"
+    snap_cwd[$name]=$REPLY
     snap_occupied[$name]=$att
     snap_cmd[$name]=$cmd
     if lanjump_foreign_session "$name"; then
@@ -2773,7 +2910,9 @@ collect_restore_names() {
     (( ${seen[$n]:-0} )) && continue
     seen[$n]=1
     restore_names+=("$n")
-    restore_cwd[$n]=$(resolve_session_cwd "$n")
+    _resolve_session_cwd "$n"
+    _capture_reply "$REPLY"
+    restore_cwd[$n]=$REPLY
   done
 }
 
@@ -4216,8 +4355,12 @@ load_items() {
       items_name+=("$n")
       items_att+=("${tm_att[$n]:-0}")
       items_time+=("$when")
-      items_path+=("$(short_path "${tm_path[$n]:-}")")
-      items_summary+=("$(useful_summary "$title" "$cmd" "$wname")")
+      _short_path "${tm_path[$n]:-}"
+      _capture_reply "$REPLY"
+      items_path+=("$REPLY")
+      _useful_summary "$title" "$cmd" "$wname"
+      _capture_reply "$REPLY"
+      items_summary+=("$REPLY")
       session_titles[$n]=$title
       items_cmd+=("$cmd")
       items_activity+=("$act")
