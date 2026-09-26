@@ -1240,6 +1240,408 @@ EOF
     (( fails++ ))
   fi
 
+  # #484: save_hosts failure must restore awk's $2, including when the
+  # old block separates the keyword and value with several spaces.
+  # A HostName line with no value wins even if a later line has one,
+  # and that empty snapshot removes the block.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01' 2222
+  {
+    print -r -- '# BEGIN LANJUMP lanjump-office'
+    print -r -- 'Host lanjump-office'
+    print -r -- '  HostName    10.0.0.8'
+    print -r -- '  User    original'
+    print -r -- '  Port    2201'
+    print -r -- '# END LANJUMP lanjump-office'
+  } >"$SSH_CONFIG"
+  s_alias=()
+  s_host=(office.local)
+  s_ip=(10.0.0.81)
+  s_mac=('aa:bb:cc:dd:ee:01')
+  s_port=(2233)
+  functions -c save_hosts _ssh484_save_spaces
+  save_hosts() { return 1 }
+  if persist_scan_hosts; then
+    print -u2 "FAIL ssh/scan-rollback-spaces persist returned 0"
+    (( fails++ ))
+  fi
+  functions -c _ssh484_save_spaces save_hosts
+  unfunction _ssh484_save_spaces
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  resolved_user=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="user"{print $2; exit}')
+  resolved_port=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="port"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.8 || $resolved_user != original || $resolved_port != 2201 ]]; then
+    print -u2 "FAIL ssh/scan-rollback-spaces want=10.0.0.8 original 2201 got=$(printf %q "$resolved_hn") $(printf %q "$resolved_user") $(printf %q "$resolved_port")"
+    (( fails++ ))
+  fi
+
+  {
+    print -r -- '# BEGIN LANJUMP lanjump-office'
+    print -r -- 'Host lanjump-office'
+    print -r -- '  HostName'
+    print -r -- '  HostName 10.0.0.8'
+    print -r -- '  User original'
+    print -r -- '  Port 2201'
+    print -r -- '# END LANJUMP lanjump-office'
+  } >"$SSH_CONFIG"
+  s_ip=(10.0.0.81)
+  s_port=(2233)
+  functions -c save_hosts _ssh484_save_missing
+  save_hosts() { return 1 }
+  if persist_scan_hosts; then
+    print -u2 "FAIL ssh/scan-rollback-missing-first persist returned 0"
+    (( fails++ ))
+  fi
+  functions -c _ssh484_save_missing save_hosts
+  unfunction _ssh484_save_missing
+  read_ssh
+  if [[ $ssh_got == *'Host lanjump-office'* ]]; then
+    print -u2 "FAIL ssh/scan-rollback-missing-first kept a block after empty HostName got=$(printf %q "$ssh_got")"
+    (( fails++ ))
+  fi
+
+  # #484: two canonical blocks in forward order, Host * after both.
+  # A prepend-the-whole-file compare reorders host 1..N and rewrites
+  # every time. Repeat scan must keep hosts and SSH inode, mtime, and bytes.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  upsert_host studio mac studio.local 10.0.0.9 'aa:bb:cc:dd:ee:02'
+  local ssh484_office ssh484_studio
+  ssh484_office=$(awk -v b='# BEGIN LANJUMP lanjump-office' -v e='# END LANJUMP lanjump-office' '
+    $0 == b { p = 1 }
+    p { print }
+    $0 == e { if (p) exit }
+  ' "$SSH_CONFIG")
+  ssh484_studio=$(awk -v b='# BEGIN LANJUMP lanjump-studio' -v e='# END LANJUMP lanjump-studio' '
+    $0 == b { p = 1 }
+    p { print }
+    $0 == e { if (p) exit }
+  ' "$SSH_CONFIG")
+  if [[ -z $ssh484_office || -z $ssh484_studio ]]; then
+    print -u2 "FAIL ssh/scan-noop-two missing canonical block"
+    (( fails++ ))
+  else
+    {
+      print -r -- "$ssh484_office"
+      print
+      print -r -- "$ssh484_studio"
+      print
+      print -r -- 'Host *'
+      print -r -- '  User global'
+      print -r -- '  Port 2222'
+    } >"$SSH_CONFIG"
+    chmod 600 "$SSH_CONFIG"
+    s_alias=()
+    s_host=(office.local studio.local)
+    s_ip=(10.0.0.8 10.0.0.9)
+    s_mac=('aa:bb:cc:dd:ee:01' 'aa:bb:cc:dd:ee:02')
+    s_port=(22 22)
+    local ssh484_si ssh484_sm ssh484_hi ssh484_hm
+    cp "$SSH_CONFIG" "$tmpdir/ssh484-ssh"
+    cp "$HOSTS_FILE" "$tmpdir/ssh484-hosts"
+    ssh484_si=$(stat -f %i "$SSH_CONFIG")
+    ssh484_sm=$(stat -f %Fm "$SSH_CONFIG")
+    ssh484_hi=$(stat -f %i "$HOSTS_FILE")
+    ssh484_hm=$(stat -f %Fm "$HOSTS_FILE")
+    if ! persist_scan_hosts; then
+      print -u2 "FAIL ssh/scan-noop-two persist_scan_hosts returned 1"
+      (( fails++ ))
+    fi
+    if [[ $(stat -f %i "$SSH_CONFIG") != "$ssh484_si" || $(stat -f %Fm "$SSH_CONFIG") != "$ssh484_sm" ]]; then
+      print -u2 "FAIL ssh/scan-noop-two SSH inode/mtime changed"
+      (( fails++ ))
+    fi
+    if [[ $(stat -f %i "$HOSTS_FILE") != "$ssh484_hi" || $(stat -f %Fm "$HOSTS_FILE") != "$ssh484_hm" ]]; then
+      print -u2 "FAIL ssh/scan-noop-two hosts inode/mtime changed"
+      (( fails++ ))
+    fi
+    if ! cmp -s "$SSH_CONFIG" "$tmpdir/ssh484-ssh"; then
+      print -u2 "FAIL ssh/scan-noop-two SSH bytes changed"
+      (( fails++ ))
+    fi
+    if ! cmp -s "$HOSTS_FILE" "$tmpdir/ssh484-hosts"; then
+      print -u2 "FAIL ssh/scan-noop-two hosts bytes changed"
+      (( fails++ ))
+    fi
+    read_ssh
+    if [[ $ssh_got != '# BEGIN LANJUMP lanjump-office'*'# BEGIN LANJUMP lanjump-studio'*'Host *'* ]]; then
+      print -u2 "FAIL ssh/scan-noop-two order changed got=$(printf %q "$ssh_got")"
+      (( fails++ ))
+    fi
+    resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+    resolved_user=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="user"{print $2; exit}')
+    if [[ $resolved_hn != 10.0.0.8 || $resolved_user != mac ]]; then
+      print -u2 "FAIL ssh/scan-noop-two/office want=10.0.0.8 mac got=$(printf %q "$resolved_hn") $(printf %q "$resolved_user")"
+      (( fails++ ))
+    fi
+    resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-studio 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+    resolved_user=$(ssh -G -F "$SSH_CONFIG" lanjump-studio 2>/dev/null | awk '$1=="user"{print $2; exit}')
+    if [[ $resolved_hn != 10.0.0.9 || $resolved_user != mac ]]; then
+      print -u2 "FAIL ssh/scan-noop-two/studio want=10.0.0.9 mac got=$(printf %q "$resolved_hn") $(printf %q "$resolved_user")"
+      (( fails++ ))
+    fi
+    s_ip=(10.0.0.81 10.0.0.9)
+    if ! persist_scan_hosts; then
+      print -u2 "FAIL ssh/scan-noop-two/ip-change persist returned 1"
+      (( fails++ ))
+    fi
+    read_ssh
+    expect_contains ssh/scan-noop-two/ip-new $'  HostName 10.0.0.81\n' "$ssh_got"
+    expect_contains ssh/scan-noop-two/studio-stays $'  HostName 10.0.0.9\n' "$ssh_got"
+    resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+    if [[ $resolved_hn != 10.0.0.81 ]]; then
+      print -u2 "FAIL ssh/scan-noop-two/ip-change want=10.0.0.81 got=$(printf %q "$resolved_hn")"
+      (( fails++ ))
+    fi
+    resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-studio 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+    if [[ $resolved_hn != 10.0.0.9 ]]; then
+      print -u2 "FAIL ssh/scan-noop-two/studio-ip want=10.0.0.9 got=$(printf %q "$resolved_hn")"
+      (( fails++ ))
+    fi
+  fi
+
+  # #484: complete block after Host * must still be prepended.
+  : >"$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.8 2200
+  local ssh484_block
+  ssh484_block=$(<"$SSH_CONFIG")
+  {
+    print -r -- 'Host *'
+    print -r -- '  User global'
+    print -r -- '  Port 2222'
+    print -r -- "$ssh484_block"
+  } >"$SSH_CONFIG"
+  chmod 600 "$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.8 2200
+  read_ssh
+  if [[ $ssh_got != '# BEGIN LANJUMP lanjump-office'*'Host *'* ]]; then
+    print -u2 "FAIL ssh/scan-noop-host-star LANJUMP must precede Host * got=$(printf %q "$ssh_got")"
+    (( fails++ ))
+  fi
+  resolved_user=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="user"{print $2; exit}')
+  resolved_port=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="port"{print $2; exit}')
+  if [[ $resolved_user != mac || $resolved_port != 2200 ]]; then
+    print -u2 "FAIL ssh/scan-noop-host-star/wins want=mac 2200 got=$(printf %q "$resolved_user") $(printf %q "$resolved_port")"
+    (( fails++ ))
+  fi
+
+  # #484: Include before a canonical block is not a proven-safe prefix.
+  : >"$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.8
+  ssh484_block=$(<"$SSH_CONFIG")
+  {
+    print -r -- 'Include /tmp/lanjump-not-a-real-file'
+    print -r -- "$ssh484_block"
+  } >"$SSH_CONFIG"
+  chmod 600 "$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.8
+  read_ssh
+  if [[ $ssh_got != '# BEGIN LANJUMP lanjump-office'*'Include /tmp/lanjump-not-a-real-file'* ]]; then
+    print -u2 "FAIL ssh/scan-noop-include unknown prefix must still rewrite got=$(printf %q "$ssh_got")"
+    (( fails++ ))
+  fi
+
+  # #484: a short block in front of a canonical one is not canonical.
+  upsert_ssh_config lanjump-studio mac 10.0.0.9
+  ssh484_studio=$(awk -v b='# BEGIN LANJUMP lanjump-studio' -v e='# END LANJUMP lanjump-studio' '
+    $0 == b { p = 1 }
+    p { print }
+    $0 == e { if (p) exit }
+  ' "$SSH_CONFIG")
+  {
+    print -r -- '# BEGIN LANJUMP lanjump-office'
+    print -r -- 'Host lanjump-office'
+    print -r -- '  HostName 10.0.0.8'
+    print -r -- '  User mac'
+    print -r -- '# END LANJUMP lanjump-office'
+    print
+    print -r -- "$ssh484_studio"
+    print
+  } >"$SSH_CONFIG"
+  chmod 600 "$SSH_CONFIG"
+  upsert_ssh_config lanjump-studio mac 10.0.0.9
+  read_ssh
+  if [[ $ssh_got != '# BEGIN LANJUMP lanjump-studio'* ]]; then
+    print -u2 "FAIL ssh/scan-noop-short-prefix studio must be rewritten before the short block got=$(printf %q "$ssh_got")"
+    (( fails++ ))
+  fi
+
+  # #484: missing IdentityFile is not a complete block.
+  : >"$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.8
+  awk '!/IdentityFile/' "$SSH_CONFIG" >"$tmpdir/ssh484-cut"
+  cat "$tmpdir/ssh484-cut" >"$SSH_CONFIG"
+  chmod 600 "$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.8
+  read_ssh
+  expect_contains ssh/scan-noop-incomplete 'IdentityFile' "$ssh_got"
+
+  # #484: two copies of one canonical block are still collapsed.
+  : >"$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.8
+  ssh484_block=$(<"$SSH_CONFIG")
+  {
+    print -r -- "$ssh484_block"
+    print
+    print -r -- "$ssh484_block"
+  } >"$SSH_CONFIG"
+  chmod 600 "$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.8
+  read_ssh
+  local ssh484_begins
+  ssh484_begins=$(grep -c '^# BEGIN LANJUMP lanjump-office$' "$SSH_CONFIG" || true)
+  if [[ $ssh484_begins != 1 ]]; then
+    print -u2 "FAIL ssh/scan-noop-duplicate begins=$ssh484_begins"
+    (( fails++ ))
+  fi
+
+  # #484: identical hosts bytes still tighten 0644 → 0600 (mktemp mode)
+  # without replacing the file. A symlink stays a symlink; the target
+  # inode/mtime do not change. chmod failure is a failed save.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01'
+  chmod 644 "$HOSTS_FILE"
+  local ssh484_hi ssh484_hm ssh484_mode
+  cp "$HOSTS_FILE" "$tmpdir/ssh484-hosts-mode"
+  ssh484_hi=$(stat -f %i "$HOSTS_FILE")
+  ssh484_hm=$(stat -f %Fm "$HOSTS_FILE")
+  load_hosts
+  if ! save_hosts; then
+    print -u2 "FAIL ssh/scan-noop-hosts-mode save_hosts returned 1"
+    (( fails++ ))
+  fi
+  ssh484_mode=$(stat -L -f '%Lp' "$HOSTS_FILE")
+  if [[ $ssh484_mode != 600 ]]; then
+    print -u2 "FAIL ssh/scan-noop-hosts-mode mode=$ssh484_mode want=600"
+    (( fails++ ))
+  fi
+  if [[ $(stat -f %i "$HOSTS_FILE") != "$ssh484_hi" || $(stat -f %Fm "$HOSTS_FILE") != "$ssh484_hm" ]]; then
+    print -u2 "FAIL ssh/scan-noop-hosts-mode inode/mtime changed while tightening mode"
+    (( fails++ ))
+  fi
+  if ! cmp -s "$HOSTS_FILE" "$tmpdir/ssh484-hosts-mode"; then
+    print -u2 "FAIL ssh/scan-noop-hosts-mode bytes changed"
+    (( fails++ ))
+  fi
+
+  mkdir -p "$tmpdir/ssh484-dot"
+  mv "$HOSTS_FILE" "$tmpdir/ssh484-dot/hosts"
+  ln -s "$tmpdir/ssh484-dot/hosts" "$HOSTS_FILE"
+  chmod 644 "$tmpdir/ssh484-dot/hosts"
+  ssh484_hi=$(stat -f %i "$tmpdir/ssh484-dot/hosts")
+  ssh484_hm=$(stat -f %Fm "$tmpdir/ssh484-dot/hosts")
+  load_hosts
+  if ! save_hosts; then
+    print -u2 "FAIL ssh/scan-noop-hosts-symlink save_hosts returned 1"
+    (( fails++ ))
+  fi
+  if [[ ! -L $HOSTS_FILE ]]; then
+    print -u2 "FAIL ssh/scan-noop-hosts-symlink dest is no longer a symlink"
+    (( fails++ ))
+  fi
+  local ssh484_hosts_want="$tmpdir/ssh484-dot/hosts"
+  if [[ ${HOSTS_FILE:A} != ${ssh484_hosts_want:A} ]]; then
+    print -u2 "FAIL ssh/scan-noop-hosts-symlink target changed got=$(printf %q "${HOSTS_FILE:A}")"
+    (( fails++ ))
+  fi
+  ssh484_mode=$(stat -L -f '%Lp' "$HOSTS_FILE")
+  if [[ $ssh484_mode != 600 ]]; then
+    print -u2 "FAIL ssh/scan-noop-hosts-symlink mode=$ssh484_mode want=600"
+    (( fails++ ))
+  fi
+  if [[ $(stat -f %i "$tmpdir/ssh484-dot/hosts") != "$ssh484_hi" || $(stat -f %Fm "$tmpdir/ssh484-dot/hosts") != "$ssh484_hm" ]]; then
+    print -u2 "FAIL ssh/scan-noop-hosts-symlink target inode/mtime changed"
+    (( fails++ ))
+  fi
+
+  chmod 644 "$tmpdir/ssh484-dot/hosts"
+  chmod() {
+    if [[ $1 == 600 ]]; then
+      return 1
+    fi
+    command chmod "$@"
+  }
+  load_hosts
+  if save_hosts; then
+    print -u2 "FAIL ssh/scan-noop-hosts-chmod save_hosts returned 0 after chmod failure"
+    (( fails++ ))
+  fi
+  unfunction chmod
+  ssh484_mode=$(stat -L -f '%Lp' "$HOSTS_FILE")
+  if [[ $ssh484_mode != 644 ]]; then
+    print -u2 "FAIL ssh/scan-noop-hosts-chmod mode changed on failure mode=$ssh484_mode"
+    (( fails++ ))
+  fi
+
+  # #484: SSH noop tightens 0644 and reports chmod failure. Symlink stays.
+  rm -f "$SSH_CONFIG"
+  upsert_ssh_config lanjump-office mac 10.0.0.8
+  chmod 644 "$SSH_CONFIG"
+  ssh484_hi=$(stat -f %i "$SSH_CONFIG")
+  ssh484_hm=$(stat -f %Fm "$SSH_CONFIG")
+  cp "$SSH_CONFIG" "$tmpdir/ssh484-ssh-mode"
+  if ! upsert_ssh_config lanjump-office mac 10.0.0.8; then
+    print -u2 "FAIL ssh/scan-noop-ssh-mode upsert returned 1"
+    (( fails++ ))
+  fi
+  ssh484_mode=$(stat -L -f '%Lp' "$SSH_CONFIG")
+  if [[ $ssh484_mode != 600 ]]; then
+    print -u2 "FAIL ssh/scan-noop-ssh-mode mode=$ssh484_mode want=600"
+    (( fails++ ))
+  fi
+  if [[ $(stat -f %i "$SSH_CONFIG") != "$ssh484_hi" || $(stat -f %Fm "$SSH_CONFIG") != "$ssh484_hm" ]]; then
+    print -u2 "FAIL ssh/scan-noop-ssh-mode inode/mtime changed"
+    (( fails++ ))
+  fi
+  if ! cmp -s "$SSH_CONFIG" "$tmpdir/ssh484-ssh-mode"; then
+    print -u2 "FAIL ssh/scan-noop-ssh-mode bytes changed"
+    (( fails++ ))
+  fi
+
+  mkdir -p "$tmpdir/ssh484-sshdot"
+  mv "$SSH_CONFIG" "$tmpdir/ssh484-sshdot/config"
+  ln -s "$tmpdir/ssh484-sshdot/config" "$SSH_CONFIG"
+  chmod 644 "$tmpdir/ssh484-sshdot/config"
+  ssh484_hi=$(stat -f %i "$tmpdir/ssh484-sshdot/config")
+  if ! upsert_ssh_config lanjump-office mac 10.0.0.8; then
+    print -u2 "FAIL ssh/scan-noop-ssh-symlink upsert returned 1"
+    (( fails++ ))
+  fi
+  local ssh484_ssh_want="$tmpdir/ssh484-sshdot/config"
+  if [[ ! -L $SSH_CONFIG || ${SSH_CONFIG:A} != ${ssh484_ssh_want:A} ]]; then
+    print -u2 "FAIL ssh/scan-noop-ssh-symlink link changed"
+    (( fails++ ))
+  fi
+  ssh484_mode=$(stat -L -f '%Lp' "$SSH_CONFIG")
+  if [[ $ssh484_mode != 600 || $(stat -f %i "$tmpdir/ssh484-sshdot/config") != "$ssh484_hi" ]]; then
+    print -u2 "FAIL ssh/scan-noop-ssh-symlink mode=$ssh484_mode inode changed"
+    (( fails++ ))
+  fi
+
+  chmod 644 "$tmpdir/ssh484-sshdot/config"
+  chmod() {
+    if [[ $1 == 600 ]]; then
+      return 1
+    fi
+    command chmod "$@"
+  }
+  if upsert_ssh_config lanjump-office mac 10.0.0.8; then
+    print -u2 "FAIL ssh/scan-noop-ssh-chmod upsert returned 0 after chmod failure"
+    (( fails++ ))
+  fi
+  unfunction chmod
+  ssh484_mode=$(stat -L -f '%Lp' "$SSH_CONFIG")
+  if [[ $ssh484_mode != 644 ]]; then
+    print -u2 "FAIL ssh/scan-noop-ssh-chmod mode changed on failure mode=$ssh484_mode"
+    (( fails++ ))
+  fi
+
   # #314: two upsert_ssh_config writers read then replace the whole SSH file.
   # A reads, yields, then writes; B writes in the gap. Both Host blocks must remain.
   local ssh314_home ssh314_fn
