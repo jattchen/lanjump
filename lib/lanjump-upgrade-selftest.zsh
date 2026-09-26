@@ -922,11 +922,14 @@ if [[ ! -f $app419/last-session || $(<"$app419/last-session") != NEW-LAST-SESSIO
   fail "#419 switch discarded a last-session write after last recopy: $(<"$app419/last-session" 2>/dev/null || print missing)"
 fi
 
-# #430: #419 holds last_target/last-session locks on the upgrade side, but
-# mark_last / remember_last_session only replace_file_atomic. lock_write in
-# #419 already takes the sidecar, so it misses these writers. A connect or
-# session enter in the APP→APP.old window writes into the tree about to be
-# deleted unless the writers take the same locks.
+# #430: upgrade holds last_target/last-session locks across the APP→APP.old
+# rename. mark_last and remember_last_session must take those same locks,
+# or a write in that window lands on the tree about to be deleted. Two
+# writers are children of this shell. mv opens one gate, then one 3s wait
+# requires each writer to show entered or done. entered means the lock call
+# was reached, not that the lock was acquired. A handshake timeout is its
+# own failure: stop these writers, then wait reaps them. Exit codes on the
+# ok path come from wait in this shell.
 extract_zsh_func() {
   local file=$1 name=$2 line
   local -i depth=0 start=0
@@ -943,20 +946,43 @@ extract_zsh_func() {
   done <"$file"
   return 1
 }
+src430_main=$ROOT/lib/lanjump.zsh
+src430_pick=$ROOT/lib/lanjump-pick.zsh
 writer430=$(mktemp)
 {
   print -r -- 'emulate -L zsh'
   print -r -- 'setopt no_unset'
-  extract_zsh_func "$ROOT/lib/lanjump.zsh" replace_file_atomic
-  extract_zsh_func "$ROOT/lib/lanjump.zsh" with_data_file_lock
-  extract_zsh_func "$ROOT/lib/lanjump.zsh" mark_last
-  extract_zsh_func "$ROOT/lib/lanjump-pick.zsh" lanjump_data_dir
-  extract_zsh_func "$ROOT/lib/lanjump-pick.zsh" last_session_file
-  extract_zsh_func "$ROOT/lib/lanjump-pick.zsh" remember_last_session
-  print -r -- 'APP=$1'
-  print -r -- 'LAST_FILE=$APP/last_target'
-  print -r -- 'mark_last NEW-LAST-TARGET'
-  print -r -- 'remember_last_session NEW-LAST-SESSION'
+  print -r -- 'zmodload zsh/datetime'
+  print -r -- 'zmodload zsh/zselect'
+  extract_zsh_func "$src430_main" replace_file_atomic
+  extract_zsh_func "$src430_main" with_data_file_lock
+  extract_zsh_func "$src430_main" mark_last
+  extract_zsh_func "$src430_pick" lanjump_data_dir
+  extract_zsh_func "$src430_pick" last_session_file
+  extract_zsh_func "$src430_pick" remember_last_session
+  print -r -- 'functions -c with_data_file_lock _lj430_real_lock'
+  print -r -- 'with_data_file_lock() {'
+  print -r -- '  local tmp=${LJ430_ENTER}.tmp'
+  print -r -- '  print -r -- entered >"$tmp"'
+  print -r -- '  mv -f "$tmp" "$LJ430_ENTER"'
+  print -r -- '  _lj430_real_lock "$@"'
+  print -r -- '}'
+  print -r -- 'APP=$1 role=$2 LJ430_ENTER=$3 LJ430_DONE=$4 LJ430_GATE=$5 st=0'
+  print -r -- 'gate_deadline=$(( EPOCHREALTIME + 30 ))'
+  print -r -- 'while [[ ! -f $LJ430_GATE ]] && (( EPOCHREALTIME < gate_deadline )); do'
+  print -r -- '  zselect -t 5 || true'
+  print -r -- 'done'
+  print -r -- '[[ -f $LJ430_GATE ]] || exit 3'
+  print -r -- 'if [[ $role == mark ]]; then'
+  print -r -- '  LAST_FILE=$APP/last_target'
+  print -r -- '  mark_last NEW-LAST-TARGET || st=$?'
+  print -r -- 'else'
+  print -r -- '  remember_last_session NEW-LAST-SESSION || st=$?'
+  print -r -- 'fi'
+  print -r -- 'dtmp=${LJ430_DONE}.tmp'
+  print -r -- 'print -r -- done >"$dtmp"'
+  print -r -- 'mv -f "$dtmp" "$LJ430_DONE"'
+  print -r -- 'exit $st'
 } >"$writer430"
 home430=$(mktemp -d)
 mkdir -p "$home430/Desktop" "$home430/.ssh" "$home430/Library/Application Support"
@@ -968,6 +994,8 @@ mark430=$(mktemp -d)
 mvwrap430=$(mktemp -d)
 cat >"$mvwrap430/mv" <<EOF
 #!/bin/zsh
+zmodload zsh/datetime
+zmodload zsh/zselect
 src= dest=
 for a in "\$@"; do
   [[ \$a == -* ]] && continue
@@ -975,33 +1003,75 @@ for a in "\$@"; do
   dest=\$a
 done
 mark=$(printf %q "$mark430")
-writer=$(printf %q "$writer430")
+lj430_token() {
+  local f=\$1 want=\$2 got=
+  [[ -f \$f ]] || return 1
+  got=\$(<\$f) || return 1
+  [[ \$got == \$want ]]
+}
 if [[ -n \$src && -n \$dest && -d \$src && \${src:t} == lanjump && \${dest:t} == lanjump.old ]]; then
-  live=\$src
-  (
-    /bin/zsh "\$writer" "\$live"
-    : >"\$mark/wrote"
-  ) &!
-  for _ in {1..80}; do
-    [[ -f \$mark/wrote ]] && break
-    sleep 0.01
+  : >"\$mark/gate"
+  mark_ready=0
+  session_ready=0
+  deadline=\$(( EPOCHREALTIME + 3 ))
+  while (( EPOCHREALTIME < deadline )); do
+    if (( ! mark_ready )); then
+      if lj430_token "\$mark/mark.enter" entered || lj430_token "\$mark/mark.done" done; then
+        mark_ready=1
+      fi
+    fi
+    if (( ! session_ready )); then
+      if lj430_token "\$mark/session.enter" entered || lj430_token "\$mark/session.done" done; then
+        session_ready=1
+      fi
+    fi
+    (( mark_ready && session_ready )) && break
+    zselect -t 5 || true
   done
+  if (( mark_ready && session_ready )); then
+    print -r -- ok >"\$mark/handshake"
+  else
+    print -r -- "timeout mark=\$mark_ready session=\$session_ready" >"\$mark/handshake"
+  fi
   /bin/mv "\$@"
   exit \$?
 fi
 exec /bin/mv "\$@"
 EOF
 chmod 755 "$mvwrap430/mv"
+HOME=$home430 /bin/zsh "$writer430" "$app430" mark "$mark430/mark.enter" "$mark430/mark.done" "$mark430/gate" &
+mark_pid430=$!
+HOME=$home430 /bin/zsh "$writer430" "$app430" session "$mark430/session.enter" "$mark430/session.done" "$mark430/gate" &
+session_pid430=$!
+trap 'kill -KILL $mark_pid430 $session_pid430 2>/dev/null || true; wait $mark_pid430 $session_pid430 2>/dev/null || true' EXIT
 HOME=$home430 PATH="$mvwrap430:$PATH" /bin/zsh "$ROOT/install.zsh" >/dev/null
-for _ in {1..200}; do
-  [[ -f $mark430/wrote ]] && break
-  sleep 0.05
-done
-if [[ ! -f $app430/last_target || $(<"$app430/last_target") != NEW-LAST-TARGET ]]; then
-  fail "#430 mark_last wrote last_target into the tree about to be deleted: $(<"$app430/last_target" 2>/dev/null || print missing)"
+hand430=missing
+if [[ -f $mark430/handshake ]]; then
+  hand430=$(<$mark430/handshake)
 fi
-if [[ ! -f $app430/last-session || $(<"$app430/last-session") != NEW-LAST-SESSION ]]; then
-  fail "#430 remember_last_session wrote last-session into the tree about to be deleted: $(<"$app430/last-session" 2>/dev/null || print missing)"
+mark_st430=0
+session_st430=0
+if [[ $hand430 != ok ]]; then
+  kill -KILL $mark_pid430 2>/dev/null || true
+  kill -KILL $session_pid430 2>/dev/null || true
+  wait $mark_pid430 || mark_st430=$?
+  wait $session_pid430 || session_st430=$?
+  trap - EXIT
+  fail "#430 writer handshake timed out: $hand430 mark_wait=$mark_st430 session_wait=$session_st430"
+else
+  wait $mark_pid430 || mark_st430=$?
+  wait $session_pid430 || session_st430=$?
+  trap - EXIT
+  if (( mark_st430 )); then
+    fail "#430 mark_last writer exited $mark_st430"
+  elif [[ ! -f $app430/last_target || $(<"$app430/last_target") != NEW-LAST-TARGET ]]; then
+    fail "#430 mark_last wrote last_target into the tree about to be deleted: $(<"$app430/last_target" 2>/dev/null || print missing)"
+  fi
+  if (( session_st430 )); then
+    fail "#430 remember_last_session writer exited $session_st430"
+  elif [[ ! -f $app430/last-session || $(<"$app430/last-session") != NEW-LAST-SESSION ]]; then
+    fail "#430 remember_last_session wrote last-session into the tree about to be deleted: $(<"$app430/last-session" 2>/dev/null || print missing)"
+  fi
 fi
 
 # #338: piped/file:// tarball install has no git history in ROOT.
