@@ -8631,6 +8631,11 @@ zsystem flock -u fd
     expect fmt/cmd-nl-bytes $'trailing\n\n' "$p485_got"
     expect fmt/cmd-nl-reply sentinel "$REPLY"
     REPLY=sentinel
+    p485_capture short_command_name
+    expect fmt/cmd-none-st 0 "$p485_st"
+    expect fmt/cmd-none-bytes $'\n' "$p485_got"
+    expect fmt/cmd-none-reply sentinel "$REPLY"
+    REPLY=sentinel
     p485_capture useful_summary 'ignored' $'/trailing\n' ''
     expect fmt/summary-nl-st 0 "$p485_st"
     expect fmt/summary-nl-bytes $'trailing\n' "$p485_got"

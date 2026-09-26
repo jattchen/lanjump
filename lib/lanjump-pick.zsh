@@ -1218,7 +1218,7 @@ short_command_name() {
     had=1
     saved=$REPLY
   fi
-  _short_command_name "$1"
+  _short_command_name "${1:-}"
   out=$REPLY
   if (( had )); then
     REPLY=$saved
