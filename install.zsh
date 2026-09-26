@@ -245,26 +245,31 @@ run_bounded() {
   local -i secs=$1
   local outfile=$2
   shift 2
+  zmodload zsh/datetime
+  zmodload zsh/zselect
   "$@" >"$outfile" 2>&1 &
   local pid=$!
-  local -i i j
   local st=0
-  for (( i = 0; i < secs * 10; i++ )); do
+  local -F deadline
+  deadline=$(( EPOCHREALTIME + secs ))
+  while (( EPOCHREALTIME < deadline )); do
     if ! kill -0 $pid 2>/dev/null; then
       wait $pid 2>/dev/null || st=$?
       return $st
     fi
-    sleep 0.1
+    # -t is hundredths of a second: 5 = 50ms, in this process.
+    zselect -t 5 || true
   done
-  kill $pid 2>/dev/null || true
-  for (( j = 0; j < 10; j++ )); do
+  kill -TERM $pid 2>/dev/null || true
+  deadline=$(( EPOCHREALTIME + 1 ))
+  while (( EPOCHREALTIME < deadline )); do
     if ! kill -0 $pid 2>/dev/null; then
       wait $pid 2>/dev/null || true
       return 124
     fi
-    sleep 0.1
+    zselect -t 5 || true
   done
-  kill -9 $pid 2>/dev/null || true
+  kill -KILL $pid 2>/dev/null || true
   wait $pid 2>/dev/null || true
   return 124
 }
