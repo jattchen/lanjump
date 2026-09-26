@@ -1,0 +1,59 @@
+# Draft. On the diagnostic PR branch, place this file at
+# .github/workflows/dns-trace-490.yml. pull_request runs from that branch.
+# Do not merge to main first: workflow_dispatch only works after the file
+# is on the default branch. Do not re-run to seek a green sample.
+#
+# One macos-26 arm64 job, two samples, same runner:
+#   current tree lib/lanjump.zsh
+#   baseline b5ecb49ae71ce01f15f2652769a9ee97d334393f lib/lanjump.zsh
+# The failed main run was ImageVersion 20260907.0351.1. Record the actual
+# ImageVersion. If it differs, keep the sample and say so.
+# Read traces as evidence, not as a 500ms verdict: "sigterm" is the child
+# receiving the signal, and shell_epochrealtime is the shell wall clock.
+name: dns-trace-490
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pair:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record runner identity
+        run: |
+          {
+            echo "git $(git rev-parse HEAD)"
+            echo "image_os ${ImageOS:-}"
+            echo "image_version ${ImageVersion:-}"
+            echo "uname $(uname -sm)"
+            sw_vers
+          } | tee "$RUNNER_TEMP/identity.txt"
+
+      - name: Trace current once
+        run: zsh diag/dns-490-trace.zsh "$RUNNER_TEMP/current.trace"
+
+      - name: Trace baseline once
+        if: always()
+        run: |
+          git show b5ecb49ae71ce01f15f2652769a9ee97d334393f:lib/lanjump.zsh > "$RUNNER_TEMP/base-lanjump.zsh"
+          LJ_PRODUCT_ZSH="$RUNNER_TEMP/base-lanjump.zsh" zsh diag/dns-490-trace.zsh "$RUNNER_TEMP/base.trace"
+
+      - name: Upload traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dns-490-traces
+          path: |
+            ${{ runner.temp }}/identity.txt
+            ${{ runner.temp }}/current.trace
+            ${{ runner.temp }}/base.trace
+          if-no-files-found: warn
