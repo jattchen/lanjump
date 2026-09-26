@@ -1240,6 +1240,68 @@ EOF
     (( fails++ ))
   fi
 
+  # #484: save_hosts failure must restore awk's $2, including when the
+  # old block separates the keyword and value with several spaces.
+  # A HostName line with no value wins even if a later line has one,
+  # and that empty snapshot removes the block.
+  : >"$SSH_CONFIG"
+  : >"$HOSTS_FILE"
+  h_alias=() h_user=() h_hostname=() h_ip=() h_mac=() h_port=() h_ssh_id=() h_last=()
+  upsert_host office mac office.local 10.0.0.8 'aa:bb:cc:dd:ee:01' 2222
+  {
+    print -r -- '# BEGIN LANJUMP lanjump-office'
+    print -r -- 'Host lanjump-office'
+    print -r -- '  HostName    10.0.0.8'
+    print -r -- '  User    original'
+    print -r -- '  Port    2201'
+    print -r -- '# END LANJUMP lanjump-office'
+  } >"$SSH_CONFIG"
+  s_alias=()
+  s_host=(office.local)
+  s_ip=(10.0.0.81)
+  s_mac=('aa:bb:cc:dd:ee:01')
+  s_port=(2233)
+  functions -c save_hosts _ssh484_save_spaces
+  save_hosts() { return 1 }
+  if persist_scan_hosts; then
+    print -u2 "FAIL ssh/scan-rollback-spaces persist returned 0"
+    (( fails++ ))
+  fi
+  functions -c _ssh484_save_spaces save_hosts
+  unfunction _ssh484_save_spaces
+  resolved_hn=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="hostname"{print $2; exit}')
+  resolved_user=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="user"{print $2; exit}')
+  resolved_port=$(ssh -G -F "$SSH_CONFIG" lanjump-office 2>/dev/null | awk '$1=="port"{print $2; exit}')
+  if [[ $resolved_hn != 10.0.0.8 || $resolved_user != original || $resolved_port != 2201 ]]; then
+    print -u2 "FAIL ssh/scan-rollback-spaces want=10.0.0.8 original 2201 got=$(printf %q "$resolved_hn") $(printf %q "$resolved_user") $(printf %q "$resolved_port")"
+    (( fails++ ))
+  fi
+
+  {
+    print -r -- '# BEGIN LANJUMP lanjump-office'
+    print -r -- 'Host lanjump-office'
+    print -r -- '  HostName'
+    print -r -- '  HostName 10.0.0.8'
+    print -r -- '  User original'
+    print -r -- '  Port 2201'
+    print -r -- '# END LANJUMP lanjump-office'
+  } >"$SSH_CONFIG"
+  s_ip=(10.0.0.81)
+  s_port=(2233)
+  functions -c save_hosts _ssh484_save_missing
+  save_hosts() { return 1 }
+  if persist_scan_hosts; then
+    print -u2 "FAIL ssh/scan-rollback-missing-first persist returned 0"
+    (( fails++ ))
+  fi
+  functions -c _ssh484_save_missing save_hosts
+  unfunction _ssh484_save_missing
+  read_ssh
+  if [[ $ssh_got == *'Host lanjump-office'* ]]; then
+    print -u2 "FAIL ssh/scan-rollback-missing-first kept a block after empty HostName got=$(printf %q "$ssh_got")"
+    (( fails++ ))
+  fi
+
   # #484: two canonical blocks in forward order, Host * after both.
   # A prepend-the-whole-file compare reorders host 1..N and rewrites
   # every time. Repeat scan must keep hosts and SSH inode, mtime, and bytes.
