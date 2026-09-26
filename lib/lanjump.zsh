@@ -875,6 +875,10 @@ save_hosts() {
     unset _LANJUMP_HOSTS_LOCKED
     return $st
   fi
+  # #484: identical bytes skip the replace so a repeat scan keeps
+  # inode and mtime. Re-read here, under the hosts lock.
+  local tmp
+  tmp=$(mktemp) || return 1
   {
     print -r -- "# alias|user|hostname|ip|mac|port|ssh_id|last"
     for (( i = 1; i <= n; i++ )); do
@@ -884,7 +888,27 @@ save_hosts() {
         print -r -- "${h_alias[$i]}|${h_user[$i]//|/-}|${h_hostname[$i]//|/-}|${h_ip[$i]}|${h_mac[$i]}|${h_port[$i]:-22}|${h_last[$i]}"
       fi
     done
-  } | replace_file_atomic "$HOSTS_FILE"
+  } >"$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  if [[ -f $HOSTS_FILE ]] && cmp -s "$tmp" "$HOSTS_FILE"; then
+    rm -f "$tmp"
+    # replace_file_atomic writes a mktemp file, which is mode 0600, so a
+    # 0644 hosts file used to be tightened on the next save. Follow a
+    # symlink and chmod its target. Already-0600 skips chmod so inode
+    # and mtime stay unchanged and the target is not replaced.
+    local hosts_mode
+    hosts_mode=$(stat -L -f '%Lp' "$HOSTS_FILE" 2>/dev/null || stat -L -c '%a' "$HOSTS_FILE" 2>/dev/null || print 000)
+    if [[ $hosts_mode != 600 ]]; then
+      chmod 600 "$HOSTS_FILE" || return 1
+    fi
+    return 0
+  fi
+  cat "$tmp" | replace_file_atomic "$HOSTS_FILE"
+  st=$?
+  rm -f "$tmp"
+  return $st
 }
 
 # Scan persist: same protocol as upsert_host (#314). Reload under the
@@ -1288,7 +1312,10 @@ upsert_ssh_config() {
   local id=$1 user=$2 hostname=$3 port=${4:-22} st=0
   local begin="# BEGIN LANJUMP ${id}"
   local end="# END LANJUMP ${id}"
-  local tmp
+  local tmp ssh_raw ssh_expected ssh_actual ssh_oid ssh_mode
+  local -a ssh_lines
+  local -i ssh_noop=0 ssh_i=0 ssh_pos=0 ssh_k=0
+  local -i ssh_begin_n=0 ssh_end_n=0 ssh_begin_at=0 ssh_end_at=0
   if [[ -z ${_LANJUMP_SSH_LOCKED:-} ]]; then
     _LANJUMP_SSH_LOCKED=1
     with_data_file_lock "$SSH_CONFIG" upsert_ssh_config "$id" "$user" "$hostname" "$port"
@@ -1298,6 +1325,123 @@ upsert_ssh_config() {
   fi
   mkdir -p "$HOME/.ssh"
   [[ -f $SSH_CONFIG ]] || : >"$SSH_CONFIG"
+  # #484: noop only when this id's single block is already the managed
+  # text, and every line before it is blank or another canonical LANJUMP
+  # block for a different literal id. Host *, Match, Include, Host=,
+  # quotes and negation are not interpreted — that prefix takes the
+  # existing rewrite. Do not cmp a prepended copy of the whole file;
+  # walking host 1..N would reorder blocks and never match.
+  ssh_raw=$(<"$SSH_CONFIG")
+  ssh_lines=("${(@f)ssh_raw}")
+  for (( ssh_i = 1; ssh_i <= ${#ssh_lines}; ssh_i++ )); do
+    if [[ ${ssh_lines[ssh_i]} == "$begin" ]]; then
+      ssh_begin_n=$(( ssh_begin_n + 1 ))
+      if (( ssh_begin_n == 1 )); then
+        ssh_begin_at=$ssh_i
+      fi
+    elif [[ ${ssh_lines[ssh_i]} == "$end" ]]; then
+      ssh_end_n=$(( ssh_end_n + 1 ))
+      if (( ssh_begin_at > 0 && ssh_end_at == 0 )); then
+        ssh_end_at=$ssh_i
+      fi
+    fi
+  done
+  if (( ssh_begin_n == 1 && ssh_end_n == 1 && ssh_end_at > ssh_begin_at )); then
+    ssh_expected=$(
+      print "$begin"
+      print "Host ${id}"
+      print -r -- "  HostName ${hostname}"
+      if [[ -n $port && $port != 22 ]]; then
+        print -r -- "  Port ${port}"
+      fi
+      print -r -- "  User ${user}"
+      print "  IdentityFile ${KEY}"
+      print "  IdentitiesOnly yes"
+      print "  AddKeysToAgent yes"
+      print "  UseKeychain yes"
+      print "  AddressFamily inet"
+      print "  StrictHostKeyChecking accept-new"
+      print "  ConnectTimeout 8"
+      print "$end"
+      print -n $'\x1e'
+    )
+    ssh_expected=${ssh_expected%$'\x1e'}
+    ssh_expected=${ssh_expected%$'\n'}
+    ssh_actual=${(F)ssh_lines[ssh_begin_at,ssh_end_at]}
+    if [[ $ssh_actual == "$ssh_expected" ]]; then
+      ssh_pos=1
+      while (( ssh_pos < ssh_begin_at )); do
+        if [[ -z ${ssh_lines[ssh_pos]} ]]; then
+          ssh_pos=$(( ssh_pos + 1 ))
+          continue
+        fi
+        if [[ ${ssh_lines[ssh_pos]} != '# BEGIN LANJUMP '?* ]]; then
+          break
+        fi
+        ssh_oid=${ssh_lines[ssh_pos]#\# BEGIN LANJUMP }
+        if [[ $ssh_oid != lanjump-[a-z0-9._-]## || $ssh_oid == "$id" ]]; then
+          break
+        fi
+        if (( ssh_pos + 1 > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_pos+1]} != "Host ${ssh_oid}" ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_pos + 2 ))
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != '  HostName '?* ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_k + 1 ))
+        if (( ssh_k <= ${#ssh_lines} )) && [[ ${ssh_lines[ssh_k]} == '  Port '?* ]]; then
+          ssh_k=$(( ssh_k + 1 ))
+        fi
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != '  User '?* ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_k + 1 ))
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != "  IdentityFile ${KEY}" ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_k + 1 ))
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != '  IdentitiesOnly yes' ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_k + 1 ))
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != '  AddKeysToAgent yes' ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_k + 1 ))
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != '  UseKeychain yes' ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_k + 1 ))
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != '  AddressFamily inet' ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_k + 1 ))
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != '  StrictHostKeyChecking accept-new' ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_k + 1 ))
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != '  ConnectTimeout 8' ]]; then
+          break
+        fi
+        ssh_k=$(( ssh_k + 1 ))
+        if (( ssh_k > ${#ssh_lines} )) || [[ ${ssh_lines[ssh_k]} != "# END LANJUMP ${ssh_oid}" ]]; then
+          break
+        fi
+        ssh_pos=$(( ssh_k + 1 ))
+      done
+      if (( ssh_pos == ssh_begin_at )); then
+        ssh_noop=1
+      fi
+    fi
+  fi
+  if (( ssh_noop )); then
+    ssh_mode=$(stat -L -f '%Lp' "$SSH_CONFIG" 2>/dev/null || stat -L -c '%a' "$SSH_CONFIG" 2>/dev/null || print 000)
+    if [[ $ssh_mode != 600 ]]; then
+      chmod 600 "$SSH_CONFIG" || return 1
+    fi
+    return 0
+  fi
   chmod 600 "$SSH_CONFIG"
   # Missing END: in-place rewrite only. Probe — do not strip dest (#272).
   # Complete pair / first write must prepend (Host * first-match, #340).
