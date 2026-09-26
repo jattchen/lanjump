@@ -1,15 +1,14 @@
-# Draft. On the diagnostic PR branch, place this file at
-# .github/workflows/dns-trace-490.yml. pull_request runs from that branch.
-# Do not merge to main first: workflow_dispatch only works after the file
-# is on the default branch. Do not re-run to seek a green sample.
+# Diagnostic PR workflow. pull_request runs this file from the PR branch.
+# Do not merge to main first. Do not re-run to seek a green sample.
 #
-# One macos-26 arm64 job, two samples, same runner:
-#   current tree lib/lanjump.zsh
-#   baseline b5ecb49ae71ce01f15f2652769a9ee97d334393f lib/lanjump.zsh
-# The failed main run was ImageVersion 20260907.0351.1. Record the actual
-# ImageVersion. If it differs, keep the sample and say so.
-# Read traces as evidence, not as a 500ms verdict: "sigterm" is the child
-# receiving the signal, and shell_epochrealtime is the shell wall clock.
+# One macos-26 job, three records, each once. A failure does not skip the rest.
+#   1. Unmodified host selftest, LJ466_TIME=1. Its exit is the original
+#      500/1500ms assertion record. Product source, the 80ms gap, and those
+#      limits stay as they are.
+#   2. solo tracer: one address, no delay, same fixture as resolve-one.
+#   3. pair tracer: the original 80ms second address.
+# Tracer walls include trace bookkeeping and are not the 500ms acceptance.
+# Child qos_* is the fake dns-sd process only.
 name: dns-trace-490
 
 on:
@@ -19,14 +18,12 @@ permissions:
   contents: read
 
 jobs:
-  pair:
+  trace:
     runs-on: macos-26
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Record runner identity
         run: |
@@ -38,14 +35,35 @@ jobs:
             sw_vers
           } | tee "$RUNNER_TEMP/identity.txt"
 
-      - name: Trace current once
-        run: zsh diag/dns-490-trace.zsh "$RUNNER_TEMP/current.trace"
-
-      - name: Trace baseline once
+      - name: Unmodified host selftest once
+        id: host
         if: always()
         run: |
-          git show b5ecb49ae71ce01f15f2652769a9ee97d334393f:lib/lanjump.zsh > "$RUNNER_TEMP/base-lanjump.zsh"
-          LJ_PRODUCT_ZSH="$RUNNER_TEMP/base-lanjump.zsh" zsh diag/dns-490-trace.zsh "$RUNNER_TEMP/base.trace"
+          set +e
+          LJ466_TIME=1 zsh lib/lanjump.zsh --host-selftest >"$RUNNER_TEMP/host.out" 2>"$RUNNER_TEMP/host.err"
+          code=$?
+          echo "$code" | tee "$RUNNER_TEMP/host.exit"
+          exit "$code"
+
+      - name: Trace solo once
+        id: solo
+        if: always()
+        run: |
+          set +e
+          zsh diag/dns-490-trace.zsh "$RUNNER_TEMP/solo.trace" solo >"$RUNNER_TEMP/solo.out" 2>"$RUNNER_TEMP/solo.err"
+          code=$?
+          echo "$code" | tee "$RUNNER_TEMP/solo.exit"
+          exit "$code"
+
+      - name: Trace pair once
+        id: pair
+        if: always()
+        run: |
+          set +e
+          zsh diag/dns-490-trace.zsh "$RUNNER_TEMP/pair.trace" pair >"$RUNNER_TEMP/pair.out" 2>"$RUNNER_TEMP/pair.err"
+          code=$?
+          echo "$code" | tee "$RUNNER_TEMP/pair.exit"
+          exit "$code"
 
       - name: Upload traces
         if: always()
@@ -54,6 +72,15 @@ jobs:
           name: dns-490-traces
           path: |
             ${{ runner.temp }}/identity.txt
-            ${{ runner.temp }}/current.trace
-            ${{ runner.temp }}/base.trace
+            ${{ runner.temp }}/host.out
+            ${{ runner.temp }}/host.err
+            ${{ runner.temp }}/host.exit
+            ${{ runner.temp }}/solo.trace
+            ${{ runner.temp }}/solo.out
+            ${{ runner.temp }}/solo.err
+            ${{ runner.temp }}/solo.exit
+            ${{ runner.temp }}/pair.trace
+            ${{ runner.temp }}/pair.out
+            ${{ runner.temp }}/pair.err
+            ${{ runner.temp }}/pair.exit
           if-no-files-found: warn

@@ -1,36 +1,48 @@
 #!/bin/zsh
-# One-shot recorder for the pair-address fake dns-sd used by host selftest.
-# Does not change product stop conditions. Does not write the real HOME,
-# SSH config, or keychain. Timing goes only to the trace file.
+# One recorded _bonjour_resolve_one. mode is solo or pair.
+# solo matches the host selftest resolve-one fixture: one address, no delay.
+# pair matches the host selftest resolve-pair fixture: 10.1.1.1, then 80ms,
+# then 192.168.1.77. Product stop conditions are not changed.
 #
-# Observable events (CLOCK_MONOTONIC ns, CLOCK_REALTIME ns, pid, name):
-#   stamp product_sha|uname|result|...        identity and chosen line; not a timer
-#   proc_start argv=...                       each fake dns-sd process
-#   line text=...                             stdout write and this record share
-#                                             one SIGTERM-blocked section
-#   sleep_begin requested_ms=N                before usleep of the gap
-#   sleep_end elapsed_ns=N                    usleep returned
-#   sleep_skip requested_ms=0                 fixture delay was zero
-#   hold                                      output finished; waiting in pause
-#   sigterm during_sleep=0|1                  this child received SIGTERM
-#   shell_epochrealtime begin= end= wall_ms=  shell clock around the function
+# Does not write the real HOME, SSH config, or keychain. Timing goes only
+# to the trace file. stdout of dns-sd is unchanged.
 #
-# sigterm is not the parent run_timed decision instant.
-# shell_epochrealtime is the function wall clock. It is not a 500ms verdict.
-# A missing line event means that stdout write did not finish.
+# Child events (CLOCK_MONOTONIC ns, CLOCK_REALTIME ns, pid, name):
+#   proc_start argv=... qos_rc= qos_class= qos_rel=
+#       qos_* is this dns-sd process only, not the parent shell and not
+#       the effective timer policy
+#   line text=...          stdout write and this record share one SIGTERM block
+#   sleep_begin/sleep_end/sleep_skip/hold
+#   sigterm during_sleep=  child received SIGTERM, not the parent decision
 #
-# Exit 0: the -G process logged both addresses and then received SIGTERM.
-# Exit 2: the probe did not observe that shape. The trace file is still written.
+# Shell lines, written by this process, not by an extra timer process:
+#   shell_mode solo|pair
+#   shell_run_timed call=L|G begin= end= wall_ms= rc= args=...
+#   shell_epochrealtime begin= end= wall_ms= note=trace_overhead_is_not_the_500ms_acceptance
+#   shell_result ...
+#
+# shell_run_timed is one product run_timed call. shell_epochrealtime is the
+# whole _bonjour_resolve_one. The difference is work outside those two calls,
+# including this wrapper's bookkeeping. Neither number is the original 500ms
+# acceptance; LJ466_TIME on the unmodified host selftest is that record.
+#
+# Exit 0: both run_timed calls and the outer wall were recorded.
+# Exit 2: the trace is incomplete. This exit is not a 500ms verdict.
 
 emulate -L zsh
 setopt no_unset pipefail
 
-if [[ $# -ne 1 || ${1:-} == -* ]]; then
-  print -u2 "usage: zsh diag/dns-490-trace.zsh TRACE_FILE"
+if [[ $# -ne 2 || ${1:-} == -* ]]; then
+  print -u2 "usage: zsh diag/dns-490-trace.zsh TRACE_FILE solo|pair"
   exit 2
 fi
 
 trace=$1
+mode=$2
+if [[ $mode != solo && $mode != pair ]]; then
+  print -u2 "diag: mode must be solo or pair"
+  exit 2
+fi
 root=${0:A:h:h}
 product=${LJ_PRODUCT_ZSH:-$root/lib/lanjump.zsh}
 src=$root/diag/dns-sd-trace.c
@@ -129,8 +141,15 @@ fi
 # Warm the dyld cache outside the recorded call. No fixture, so -L exits.
 "$bin" -L __warmup >/dev/null 2>&1 || true
 
-print -r -- $'pair\t0\t pair._ssh._tcp.local. can be reached at pair.local.:22' >"$work/resolve"
-print -r -- $'pair.local\t0\t10.1.1.1|80|192.168.1.77' >"$work/addr"
+if [[ $mode == solo ]]; then
+  print -r -- $'solo\t0\t solo._ssh._tcp.local. can be reached at solo.local.:22' >"$work/resolve"
+  print -r -- $'solo.local\t0\t192.168.1.40' >"$work/addr"
+  inst=solo
+else
+  print -r -- $'pair\t0\t pair._ssh._tcp.local. can be reached at pair.local.:22' >"$work/resolve"
+  print -r -- $'pair.local\t0\t10.1.1.1|80|192.168.1.77' >"$work/addr"
+  inst=pair
+fi
 export LJ_DNS_SD_RESOLVE=$work/resolve
 export LJ_DNS_SD_ADDR=$work/addr
 export LJ_DNS_SD_TRACE=$trace
@@ -148,98 +167,115 @@ one_sha=$(print -r -- "${functions[_bonjour_resolve_one]}" | shasum -a 256 | awk
 "$bin" --stamp "uname $(uname -sm)"
 "$bin" --stamp "sw_vers $(sw_vers -productVersion)"
 
+# Time each product run_timed in this shell. The copied function body and
+# its stop conditions stay as loaded. The wrapper only records the call.
+functions -c run_timed _diag_run_timed_orig
+run_timed() {
+  local begin end rc plain kind
+  local -F wall
+  begin=$EPOCHREALTIME
+  _diag_run_timed_orig "$@"
+  rc=$?
+  end=$EPOCHREALTIME
+  wall=$(( (end - begin) * 1000 ))
+  plain=${(j: :)@}
+  kind=other
+  [[ $plain == *'dns-sd -L'* ]] && kind=L
+  [[ $plain == *'dns-sd -G'* ]] && kind=G
+  print -r -- "shell_run_timed call=$kind begin=$begin end=$end wall_ms=$wall rc=$rc args=${(j: :)${(q+)@}}" >>"$trace" || true
+  return $rc
+}
+
 dest=$work/result
 zmodload zsh/datetime
+print -r -- "shell_mode $mode" >>"$trace"
 shell_begin=$EPOCHREALTIME
-_bonjour_resolve_one pair "$dest"
+_bonjour_resolve_one "$inst" "$dest"
 shell_end=$EPOCHREALTIME
 shell_wall_ms=$(( (shell_end - shell_begin) * 1000 ))
-print -r -- "shell_epochrealtime begin=$shell_begin end=$shell_end wall_ms=$shell_wall_ms" >>"$trace"
+print -r -- "shell_epochrealtime begin=$shell_begin end=$shell_end wall_ms=$shell_wall_ms note=trace_overhead_is_not_the_500ms_acceptance" >>"$trace"
 if [[ -f $dest ]]; then
   result_line=$(<"$dest")
   result_line=${result_line//$'\t'/|}
-  "$bin" --stamp "result $result_line"
+  print -r -- "shell_result $result_line" >>"$trace"
 else
-  "$bin" --stamp "result missing"
+  print -r -- "shell_result missing" >>"$trace"
 fi
 
 python3 - "$trace" <<'PY'
 import sys
 path = sys.argv[1]
+text = open(path, "r", encoding="utf-8", errors="replace").read().splitlines()
 rows = []
-with open(path, "r", encoding="utf-8", errors="replace") as handle:
-    for raw in handle:
-        raw = raw.rstrip("\n")
-        if not raw:
-            continue
-        if not raw[0].isdigit():
-            continue
-        parts = raw.split(" ", 4)
-        if len(parts) < 4:
-            continue
-        extra = parts[4] if len(parts) > 4 else ""
-        rows.append({
-            "mono": int(parts[0]),
-            "real": int(parts[1]),
-            "pid": int(parts[2]),
-            "event": parts[3],
-            "extra": extra,
-        })
+shell_calls = []
+outer = None
+result = "absent"
+mode = "absent"
+for raw in text:
+    if not raw:
+        continue
+    if raw.startswith("shell_run_timed "):
+        fields = {}
+        for part in raw.split(" ")[1:]:
+            if "=" in part and part.split("=", 1)[0] in ("call", "begin", "end", "wall_ms", "rc"):
+                key, val = part.split("=", 1)
+                fields[key] = val
+            else:
+                break
+        shell_calls.append(fields)
+        continue
+    if raw.startswith("shell_epochrealtime "):
+        outer = raw
+        continue
+    if raw.startswith("shell_result "):
+        result = raw
+        continue
+    if raw.startswith("shell_mode "):
+        mode = raw.split(" ", 1)[1]
+        continue
+    if not raw[0].isdigit():
+        continue
+    parts = raw.split(" ", 4)
+    if len(parts) < 4:
+        continue
+    rows.append({
+        "mono": int(parts[0]),
+        "pid": int(parts[2]),
+        "event": parts[3],
+        "extra": parts[4] if len(parts) > 4 else "",
+    })
 
-def stamp(prefix):
-    for row in rows:
-        if row["event"] == "stamp" and row["extra"].startswith(prefix):
-            return row
+def call_wall(name):
+    for fields in shell_calls:
+        if fields.get("call") == name and "wall_ms" in fields:
+            return fields
     return None
 
-g_pid = None
-for row in rows:
-    if row["event"] == "proc_start" and " -G " in row["extra"]:
-        g_pid = row["pid"]
-lines = [row for row in rows if row["pid"] == g_pid and row["event"] == "line"]
-signals = [row for row in rows if row["pid"] == g_pid and row["event"] == "sigterm"]
-first = next((row for row in lines if "10.1.1.1" in row["extra"]), None)
-second = next((row for row in lines if "192.168.1.77" in row["extra"]), None)
-child_sigterm = signals[-1] if signals else None
+L = call_wall("L")
+G = call_wall("G")
+outer_ms = None
+if outer and "wall_ms=" in outer:
+    try:
+        outer_ms = float(outer.split("wall_ms=", 1)[1].split(" ", 1)[0])
+    except ValueError:
+        outer_ms = None
+outside = "absent"
+if outer_ms is not None and L and G:
+    outside = f"{outer_ms - float(L['wall_ms']) - float(G['wall_ms']):.3f}"
 
-def ms(a, b):
-    if a is None or b is None:
-        return "absent"
-    return f"{(b['mono'] - a['mono']) / 1e6:.3f}"
-
-if first and second and child_sigterm and child_sigterm["mono"] >= second["mono"] and "during_sleep=0" in child_sigterm["extra"]:
-    kind = "both_lines_then_child_sigterm"
-    code = 0
-elif first and child_sigterm and second is None and "during_sleep=1" in child_sigterm["extra"]:
-    kind = "child_sigterm_during_second_wait"
-    code = 2
-elif first and child_sigterm and second is None:
-    kind = "child_sigterm_without_second_line"
-    code = 2
-else:
-    kind = "incomplete"
-    code = 2
-
-shell_wall = "absent"
-with open(path, "r", encoding="utf-8", errors="replace") as handle:
-    for raw in handle:
-        raw = raw.rstrip("\n")
-        if raw.startswith("shell_epochrealtime "):
-            shell_wall = raw
-result = stamp("result ")
-print(f"classification={kind}")
-print(f"g_pid={g_pid if g_pid is not None else 'absent'}")
-print(f"line_count={len(lines)}")
-print(f"line1_mono_ns={first['mono'] if first else 'absent'}")
-print(f"line2_mono_ns={second['mono'] if second else 'absent'}")
-print(f"child_sigterm_mono_ns={child_sigterm['mono'] if child_sigterm else 'absent'}")
-print(f"child_sigterm_extra={child_sigterm['extra'] if child_sigterm else 'absent'}")
-print(f"line_gap_ms={ms(first, second)}")
-print(f"sigterm_after_line1_ms={ms(first, child_sigterm)}")
-print(f"sigterm_after_line2_ms={ms(second, child_sigterm)}")
-print(f"shell_epochrealtime={shell_wall}")
-print("shell_epochrealtime_note=not_a_500ms_verdict")
-print(f"result={result['extra'] if result else 'absent'}")
+qos = [row["extra"] for row in rows if row["event"] == "proc_start" and "qos_rc=" in row["extra"]]
+print(f"mode={mode}")
+print(f"run_timed_L={L['wall_ms'] if L else 'absent'} rc={L.get('rc', 'absent') if L else 'absent'}")
+print(f"run_timed_G={G['wall_ms'] if G else 'absent'} rc={G.get('rc', 'absent') if G else 'absent'}")
+print(f"outer_wall={outer if outer else 'absent'}")
+print(f"outside_run_timed_ms={outside}")
+print("timing_note=trace_overhead_is_not_the_500ms_acceptance")
+print(f"child_proc_start_count={len(qos)}")
+for extra in qos:
+    print(f"child_proc_start {extra}")
+print("child_qos_note=not_parent_shell_or_effective_timer_policy")
+print(f"result={result}")
 print(f"trace={path}")
-sys.exit(code)
+complete = L is not None and G is not None and outer is not None and len(qos) >= 2
+sys.exit(0 if complete else 2)
 PY

@@ -4,11 +4,16 @@
  * SIGTERM-blocked section: a missing "line" event means that stdout
  * write did not finish. "sigterm" is when this child got the signal,
  * not when the parent run_timed decided to stop.
+ * proc_start qos_* is this dns-sd child's pthread_get_qos_class_np result.
+ * It is not the parent shell's class and not the effective timer policy.
+ * The tracer only reads that value.
  */
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <pthread.h>
+#include <pthread/qos.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -320,6 +325,14 @@ int main(int argc, char **argv) {
     const char *s;
     if (i && n < (int)sizeof argv_extra - 1) argv_extra[n++] = ' ';
     for (s = argv[i]; *s && n < (int)sizeof argv_extra - 1; s++) argv_extra[n++] = *s;
+  }
+  {
+    qos_class_t cls = 0;
+    int rel = 0;
+    int qrc = pthread_get_qos_class_np(pthread_self(), &cls, &rel);
+    char qos[80];
+    snprintf(qos, sizeof qos, " qos_rc=%d qos_class=%d qos_rel=%d", qrc, (int)cls, rel);
+    n = append_str(argv_extra, n, (int)sizeof argv_extra, qos);
   }
   argv_extra[n] = 0;
   trace_line("proc_start", argv_extra);
